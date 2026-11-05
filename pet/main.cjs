@@ -5,6 +5,7 @@ const { app, BrowserWindow, Menu, ipcMain, net, protocol, screen } = require('el
 const path = require('node:path')
 const { connect } = require('node:net')
 const { pathToFileURL } = require('node:url')
+const { createPlacer } = require('./placement.cjs')
 
 const arg = (name) => { const hit = process.argv.find((a) => a.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : '' }
 const PIPE = arg('dsc-pipe'), ASSETS = arg('dsc-assets'), APP = __dirname
@@ -31,6 +32,8 @@ if (MAC) {
 protocol.registerSchemesAsPrivileged([{ scheme: 'dscpet', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
 let win = null, socket = null, buffer = ''
+// 창 이동은 모두 여기로: 위치·크기를 함께 지시하고 멈춘 뒤 실제 자리를 확인해 맞춤 (배율이 다른 모니터를 넘나들 때 어긋남 방지)
+const placer = createPlacer(() => win, { width: WIN_W, height: WIN_H })
 // 지금 회차 번호(창 안 캐릭터가 펫 창을 열 때마다 올림). 보이기·숨기·붙기 알림에 붙여, 이전 회차 알림과 섞이지 않게 함
 let seq
 const toHost = (message) => { if (socket && !socket.destroyed) socket.write(JSON.stringify(seq === undefined ? message : { ...message, seq }) + '\n') }
@@ -67,7 +70,7 @@ function track(on, grab, off) {
     const p = screen.getCursorScreenPoint(), key = `${p.x},${p.y}`
     if (key === last) return
     last = key
-    win.setPosition(Math.round(p.x - g.x - o.x) | 0, Math.round(p.y - g.y - o.y) | 0)   // | 0: -0 방지 (아래 move와 같은 이유)
+    placer.place(p.x - g.x - o.x, p.y - g.y - o.y)
     toPage({ type: 'cursor', x: p.x, y: p.y })
   }
   tick()   // 창을 보이기 전에 먼저 커서 자리로 (잠깐 엉뚱한 자리에 떠 보이지 않게)
@@ -118,7 +121,7 @@ app.whenReady().then(() => {
     if (event.sender !== win.webContents || !message || typeof message.type !== 'string') return
     switch (message.type) {
       // | 0: Math.round 결과가 -0이면 Electron이 정수로 받지 못해 오류 창을 띄움
-      case 'move': if (Number.isFinite(message.x) && Number.isFinite(message.y)) win.setPosition(Math.round(message.x) | 0, Math.round(message.y) | 0); return
+      case 'move': placer.place(message.x, message.y); return
       case 'track': track(!!message.on, message.grab, message.off); return
       case 'press': force = !!message.on; checkCursor(); return   // 누르고 있는 동안은 커서가 몸 밖이어도 늘 받음
       case 'hitbox': box = message.box && ['l', 't', 'r', 'b'].every((k) => Number.isFinite(message.box[k])) ? message.box : null; checkCursor(); return
@@ -127,8 +130,7 @@ app.whenReady().then(() => {
         const wa = screen.getPrimaryDisplay().workAreaSize
         const w = Math.min(Math.round(Number(message.w)), wa.width), h = Math.min(Math.round(Number(message.h)), wa.height)
         if (!Number.isFinite(w) || !Number.isFinite(h) || w < 80 || h < 80) return
-        const b = win.getBounds()
-        if (b.width !== w || b.height !== h) win.setSize(w, h)
+        placer.resize(w, h)   // 크기도 placer 로: 이후 이동(place)이 이 크기를 유지하고, 배율이 다른 모니터에서도 확인함
         return
       }
       // 이미 보이는 중이어도(따라오기 회차에서 바로 던지기 회차로 넘어간 경우) 지금 회차로 shown을 다시 알림
