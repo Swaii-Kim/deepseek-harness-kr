@@ -2831,73 +2831,92 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // ---------- 펫 창 쪽: 창 안 캐릭터가 보낸 반응을 그대로 재생 ----------
       if (PET) {
         const local = { say, play, setMood, flashExp, setExp, hush };
-        PET.on((m) => {
-          if (m.type === "cursor") {   // 따라오는 중 커서 (화면 좌표). 몸 위치 = 커서 − 잡은 자리
-            if (!drag.on || !petGrab) return;
-            const now = performance.now();
-            drag.x = m.x - petGrab.x; drag.y = m.y - petGrab.y;
-            drag.samples.push([now, m.x, m.y]);
-            while (drag.samples.length > 2 && now - drag.samples[0][0] > 100) drag.samples.shift();
-            const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1000;
-            carry.vx += ((m.x - x0) / dt - carry.vx) * 0.5; carry.vy += ((m.y - y0) / dt - carry.vy) * 0.5;
-          } else if (m.type === "power") {   // 창이 숨으면 그리기를 멈춰 CPU·GPU를 쓰지 않음 (숨은 창도 백그라운드 제한이 꺼져 있어 계속 그려짐)
-            if (!m.on) { petTracking = false; petGrab = null; closePetPanel(); }
-            petPower = !!m.on;
-            setRender(petPower);
-            if (petPower) wakeRaf();
-          } else if (m.type === "panel") {   // 우클릭 메뉴: 설정(또는 크기) 패널 열기
-            openPetPanel(m.focus);
-          } else if (m.type === "size") {   // 우클릭 메뉴: 정해진 배율로 (기본 대비)
-            petSetRatio(Number(m.ratio), 220);
-          } else if (m.type === "open") {   // 창 밖으로 던진 자리에서 나타나 남은 거리만큼 미끄러짐. follow면 놓을 때까지 창 안 커서를 따라옴
-            petPower = true;
-            setRender(true);
-            wakeRaf();
-            // 이전 회차에 남은 상태(끄는 중·식은땀·산책·도망)를 모두 지우고 시작
-            for (const t of walk.timers) clearTimeout(t);
-            walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; drag.pending = null; PET.press(false);
-            closePetPanel();
-            petDocked = false; free.on = true; Object.assign(free, m.from);
-            petGrab = m.follow ? (m.grab || { x: 0, y: 0 }) : null; petTracking = !!m.follow;
-            // 펫 창은 전신이라 같은 배율이면 머리가 작아진다. 창 안 배율과의 비율(HEAD_GAIN)만큼 키워 머리 크기를 맞추고,
-            // 창(과 화면)에 들어가는 크기로 자른다. 아래 가운데를 고정한 채 배율만 바꾼다
-            const kFrom = Number(m.from.k) || 1;
-            const kBase = Math.min(petKFit(), Math.max(PET_K_MIN, kFrom * HEAD_GAIN));   // 기본(머리 맞춤) 크기
-            petBaseK = kBase;
-            // 기억해 둔 배율: 따라오는 중에는 놓을 때(release)에 맞추고, 바로 나타날 때는 미끄러지며 맞춘다
-            const ratio = petLoadRatio();
-            petPendingRatio = m.follow ? ratio : null;
-            const kApply = m.follow ? kBase : petClampK(kBase * ratio);
-            if (kApply !== kFrom) {
-              const dk = kFrom - kApply;
-              free.x += W * dk / 2; free.y += H * dk; free.k = kApply;
-              if (petGrab) petGrab = { x: petGrab.x * kApply / kFrom, y: petGrab.y * kApply / kFrom };
-            }
-            const pose = { k: free.k, x: free.x, y: free.y }, to = { k: kApply, x: m.to.x + W * (kFrom - kApply) / 2, y: m.to.y + H * (kFrom - kApply) };
-            PET.send({ type: "track", on: !!m.follow, grab: petGrab, off: { x: (innerWidth - W * pose.k) / 2, y: innerHeight - H * pose.k } });   // 따라오기: 펫 프로세스가 커서를 따라 창을 옮기고 커서를 보내 줌
-            drag.on = !!m.follow; drag.x = pose.x; drag.y = pose.y; drag.samples = [[performance.now(), pose.x + (petGrab?.x ?? 0), pose.y + (petGrab?.y ?? 0)]];
-            free.anim = m.follow ? null : { t0: performance.now(), ms: 300, from: pose, to: keepIn(to), snap: false };
-            until.sweat = m.follow ? Infinity : 0;
-            movePet(pose); PET.send({ type: "placed" });
-            petSyncMenu();
-          } else if (m.type === "home") {   // 우클릭 메뉴: 창으로 돌아가기
-            closePetPanel();   // 붙을 자리(원래 크기)로 애니메이션되고 펫 창은 닫힌다
-            if (petDock) free.anim = { t0: performance.now(), ms: 650, from: { ...shown }, to: null, snap: true };
-            else PET.send({ type: "attach" });
-          } else if (m.type === "cmd") {
-            for (const [fn, a] of m.list || []) {
-              if (fn === "outfit") { prefs.outfit = a[0]; renderPetPanel(); petSyncMenu(); }
-              else if (fn === "dock") petDock = a[0];
-              else if (fn === "voice") voiceState = a[0];
-              else if (fn === "drag") prefs.drag = { key: a[0] };   // 창 안 캐릭터와 같은 이동 키
-              else if (fn === "dragheld") { if (a[1]) pressedKeys.add(a[0]); else pressedKeys.delete(a[0]); }   // 포커스 없는 펫 창에 키 상태 전달
-              else if (fn === "release" && drag.on) {   // 창 밖에서 놓음 → 여기서 이어서 미끄러지거나 붙음
-                petGrab = null; petTracking = false; PET.send({ type: "track", on: false });
-                drag.on = false; until.sweat = performance.now() + 400; release(a[0], a[1]);
-              } else if (Object.hasOwn(local, fn) && Array.isArray(a)) local[fn](...a);
-            }
+        // 따라오는 중 커서 (화면 좌표). 몸 위치 = 커서 − 잡은 자리
+        const onPetCursor = (m) => {
+          if (!drag.on || !petGrab) return;
+          const now = performance.now();
+          drag.x = m.x - petGrab.x; drag.y = m.y - petGrab.y;
+          drag.samples.push([now, m.x, m.y]);
+          while (drag.samples.length > 2 && now - drag.samples[0][0] > 100) drag.samples.shift();
+          const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1000;
+          carry.vx += ((m.x - x0) / dt - carry.vx) * 0.5; carry.vy += ((m.y - y0) / dt - carry.vy) * 0.5;
+        };
+        // 창이 숨으면 그리기를 멈춰 CPU·GPU를 쓰지 않음 (숨은 창도 백그라운드 제한이 꺼져 있어 계속 그려짐)
+        const onPetPower = (m) => {
+          if (!m.on) { petTracking = false; petGrab = null; closePetPanel(); }
+          petPower = !!m.on;
+          setRender(petPower);
+          if (petPower) wakeRaf();
+        };
+        // 창 밖으로 던진 자리에서 나타나 남은 거리만큼 미끄러짐. follow면 놓을 때까지 창 안 커서를 따라옴
+        const onPetOpen = (m) => {
+          petPower = true;
+          setRender(true);
+          wakeRaf();
+          // 이전 회차에 남은 상태(끄는 중·식은땀·산책·도망)를 모두 지우고 시작
+          for (const t of walk.timers) clearTimeout(t);
+          walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; drag.pending = null; PET.press(false);
+          closePetPanel();
+          petDocked = false; free.on = true; Object.assign(free, m.from);
+          petGrab = m.follow ? (m.grab || { x: 0, y: 0 }) : null; petTracking = !!m.follow;
+          // 펫 창은 전신이라 같은 배율이면 머리가 작아진다. 창 안 배율과의 비율(HEAD_GAIN)만큼 키워 머리 크기를 맞추고,
+          // 창(과 화면)에 들어가는 크기로 자른다. 아래 가운데를 고정한 채 배율만 바꾼다
+          const kFrom = Number(m.from.k) || 1;
+          const kBase = Math.min(petKFit(), Math.max(PET_K_MIN, kFrom * HEAD_GAIN));   // 기본(머리 맞춤) 크기
+          petBaseK = kBase;
+          // 기억해 둔 배율: 따라오는 중에는 놓을 때(release)에 맞추고, 바로 나타날 때는 미끄러지며 맞춘다
+          const ratio = petLoadRatio();
+          petPendingRatio = m.follow ? ratio : null;
+          const kApply = m.follow ? kBase : petClampK(kBase * ratio);
+          if (kApply !== kFrom) {
+            const dk = kFrom - kApply;
+            free.x += W * dk / 2; free.y += H * dk; free.k = kApply;
+            if (petGrab) petGrab = { x: petGrab.x * kApply / kFrom, y: petGrab.y * kApply / kFrom };
           }
-        });
+          const pose = { k: free.k, x: free.x, y: free.y }, to = { k: kApply, x: m.to.x + W * (kFrom - kApply) / 2, y: m.to.y + H * (kFrom - kApply) };
+          PET.send({ type: "track", on: !!m.follow, grab: petGrab, off: { x: (innerWidth - W * pose.k) / 2, y: innerHeight - H * pose.k } });   // 따라오기: 펫 프로세스가 커서를 따라 창을 옮기고 커서를 보내 줌
+          drag.on = !!m.follow; drag.x = pose.x; drag.y = pose.y; drag.samples = [[performance.now(), pose.x + (petGrab?.x ?? 0), pose.y + (petGrab?.y ?? 0)]];
+          free.anim = m.follow ? null : { t0: performance.now(), ms: 300, from: pose, to: keepIn(to), snap: false };
+          until.sweat = m.follow ? Infinity : 0;
+          movePet(pose); PET.send({ type: "placed" });
+          petSyncMenu();
+        };
+        // 우클릭 메뉴: 창으로 돌아가기
+        const onPetHome = () => {
+          closePetPanel();   // 붙을 자리(원래 크기)로 애니메이션되고 펫 창은 닫힌다
+          if (petDock) free.anim = { t0: performance.now(), ms: 650, from: { ...shown }, to: null, snap: true };
+          else PET.send({ type: "attach" });
+        };
+        // 창 밖에서 놓음 → 여기서 이어서 미끄러지거나 붙음
+        const releaseFromHost = (vx, vy) => {
+          petGrab = null; petTracking = false; PET.send({ type: "track", on: false });
+          drag.on = false; until.sweat = performance.now() + 400; release(vx, vy);
+        };
+        // 창 안 캐릭터가 보낸 명령 하나 (펫 창 쪽 상태 갱신, 아니면 반응 재생)
+        const PET_COMMANDS = {
+          outfit: (a) => { prefs.outfit = a[0]; renderPetPanel(); petSyncMenu(); },
+          dock: (a) => { petDock = a[0]; },
+          voice: (a) => { voiceState = a[0]; },
+          drag: (a) => { prefs.drag = { key: a[0] }; },   // 창 안 캐릭터와 같은 이동 키
+          dragheld: (a) => { if (a[1]) pressedKeys.add(a[0]); else pressedKeys.delete(a[0]); },   // 포커스 없는 펫 창에 키 상태 전달
+          release: (a) => { if (drag.on) releaseFromHost(a[0], a[1]); },
+        };
+        const onPetCommands = (m) => {
+          for (const [fn, a] of m.list || []) {
+            if (Object.hasOwn(PET_COMMANDS, fn)) PET_COMMANDS[fn](a);
+            else if (Object.hasOwn(local, fn) && Array.isArray(a)) local[fn](...a);
+          }
+        };
+        const PET_MESSAGES = {
+          cursor: onPetCursor,
+          power: onPetPower,
+          panel: (m) => openPetPanel(m.focus),          // 우클릭 메뉴: 설정(또는 크기) 패널 열기
+          size: (m) => petSetRatio(Number(m.ratio), 220),   // 우클릭 메뉴: 정해진 배율로 (기본 대비)
+          open: onPetOpen,
+          home: onPetHome,
+          cmd: onPetCommands,
+        };
+        PET.on((m) => { if (Object.hasOwn(PET_MESSAGES, m.type)) PET_MESSAGES[m.type](m); });
         petPower = false;
         setRender(false);   // 처음엔 숨은 채 대기 (open 이 오면 그리기 시작)
         PET.send({ type: "ready" });

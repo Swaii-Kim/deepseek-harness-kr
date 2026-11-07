@@ -318,7 +318,7 @@ test('펫 창이 숨으면 페이지에 그리기 중지를 알리고, 페이지
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
   const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(main, /toPage\(\{ type: 'power', on: false \}\)/)
-  assert.match(dsc, /m\.type === "power"/)
+  assert.match(dsc, /power: onPetPower,/)   // 펫 창 메시지 처리표
   assert.match(dsc, /처음엔 숨은 채 대기/)
 })
 
@@ -332,7 +332,7 @@ test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마�
   assert.match(dsc, /if \(PET \? !petPower : link\.open\) \{ rafIdle = true; systemTicker\(false\); return; \}\n\s*requestAnimationFrame\(raf\);/)
   // power on·open 은 루프를 다시 깨운다
   assert.match(dsc, /petPower = !!m\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
-  assert.match(dsc, /m\.type === "open"\) \{[^\n]*\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
+  assert.match(dsc, /const onPetOpen = \(m\) => \{\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
 })
 
 test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프를 쉬고, 붙을 자리는 150ms 틱이 직접 계산한다', async () => {
