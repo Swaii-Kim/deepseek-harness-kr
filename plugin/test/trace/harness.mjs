@@ -1,0 +1,256 @@
+// 캐릭터 동작 기준 기록(골든 트레이스). character/ 소스를 esbuild로 묶어 JSDOM에서 돌리고,
+// PIXI·Live2D 모델·시간·난수·rAF·타이머를 가짜로 바꿔 같은 입력이면 늘 같은 결과가 나오게 한다.
+// 프레임마다 모델 파라미터 값(표정 갱신·물리 뒤), 캔버스·말풍선·베일 스타일, 렌더 해상도를 기록한다.
+//   node plugin/test/trace/harness.mjs --update            지금 소스로 기준 기록(golden.json)을 다시 만든다
+//   node plugin/test/trace/harness.mjs --diff <다른 저장소>  두 소스의 기록을 프레임별로 비교해 처음 다른 곳을 보여 준다
+import { createHash } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { JSDOM, VirtualConsole } from 'jsdom'
+
+const here = dirname(fileURLToPath(import.meta.url))
+export const GOLDEN = join(here, 'golden.json')
+const BASE = 'http://127.0.0.1/deepseek-harness-kr/assets/'
+
+// 저장소 root의 character/ 소스를 브라우저용 IIFE로 묶는다 (index.js·index.ts 모두)
+export async function bundleCharacter(root) {
+  const esbuild = await import('esbuild')
+  const entry = `import { createCharacter } from ${JSON.stringify(join(root, 'character/index').replaceAll('\\', '/'))}
+import { createLifetime } from ${JSON.stringify(join(root, 'character/lifetime').replaceAll('\\', '/'))}
+globalThis.__traceCharacter = createCharacter({ base: ${JSON.stringify(BASE)}, life: createLifetime(), prefs: globalThis.__tracePrefs || {} })`
+  const out = await esbuild.build({ stdin: { contents: entry, resolveDir: root, loader: 'js' }, bundle: true, format: 'iife', platform: 'browser', target: 'es2022', charset: 'utf8', write: false, logLevel: 'silent' })
+  return out.outputFiles[0].text
+}
+
+// 결정적 난수 (mulberry32)
+const seeded = (seed) => () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+const r6 = (v) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v)
+
+function installFakeModel(win, clock, sink) {
+  // 파라미터: 처음 쓰는 이름은 자동으로 등록 (범위 -30..30)
+  class CoreModel {
+    constructor() {
+      this.values = new Map(); this.saved = null
+      // 모델 그림 영역 1000×2000 안에 몸 부위 drawable 8개 (외곽·허리 계산과 귀·가슴 파트 판정용)
+      const rects = [[300, 0, 700, 500], [250, 400, 750, 900], [200, 800, 800, 1300], [250, 1200, 750, 2000], [150, 0, 300, 300], [700, 0, 850, 300], [350, 700, 650, 950], [380, 150, 620, 450]]
+      const quad = ([x0, y0, x1, y1]) => Float32Array.from([x0, y0, x1, y0, x1, y1, x0, y1])
+      this.verts = rects.map(quad)
+      this.model = {
+        drawables: { count: rects.length, opacities: new Float32Array(rects.length).fill(1), dynamicFlags: new Uint8Array(rects.length).fill(1), parentPartIndices: Int32Array.from([0, 1, 2, 3, 4, 4, 5, 0]), vertexPositions: this.verts },
+        parts: { count: 6, ids: ['Part1', 'Part81', 'Part2', 'Part3', 'Part159', 'Part88'], opacities: new Float32Array(6).fill(1), parentIndices: Int32Array.from([-1, -1, -1, -1, -1, -1]) },
+        parameters: { count: 0, values: new Float32Array(0) },
+        update() {},
+      }
+    }
+    getModel() { return this.model }
+    getParameterIndex(id) { if (!this.values.has(id)) this.values.set(id, 0); return [...this.values.keys()].indexOf(id) }
+    getParameterMinimumValue() { return -30 }
+    getParameterMaximumValue() { return 30 }
+    getParameterValueById(id) { return this.values.get(id) ?? 0 }
+    setParameterValueById(id, v, w = 1) { const cur = this.values.get(id) ?? 0; this.values.set(id, w === 1 ? v : cur + (v - cur) * w) }
+    addParameterValueById(id, v, w = 1) { this.values.set(id, (this.values.get(id) ?? 0) + v * w) }
+    multiplyParameterValueById(id, v, w = 1) { this.values.set(id, (this.values.get(id) ?? 0) * (1 + (v - 1) * w)) }
+    saveParameters() { this.saved = new Map(this.values) }
+    loadParameters() { if (this.saved) this.values = new Map(this.saved) }
+    update() {}
+  }
+  class InternalModel {
+    constructor() { this.coreModel = new CoreModel(); this.motionManager = { expressionManager: null }; this.physics = { evaluate() {} }; this.eyeBlink = {}; this.breath = {} }
+    getDrawableVertices(i) { return this.coreModel.verts[i] }
+    // pixi-live2d-display cubism4 InternalModel.update 순서를 따른다 (모션 없음)
+    update(dt, now) {
+      const core = this.coreModel
+      core.saveParameters()
+      this.motionManager.expressionManager?.update(core, now / 1000)
+      this.physics?.evaluate(core, dt / 1000)
+      sink.params = Object.fromEntries([...core.values].filter(([, v]) => v !== 0).map(([k, v]) => [k, r6(v)]).sort(([a], [b]) => (a < b ? -1 : 1)))
+      core.update()
+      core.loadParameters()
+    }
+  }
+  class Live2DModel {
+    constructor() { this.internalModel = new InternalModel(); this.scale = { x: 1, y: 1, set: (v) => { this.scale.x = this.scale.y = v } }; this.x = 0; this.y = 0; this.textures = []; this.deltaTime = 0; this.elapsedTime = 0 }
+    static async from() { return new Live2DModel() }
+    update(dt) { this.deltaTime += dt; this.elapsedTime += dt }
+    renderNow() { if (this.deltaTime) { this.internalModel.update(this.deltaTime, this.elapsedTime); this.deltaTime = 0 } }
+    destroy() {}
+  }
+  // PIXI v6 Ticker의 동작(우선순위 순서, 최대 100ms, lastTime, start/stop과 rAF 예약)을 따른다
+  class Ticker {
+    constructor() { this.listeners = []; this.started = false; this.lastTime = -1; this.deltaMS = 1000 / 60; this.elapsedMS = 0; this.requestId = null }
+    add(fn, ctx, priority = 0) { this.listeners.push({ fn, ctx, priority, order: this.listeners.length }); this.listeners.sort((a, b) => b.priority - a.priority || a.order - b.order); return this }
+    update(t = clock.now) {
+      if (t > this.lastTime) {
+        let e = this.elapsedMS = t - this.lastTime
+        if (e > 100) e = 100
+        this.deltaMS = e
+        for (const l of [...this.listeners]) l.fn.call(l.ctx, e / (1000 / 60))
+      } else this.deltaMS = this.elapsedMS = 0
+      this.lastTime = t
+    }
+    tick = (t) => { this.requestId = null; if (this.started) { this.update(t); if (this.started && this.requestId === null) this.requestId = win.requestAnimationFrame(this.tick) } }
+    start() { if (this.started) return; this.started = true; if (this.requestId === null) { this.lastTime = clock.now; this.requestId = win.requestAnimationFrame(this.tick) } }
+    stop() { this.started = false; if (this.requestId !== null) { win.cancelAnimationFrame(this.requestId); this.requestId = null } }
+  }
+  class Application {
+    constructor(opts) {
+      this.view = opts.view
+      this.renderer = { resolution: opts.resolution, resize: () => { sink.resizes++ }, plugins: { interaction: { useSystemTicker: true } } }
+      this.stage = { children: [], addChild: (c) => this.stage.children.push(c) }
+      this.ticker = new Ticker()
+      this.ticker.add(this.render, this, -25)
+      if (opts.autoStart !== false) this.ticker.start()
+    }
+    render() { sink.renders++; for (const c of this.stage.children) c.renderNow?.() }
+    destroy() {}
+  }
+  win.Live2DCubismCore = {}
+  win.PIXI = { Application, UPDATE_PRIORITY: { HIGH: 25, NORMAL: 0, LOW: -25 }, live2d: { Live2DModel } }
+}
+
+// 가짜 시간: setTimeout·setInterval·requestAnimationFrame·performance.now가 같은 시계를 쓴다
+function installFakeTime(win, clock) {
+  let nextId = 1
+  const timers = new Map(), frames = new Map()
+  win.setTimeout = (fn, ms = 0, ...args) => { const id = nextId++; timers.set(id, { at: clock.now + Math.max(0, ms), fn: () => fn(...args), seq: id }); return id }
+  win.clearTimeout = (id) => { timers.delete(id) }
+  win.setInterval = (fn, ms = 0, ...args) => { const id = nextId++; const every = Math.max(1, ms); timers.set(id, { at: clock.now + every, every, fn: () => fn(...args), seq: id }); return id }
+  win.clearInterval = (id) => { timers.delete(id) }
+  win.requestAnimationFrame = (fn) => { const id = nextId++; frames.set(id, fn); return id }
+  win.cancelAnimationFrame = (id) => { frames.delete(id) }
+  win.requestIdleCallback = (fn) => win.setTimeout(() => fn({ didTimeout: false, timeRemaining: () => 10 }), 1)
+  Object.defineProperty(win.performance, 'now', { configurable: true, value: () => clock.now })
+  return {
+    // 지금 시각까지 만기된 타이머를 시각·등록 순서대로 실행
+    runTimers() {
+      for (;;) {
+        let next = null
+        for (const [id, t] of timers) if (t.at <= clock.now && (!next || t.at < next[1].at || (t.at === next[1].at && t.seq < next[1].seq))) next = [id, t]
+        if (!next) return
+        const [id, t] = next
+        if (t.every) { t.at += t.every; t.seq = nextId++ } else timers.delete(id)
+        t.fn()
+      }
+    },
+    runFrame() { const list = [...frames.values()]; frames.clear(); for (const fn of list) fn(clock.now) },
+  }
+}
+
+// 레이아웃이 없는 JSDOM에서 배치 코드가 읽는 크기를 스타일에서 결정적으로 계산한다
+function installLayout(win, size) {
+  const px = (v) => parseFloat(v) || 0
+  const bubbleW = (el) => { const max = px(el.style.maxWidth) || 220; return Math.min(max, 24 + 13 * (el.textContent || '').length) }
+  const bubbleH = (el) => { const max = px(el.style.maxWidth) || 220; return 18 + 22 * Math.max(1, Math.ceil((24 + 13 * (el.textContent || '').length) / max)) }
+  const proto = win.HTMLElement.prototype
+  const box = (el) => {
+    if (el.classList.contains('dsc-composer')) return { left: 300, top: size.h - 220, width: 1000, height: 120 }
+    if (el.id === 'dsc-bubble') {
+      const w = bubbleW(el), h = bubbleH(el)
+      const left = el.style.left && el.style.left !== 'auto' ? px(el.style.left) : size.w - px(el.style.right) - w
+      return { left, top: px(el.style.top), width: w, height: h }
+    }
+    if (el.id === 'dsc-stage') return { left: px(el.style.left), top: px(el.style.top), width: px(el.style.width), height: px(el.style.height) }
+    return { left: 0, top: 0, width: 0, height: 0 }
+  }
+  Object.defineProperty(proto, 'offsetWidth', { configurable: true, get() { return box(this).width } })
+  Object.defineProperty(proto, 'offsetHeight', { configurable: true, get() { return box(this).height } })
+  Object.defineProperty(proto, 'offsetLeft', { configurable: true, get() { return box(this).left } })
+  Object.defineProperty(proto, 'offsetTop', { configurable: true, get() { return box(this).top } })
+  proto.getBoundingClientRect = function () { const b = box(this); return { ...b, x: b.left, y: b.top, right: b.left + b.width, bottom: b.top + b.height } }
+  Object.defineProperty(win, 'innerWidth', { configurable: true, get: () => size.w })
+  Object.defineProperty(win, 'innerHeight', { configurable: true, get: () => size.h })
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
+  win.devicePixelRatio = 1
+}
+
+// 정해 둔 입력(인트로 클릭·마우스·말하기·작업 상태·소품 설정·창 크기·절전)을 프레임 순서대로 넣고 기록을 돌려준다
+export async function runTrace(code) {
+  const virtualConsole = new VirtualConsole()   // JSDOM의 "구현 안 됨" 경고(캔버스 등)는 버린다
+  const dom = new JSDOM('<!doctype html><html><head></head><body><div class="x_root"><div class="x_card dsc-composer"><div class="x_input"></div></div></div></body></html>', { url: 'http://127.0.0.1/', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole })   // 보이는 화면(document.hidden=false). rAF는 아래에서 가짜로 바꾼다
+  const win = dom.window, doc = win.document
+  const clock = { now: 1000 }, size = { w: 1600, h: 960 }
+  const sink = { params: null, resizes: 0, renders: 0 }
+  const time = installFakeTime(win, clock)
+  installFakeModel(win, clock, sink)
+  installLayout(win, size)
+  win.Math.random = seeded(20261108)
+  win.fetch = async (url) => String(url).includes('/model/exp/') ? { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamCheek', Value: 1, Blend: 'Add' }] }) } : { ok: false, json: async () => null }
+  Object.defineProperty(doc, 'currentScript', { configurable: true, get: () => ({ src: BASE + 'dsc.js' }) })
+  win.eval(code)
+  const character = win.__traceCharacter
+  const flush = () => new Promise((r) => setImmediate(r))
+  const frames = []
+  let frame = 0
+  const step = async (ms) => {
+    clock.now += ms
+    time.runTimers()
+    await flush()
+    time.runFrame()
+    await flush()
+    const stage = doc.getElementById('dsc-stage'), bubble = doc.getElementById('dsc-bubble')
+    const veil = [...doc.body.children].find((el) => el.style?.cssText?.includes('z-index: 29') || el.style?.zIndex === '29')
+    const css = (el, keys) => el ? Object.fromEntries(keys.map((k) => [k, el.style[k] || ''])) : null
+    frames.push({
+      f: frame++, t: clock.now,
+      canvas: css(stage, ['display', 'left', 'top', 'width', 'height', 'opacity', 'transform', 'clipPath']),
+      bubble: bubble ? { text: bubble.textContent, cls: bubble.className, ...css(bubble, ['display', 'left', 'right', 'top', 'maxWidth', 'fontSize']) } : null,
+      veil: veil ? veil.style.opacity : null,
+      res: r6(win.__traceRes?.() ?? null),
+      renders: sink.renders, resizes: sink.resizes,
+      params: sink.params,
+    })
+    sink.params = null
+  }
+  const run = async (n, ms = 1000 / 60) => { for (let i = 0; i < n; i++) await step(ms) }
+  const pointer = (type, x, y, target = doc) => target.dispatchEvent(new win.PointerEvent(type, { clientX: x, clientY: y, bubbles: true, pointerId: 1, buttons: 0 }))
+  // 시선은 window의 mousemove를, 터치·끌기는 pointer 이벤트를 듣는다
+  const mouse = (x, y) => { win.dispatchEvent(new win.MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true })); pointer('pointermove', x, y) }
+
+  await run(150)                                   // 인트로 대기 → 가운데 등장
+  const veil = [...doc.body.children].find((el) => (el.getAttribute('style') || '').includes('z-index'))
+  veil?.dispatchEvent(new win.PointerEvent('pointerdown', { bubbles: true }))
+  await run(150)                                   // 제자리로 이동
+  for (const [x, y] of [[200, 200], [1500, 300], [900, 800]]) { mouse(x, y); await run(60) }   // 시선 (눈이 먼저, 고개가 뒤따름)
+  win.__dsc?.say('안녕하세요, 오늘 작업을 같이 해 봐요', 3000)
+  await run(180)                                   // 입 모양·말풍선
+  const stop = doc.createElement('button'); stop.setAttribute('aria-label', 'Stop generating'); doc.body.append(stop)
+  await run(150)                                   // 작업 시작 반응
+  const approval = doc.createElement('div'); approval.setAttribute('aria-label', 'Approval details'); doc.body.append(approval)
+  await run(120)                                   // 승인 대기
+  approval.remove(); await run(60)
+  stop.remove(); await run(150)                    // 완료 반응
+  character.setPrefs({ outfit: { glasses: true, chestClothes: true, earHide: true, bodyType: 'type2' } })
+  await run(150)                                   // 소품·옷·체형
+  size.w = 1200; size.h = 700; win.dispatchEvent(new win.Event('resize'))
+  await run(120)                                   // 창 크기 변경
+  await run(780, 100)                              // 입력 없이 78초 → 절전으로 나감
+  mouse(600, 300); pointer('pointerdown', 600, 300)
+  await run(240)                                   // 깨어나 돌아옴
+  win.close()
+  return frames
+}
+
+// 프레임 기록을 비교용 형태로: 프레임마다 해시, 일부 프레임은 전체 기록
+export function summarize(frames) {
+  const hash = (v) => createHash('sha1').update(JSON.stringify(v)).digest('hex').slice(0, 16)
+  return { frames: frames.length, hashes: frames.map(hash), samples: frames.filter((f) => f.f % 50 === 0) }
+}
+
+async function main() {
+  const root = resolve(here, '../../..')
+  if (process.argv.includes('--update')) {
+    const s = summarize(await runTrace(await bundleCharacter(root)))
+    await writeFile(GOLDEN, JSON.stringify(s) + '\n')
+    console.log(`golden.json: ${s.frames} frames`)
+  } else if (process.argv.includes('--diff')) {
+    const other = resolve(process.argv[process.argv.indexOf('--diff') + 1])
+    const [a, b] = [await runTrace(await bundleCharacter(other)), await runTrace(await bundleCharacter(root))]
+    const i = a.findIndex((f, k) => JSON.stringify(f) !== JSON.stringify(b[k]))
+    if (i < 0 && a.length === b.length) { console.log(`같음: ${a.length} frames`); return }
+    console.log(`처음 다른 프레임 ${i} (frames ${a.length} vs ${b.length})`)
+    for (const key of Object.keys(a[i] ?? {})) if (JSON.stringify(a[i][key]) !== JSON.stringify(b[i]?.[key])) console.log(key, '\n  기준:', JSON.stringify(a[i][key]), '\n  지금:', JSON.stringify(b[i]?.[key]))
+    process.exitCode = 1
+  }
+}
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main()
