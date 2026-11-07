@@ -86,7 +86,7 @@ test('이동 키가 빈 문자열이면 드래그 보조 키가 꺼진다', () =
 })
 
 test('캔버스 숨김: 숨기면 그리기만 멈추고 칩을 남기며, 복구하면 제자리로 돌아온다', () => {
-  const { setHidden, syncHideChip, hideChipVisible, hidden, chip } = runChipContext()
+  const { setHidden, syncHideChip, hideChipVisible, hidden, chip, wakeCalls } = runChipContext()
   assert.equal(hidden(), false)
 
   setHidden(true)
@@ -95,6 +95,7 @@ test('캔버스 숨김: 숨기면 그리기만 멈추고 칩을 남기며, 복�
   assert.ok(chip(), '숨김 상태에서는 복구 칩이 있어야 한다')
   assert.equal(setHidden(false), false)
   assert.equal(chip(), null, '복구하면 칩을 지운다')
+  assert.equal(wakeCalls(), 1, '복구하면 펫 창 때문에 쉬던 배치 루프를 깨운다')
 })
 
 test('복구 칩은 모바일 숨김 설정이면 남지 않고, 설정을 되돌리면 다시 보인다', () => {
@@ -396,6 +397,7 @@ function runChipContext() {
     'let sleepTimer = 0, cancelSleepSlide = null, fleeX = 0, strokeFrom = null, chestFrom = null, lastPlaceKey = "";',
     'const mobileHidden = () => mobileHiddenNow;',
     'const place = () => { placeCalls++ };',
+    'let wakeCalls = 0; const wakeRaf = () => { wakeCalls++ };',
   ].join('\n')
   const script = [
     preamble,
@@ -408,6 +410,7 @@ function runChipContext() {
     hidden: () => hidden,
     chip: () => hideChip,
     placeCalls: () => placeCalls,
+    wakeCalls: () => wakeCalls,
     ticker: app.ticker,
     removed: () => removed,
     canvas: canvas.style, bubble: bubble.style, veil: veil.style,

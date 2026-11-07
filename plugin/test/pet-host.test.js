@@ -328,10 +328,23 @@ test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마�
   assert.match(dsc, /const wakeRaf = \(\) => \{ if \(rafIdle\) \{ rafIdle = false; systemTicker\(true\); requestAnimationFrame\(raf\); \} \};/)
   assert.match(dsc, /autoInteract: false/)
   // 숨은 펫(petPower=false)은 루프를 다음 프레임에 이어 가지 않는다
-  assert.match(dsc, /if \(PET && !petPower\) \{ rafIdle = true; systemTicker\(false\); return; \}[^\n]*\n\s*requestAnimationFrame\(raf\);/)
+  assert.match(dsc, /if \(PET \? !petPower : link\.open\) \{ rafIdle = true; systemTicker\(false\); return; \}\n\s*requestAnimationFrame\(raf\);/)
   // power on·open 은 루프를 다시 깨운다
   assert.match(dsc, /petPower = !!m\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
   assert.match(dsc, /m\.type === "open"\) \{[^\n]*\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
+})
+
+test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프를 쉬고, 붙을 자리는 150ms 틱이 직접 계산한다', async () => {
+  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  // 매 프레임 homePose(레이아웃 읽기)를 하던 저장 경로 제거: 링크 검사가 homePose 보다 먼저
+  assert.ok(!dsc.includes('link.home'), '매 프레임 저장하던 link.home 이 남아 있으면 안 된다')
+  assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*const home = homePose\(\);/)
+  assert.match(dsc, /const h = dockTarget\(homePose\(\)\)/)
+  // link.open 을 끄는 두 곳(leaveLink, 캔버스 다시 표시)에서 루프를 깨운다
+  assert.match(dsc, /const leaveLink = \(\) => \{[^\n]*\n[^\n]*\n\s*link\.open = false; link\.opening = 0; link\.queue = \[\];\n\s*wakeRaf\(\);/)
+  assert.match(dsc, /link\.open = false; link\.follow = null; link\.opening = 0; try \{ linkPost\("hide"\); \} catch \{\} \}\n\s*wakeRaf\(\);\n\s*place\(\);/)
+  // link.open = false 를 대입하는 곳은 이 두 곳뿐이어야 한다 (새 경로가 생기면 wakeRaf 도 필요)
+  assert.equal(dsc.match(/link\.open = false/g).length, 2)
 })
 
 test('펫 프로세스의 커서 확인 타이머는 창이 보이는 동안만 돈다', async () => {
