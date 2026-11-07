@@ -216,38 +216,7 @@ test('렌더 해상도는 실제로 바뀔 때만 버퍼를 다시 만든다', (
   assert.deepEqual(calls, [])
 })
 
-test('캔버스를 숨긴 동안 펫 창 단축키는 아무 것도 하지 않고, 복구하면 다시 열린다', () => {
-  const slice = sliceBetween('const petOpenPose = () =>', 'hooks.togglePet = petToggle;')
-  const context = {
-    hidden: true,
-    PET_URL: '/dsc-pet/',
-    SLEEP: { state: 'active' },
-    shown: { k: 0.8, x: 100, y: 200 },
-    link: { open: false, follow: null, petState: 'none', opening: 0, seq: 0 },
-    homePose: () => ({ k: 0.5, x: 0, y: 0 }),
-    dockTarget: (home) => home,
-    screenOf: (x, y) => ({ x: x + 10, y: y + 20 }),
-    enterLink() {},
-    performance: { now: () => 1234 },
-    calls: [],
-    linkPost(type, payload) { context.calls.push([type, payload]) },
-  }
-  const { petToggle } = runScript(slice, context, '({ petToggle })')
-  petToggle()   // 숨김 상태: no-op (stale shown 포즈로 펫 창을 열지 않는다)
-  assert.deepEqual(context.calls, [])
-  assert.equal(context.link.opening, 0)
-
-  context.hidden = false
-  petToggle()   // 복구 후: 정상적으로 펫 창을 연다
-  assert.equal(context.calls.length, 1)
-  assert.equal(context.calls[0][0], 'open')
-  assert.equal(context.link.opening, 1234)
-
-  context.link.open = true
-  context.calls.length = 0
-  petToggle()   // 펫 창이 떠 있으면 창 안으로 되돌린다
-  assert.equal(context.calls[0][0], 'hide')
-})
+// 캔버스를 숨긴 동안의 펫 창 단축키는 plugin/test/pet-link.test.js에서 연결 모듈을 직접 실행해 확인한다
 
 test('동물귀 파트 lookup: Part159 인덱스를 찾고, 없으면 -1로 안전하게 넘긴다', () => {
   const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')

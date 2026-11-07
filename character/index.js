@@ -11,6 +11,7 @@ import { OUTFIT_ITEMS, BODY_TYPES } from "../shared/settings.js";
 import { HOME_GAP, SHOW_K, MIN_SHOW_K, homeLayout, bubbleLayout, bubbleTail, tailRight, tailLeft } from "./layout.js";
 import { chordDown, chordWithinGrace, chordUp } from "./chord.js";
 import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-signals.js";
+import { createPetLink } from "./pet-link.js";
 
 export function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
   const BASE = base;
@@ -249,13 +250,19 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // link: 창 안 캐릭터 쪽에서 펫 창이 열려 있으면 캐릭터를 숨기고, 반응(말·몸짓·표정)을 플러그인 호스트를 거쳐 펫 창으로 보냄.
       const PET = pet;
       const PET_URL = PET ? null : (() => { try { return new URL("../pet/", new URL(BASE, location.href)).href; } catch { return null; } })();
-      // follow: 끄는 도중 창 밖으로 나가 펫 창이 커서를 따라오는 중 ({ shown, pose, busy }), boot: 화면을 처음 불러온 뒤 첫 조회 전,
-      // petState: 호스트가 알려 준 펫 프로세스 상태 (none | starting | hidden | shown),
-      // seq: 펫 창을 열 때마다 올리는 회차 번호. 펫 창 알림에 같은 번호가 붙어 와서, 이전 회차에서 늦게 온 알림을 가려냄
-      const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 };
-      // 펫 창이 보이는 동안(따라오는 중 포함)만 반응을 모아 보냄
-      const relay = (fn, args) => { if (link.open || link.follow?.shown) link.queue.push([fn, args]); };
-      let linkPost = async () => null;   // 아래 연결 코드에서 채움
+      // 연결 상태·송수신·알림 처리·주기·토글 규칙은 character/pet-link.js. 캐릭터 쪽 동작은 아래 "바깥 펫 창 연결" 구간에서 정의한다
+      // (연결이 이 콜백들을 실제로 부르는 것은 모두 정의된 뒤다)
+      const link = createPetLink({
+        url: PET_URL, fetch: (...args) => fetch(...args), setTimeout, setInterval, requestAnimationFrame,
+        onUse: () => { petUsed = true; },   // 플러그인이 내려갈 때 펫 창을 숨길지 판단
+        onConfig: (key, value) => onSetting?.(key, value),
+        onEnter: () => petLinkEnter(), onLeave: () => petLinkLeave(),
+        snapshot: () => petLinkSnapshot(), dragMessages: () => petLinkDragMessages(), dockState: () => petLinkDock(),
+        dragKey: () => dragKeyRaw(), voice: () => voiceState,
+        idle: () => intro.phase === "done" && !running && !document.hidden,
+        hidden: () => hidden, openPose: () => petOpenScreenPose(),
+      });
+      const relay = link.relay;   // 펫 창이 보이는 동안(따라오는 중 포함)만 반응을 모아 보냄
       const EYE_EXP = ["heart", "squint", "smug", "dizzy"];
       const clearOtherEyes = (name) => { if (EYE_EXP.includes(name)) for (const e of EYE_EXP) if (e !== name) { until[e] = 0; hold[e] = false; } };
       const setExp = (name, on) => { relay("setExp", [name, on]); if (on) clearOtherEyes(name); hold[name] = on; };
@@ -498,7 +505,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (outside && link.supported) {
           const a = screenOf(from.x, from.y), b = screenOf(p.x, p.y);
           link.opening = performance.now();
-          linkPost("open", { from: { k, x: a.x, y: a.y }, to: { k, x: b.x, y: b.y }, seq: ++link.seq });
+          link.post("open", { from: { k, x: a.x, y: a.y }, to: { k, x: b.x, y: b.y }, seq: ++link.seq });
         }
         free.on = true;
         if (snap) { free.anim = { t0: performance.now(), ms: 650, from, to: null, snap: true }; return; }
@@ -751,7 +758,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         // 패널 숨김 때문에 쉬는 중이면(place가 hideForPage를 불렀거나 이벤트로 멈춘 경우) 다음 프레임을 예약하지 않는다.
         if (!PET && pageHiddenNow()) { rafIdle = true; systemTicker(false); return; }
         if (rafIdle) { systemTicker(false); return; }
-        // 펫: 창이 숨음(open 이 오면 다시 시작). 창 안: 펫 창이 대신 보여 주는 중(leaveLink·setHidden(false)에서 다시 시작)
+        // 펫: 창이 숨음(open 이 오면 다시 시작). 창 안: 펫 창이 대신 보여 주는 중(link.leave·setHidden(false)에서 다시 시작)
         if (PET ? !petPower : link.open) { rafIdle = true; systemTicker(false); return; }
         requestAnimationFrame(raf);
       };
@@ -798,7 +805,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const clearHideChip = () => { if (hideChip) { hideChip.remove(); hideChip = null; } };
       // 숨김 상태의 복구 칩을 설정·화면 상태에 맞춘다 (매 프레임 호출해도 싸다).
       const syncHideChip = () => { if (hideChipVisible()) showHideChip(); else clearHideChip(); };
-      // 플러그인·자동화 패널에서는 창 안 캐릭터만 숨긴다. setHidden()과 달리 hush/linkPost를 쓰지 않으므로
+      // 플러그인·자동화 패널에서는 창 안 캐릭터만 숨긴다. setHidden()과 달리 hush/link.post를 쓰지 않으므로
       // 이미 밖으로 나간 독립 펫 창은 닫히거나 돌아오지 않는다.
       const hideForPage = () => {
         pageHiddenApplied = true;
@@ -847,7 +854,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           veil.style.display = "none";
           document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
           setRender(false);
-          if (link.open || link.follow) { link.opening = 0; try { linkPost("hide"); } catch {} }   // 펫 창이 대신 보여 주던 중이면 함께 숨김
+          if (link.open || link.follow) { link.opening = 0; try { link.post("hide"); } catch {} }   // 펫 창이 대신 보여 주던 중이면 함께 숨김
           showHideChip();
         } else {
           clearHideChip();
@@ -863,7 +870,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           }
           setRender(true);
           // 펫 창이 떠 있었거나 정리 이벤트를 놓쳐 link가 붙잡혀 있으면, 창 안 표시를 위해 닫고 그린다
-          if (link.open || link.follow) { link.open = false; link.follow = null; link.opening = 0; try { linkPost("hide"); } catch {} }
+          if (link.open || link.follow) { link.open = false; link.follow = null; link.opening = 0; try { link.post("hide"); } catch {} }
           wakeRaf();
           place();
           // 링크 정리·자리 계산이 늦게 끝나는 경우를 대비해 한 번 더 자리를 계산한다 (배치·그리기는 다음 프레임의 raf가 같은 순서로)
@@ -2217,8 +2224,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           }, TOUCH.grabMs);
         }
         if (PET) PET.press(true);   // 누르고 있는 동안은 커서가 몸 밖으로 벗어나도 클릭을 계속 받음
-        if (link.supported && link.petState === "none") linkPost("warm");   // 끌 수도 있으니 누르는 순간 펫 창을 숨긴 채 미리 띄움
-        else if (!PET && link.petState === "shown" && !link.open && !link.follow) linkPost("hide");   // 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김
+        if (link.supported && link.petState === "none") link.post("warm");   // 끌 수도 있으니 누르는 순간 펫 창을 숨긴 채 미리 띄움
+        else if (!PET && link.petState === "shown" && !link.open && !link.follow) link.post("hide");   // 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김
       }, true);
       // 마우스 좌우 버튼 코드 보완: Pointer Events는 첫 버튼에만 pointerdown을 준다.
       //  · 우→좌: 오른쪽으로 시작했으면 pending이 없으므로, 왼쪽이 합류하는 mousedown에서 예약을 만든다.
@@ -2271,7 +2278,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const relayDragKey = (token, on) => {
         if (PET || !link.open || !token || DRAG_MODIFIER_TOKENS.has(token)) return;
         if (dragKeyToken() !== token) return;
-        try { linkPost("send", { list: [["dragheld", [token, on]]] }); } catch {}
+        try { link.post("send", { list: [["dragheld", [token, on]]] }); } catch {}
       };
       const rememberKey = (e, on) => {
         const token = String((e && e.key) || "").toLowerCase();
@@ -2394,23 +2401,23 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!link.follow) {
           if (!out) return;
           if (link.petState !== "hidden") {   // 아직 준비 중이면 상태만 다시 확인 (그동안은 창 안에서 끄는 그대로)
-            if (now - link.peek > 250) { link.peek = now; if (link.petState === "none") linkPost("warm"); else poll(); }
+            if (now - link.peek > 250) { link.peek = now; if (link.petState === "none") link.post("warm"); else link.poll(); }
             return;
           }
           link.follow = { shown: false }; link.last = "";
-          linkPost("open", { from: pose, to: pose, follow: true, grab: { x: drag.pending?.ox ?? 0, y: drag.pending?.oy ?? 0 }, seq: ++link.seq });   // grab: 커서가 몸을 잡은 자리 (몸 위치 = 커서 − grab)
+          link.post("open", { from: pose, to: pose, follow: true, grab: { x: drag.pending?.ox ?? 0, y: drag.pending?.oy ?? 0 }, seq: ++link.seq });   // grab: 커서가 몸을 잡은 자리 (몸 위치 = 커서 − grab)
         }
         // 열린 뒤 위치는 보내지 않음: 펫 프로세스가 커서를 직접 읽어 따라옴 (HTTP 왕복은 수십~수백 ms 걸려 끌 때 끊김)
       };
       // 손을 놓을 때 펫 창이 따라오던 중이면: 창 밖이면 펫 창이 이어받고, 창 안으로 돌아왔으면 펫 창을 숨기고 창 안에서 이어 감
       const finishFollow = (vx, vy) => {
         const f = link.follow;
-        link.follow = null; link.queue = []; lastPlaceKey = "";   // 숨김으로 끝날 수도 있으니 이번 회차 반응은 버림 (이어받으면 syncPet이 다시 맞춤)
+        link.follow = null; link.queue = []; lastPlaceKey = "";   // 숨김으로 끝날 수도 있으니 이번 회차 반응은 버림 (이어받으면 link.enter가 표정·자세를 다시 맞춤)
         // 놓을 때도 끌어낼 때와 같은 기준 (몸 가운데로 보면 일부만 밖으로 끌고 놓았을 때 창 안으로 처리돼 다시 붙었음)
         // 미끄러진 뒤 자리 기준. 펫 창이 이미 보이면 나올 때 기준, 아직 안 떴으면 release와 같은 넘어갈 때 기준 (둘 사이에서 놓쳐 둘로 보이지 않게)
         const outside = bodyOut({ k: free.k, x: drag.x + vx * GLIDE, y: drag.y + vy * GLIDE }, !f.shown);
-        if (outside && f.shown) { linkPost("send", { list: [["release", [vx, vy]]] }); enterLink(); return true; }
-        if (!outside) linkPost("hide");
+        if (outside && f.shown) { link.post("send", { list: [["release", [vx, vy]]] }); link.enter(); return true; }
+        if (!outside) link.post("hide");
         return false;   // 아직 안 떴으면 평소처럼 놓기 (창 밖이면 펫 창을 다시 열어 미끄러짐)
       };
       const endDrag = (e, cancel) => {
@@ -2676,132 +2683,57 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       window.__dsc = { say, play, setMood, flashExp, sulking: () => performance.now() < sulkUntil, sulkPeeks: () => sulkPeeks.map((p) => ({ at: Math.round(p.at), flip: p.flip })), walk: () => { if (!walk.phase && fleeX === 0) startWalk(); return walk.phase; }, walking: () => walk.phase, sleep: () => SLEEP.state, regionAt: (cx, cy) => { const h = hitAt(cx, cy); return h && touchRegion(h[0], h[1], h[2]); }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s) => { voiceState = s && s.speaking !== false ? s : null; } };   // 확인용
 
       // ---------- 바깥 펫 창 연결 (창 안 캐릭터 쪽) ----------
-      // 플러그인 호스트가 /deepseek-harness-kr/pet/ 아래에서 펫 프로세스를 띄우고 메시지를 이어 줌 (ASAR 패치 방식에는 없어서 꺼짐)
-      linkPost = (path, body = {}) => {
-        petUsed = true;   // 플러그인이 내려갈 때 펫 창을 숨길지 판단
-        return fetch(PET_URL + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-          .then((r) => (r.ok ? r.json() : null)).then((s) => { if (s?.state) link.petState = s.state; return s; }).catch(() => null);
-      };
-      // 펫 창이 보이기 시작할 때 지금 표정·자세를 한 번에 맞춤 (따라오는 동안·숨어 있는 동안 바뀐 것, 예: 작업이 끝나 로딩 표정이 꺼짐)
-      const syncPet = () => {
-        const left = moodUntil ? Math.max(1, moodUntil - performance.now()) : 0;
-        link.queue.push(...Object.keys(hold).map((name) => ["setExp", [name, !!hold[name]]]), ["setMood", [mood, left]]);
-        if (!bubble.classList.contains("show")) link.queue.push(["hush", []]);
-      };
-      const enterLink = () => {   // 펫 창이 보이기 시작함 → 창 안 캐릭터는 숨기고 그리기를 멈춤
-        const already = !!link.follow?.shown;
-        link.open = true; link.opening = 0; link.last = ""; petUsed = true;
-        skipIntro(); free.anim = null; drag.pending = null; drag.on = false;
-        if (!already) syncPet();
-        link.queue.push(["drag", [dragKeyRaw()]]);   // 펫 창 안에서도 같은 이동 키로 옮길 수 있게
-        const dragToken = dragKeyToken();
-        if (dragToken && !DRAG_MODIFIER_TOKENS.has(dragToken)) link.queue.push(["dragheld", [dragToken, pressedKeys.has(dragToken)]]);
-        setRender(false);
-      };
-      const leaveLink = () => {   // 펫 창이 제자리에 붙었거나 닫힘 → 창 안 제자리로
-        if (!link.open) { link.opening = 0; return; }   // 아직 안 떴으면 창 안 캐릭터는 그대로
-        link.open = false; link.opening = 0; link.queue = [];
+      // 연결 상태·송수신·알림 처리·동기화 주기·미리 띄우기·토글은 character/pet-link.js. 여기는 연결이 부르는 캐릭터 동작만 둔다.
+      // 펫 창이 보이기 시작함 → 창 안 캐릭터는 숨기고 그리기를 멈춤
+      const petLinkEnter = () => { skipIntro(); free.anim = null; drag.pending = null; drag.on = false; setRender(false); };
+      // 펫 창이 제자리에 붙었거나 닫힘 → 창 안 제자리로 (창이 좁으면 구석, 매 프레임 다시 계산)
+      const petLinkLeave = () => {
         wakeRaf();
         SLEEP.state = "active"; SLEEP.lastActive = performance.now();
-        free.on = false; free.anim = null; saveFree(); lastPlaceKey = "";   // 제자리로 (창이 좁으면 구석, 매 프레임 다시 계산)
-        // 창 안 캐릭터가 다시 그려지는 프레임에 바로 펫 창을 숨김 (펫 창이 스스로 숨을 때까지 둘이 겹쳐 보이던 것 방지)
-        requestAnimationFrame(() => { if (!link.open && !link.follow) linkPost("hide"); });
+        free.on = false; free.anim = null; saveFree(); lastPlaceKey = "";
         if (!hidden) setRender(true);
       };
-      const poll = () => {
-        if (link.polling) return;
-        link.polling = true;
-        fetch(PET_URL + "poll", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((s) => {
-          link.polling = false;
-          if (!s) return;
-          link.supported = !!s.supported; link.petState = s.state || "none";
-          if (link.boot && Number.isInteger(s.seq)) link.seq = Math.max(link.seq, s.seq);   // 새로 불러온 화면은 회차 번호를 이어받음
-          for (const ev of s.events || []) {
-            if (ev.seq !== undefined && ev.seq !== link.seq) continue;   // 이전 회차(붙고 숨은 뒤 늦게 남은) 알림은 버림
-            // 보임: 이쪽이 연(따라오게 했거나 던져서 연) 경우만 받음. 이미 숨기라고 한 뒤 늦게 온 알림은 무시
-            if (ev.type === "shown") { if (link.follow) { if (!link.follow.shown) { link.follow.shown = true; syncPet(); } } else if (link.opening) enterLink(); }
-            // 붙음·닫힘·오류: 창 안 캐릭터로 돌아옴. 숨음: 펫 창이 맡고 있던 때만 (방금 이쪽이 숨긴 따라오기 창이면 무시)
-            else if (ev.type === "attach" || ev.type === "closed" || ev.type === "error") { link.follow = null; leaveLink(); }
-            else if (ev.type === "hidden" && link.open) leaveLink();
-            else if (ev.type === "hidden" && link.follow?.shown) link.follow.shown = false;   // 따라오던 펫 창이 숨음 → 창 안 캐릭터가 다시 보이게
-            else if (ev.type === "config" && Array.isArray(ev.list)) {   // 펫 창 우클릭 메뉴·설정 패널에서 바꾼 값
-              for (const pair of ev.list) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
-                try { onSetting?.(pair[0], pair[1]); } catch {}
-              }
-            }
-          }
-          // 이 화면을 새로 불러왔는데 펫 창이 떠 있음 (처음 한 번만: 붙은 직후 잠깐 남은 펫 창 때문에 다시 숨으면 안 됨)
-          if (link.boot && s.state === "shown" && !link.open) { if (Number.isInteger(s.seq)) link.seq = s.seq; enterLink(); }
-          link.boot = false;
-        }).catch(() => { link.polling = false; });
+      // 펫 창이 보이기 시작할 때 지금 표정·자세를 한 번에 맞춤 (따라오는 동안·숨어 있는 동안 바뀐 것, 예: 작업이 끝나 로딩 표정이 꺼짐)
+      const petLinkSnapshot = () => {
+        const left = moodUntil ? Math.max(1, moodUntil - performance.now()) : 0;
+        const list = [...Object.keys(hold).map((name) => ["setExp", [name, !!hold[name]]]), ["setMood", [mood, left]]];
+        if (!bubble.classList.contains("show")) list.push(["hush", []]);
+        return list;
       };
-      if (PET_URL) {
-        poll();
-        // 처음 끌 때 펫 프로세스가 준비되길 기다리지 않게(약 2.5초, 그동안 창 밖에서 캐릭터가 잘리다 튐), 화면이 자리 잡고 한가할 때 숨긴 채 미리 띄워 둠.
-        // 시작 인사·작업 중·창이 안 보일 때는 미루고, 한가한 때(requestIdleCallback)에 한 번만. 시작하는 동안은 호스트가 낮은 우선순위로 돌림
-        const warmUp = (tries = 0) => {
-          if (link.open || link.follow || (link.supported && link.petState !== "none")) return;
-          if (!link.supported) { poll(); if (tries < 8) setTimeout(() => warmUp(tries + 1), 3000); return; }   // 호스트가 늦게 뜨면 처음 조회가 실패했을 수 있어 다시 물어봄 (지원 안 하면 포기)
-          if (intro.phase !== "done" || running || document.hidden) { setTimeout(() => warmUp(tries), 3000); return; }
-          (window.requestIdleCallback || ((f) => setTimeout(f, 0)))(() => { if (link.petState === "none") linkPost("warm"); }, { timeout: 5000 });
+      // 펫 창 안에서도 같은 이동 키로 옮길 수 있게 (일반 키는 포커스 없는 펫 창에 눌림 상태도 전달)
+      const petLinkDragMessages = () => {
+        const list = [["drag", [dragKeyRaw()]]];
+        const dragToken = dragKeyToken();
+        if (dragToken && !DRAG_MODIFIER_TOKENS.has(dragToken)) list.push(["dragheld", [dragToken, pressedKeys.has(dragToken)]]);
+        return list;
+      };
+      // 붙을 자리(DSH 창의 제자리, 창이 좁으면 구석, 화면 좌표)와 소품·옷
+      const petLinkDock = () => {
+        const h = dockTarget(homePose()), d = screenOf(h.x - fleeX, h.y);
+        // 붙는 순간 창 안 상반신 그림과 정확히 겹치도록, 허리(잘린 단면)와 가슴 중심을 기준으로 자리를 잡는다.
+        //  · 창 안: 허리는 캔버스 y = WAIST_WIN, 상반신 가로 중심은 캔버스 가운데
+        //  · 펫 창: 같은 허리·중심이 그 지점에 오도록 배율(PET_HEAD_RATIO)과 위치를 역산
+        const k2 = h.k * PET_HEAD_RATIO;
+        const wx = d.x + W * h.k / 2;              // 창 안 상반신 가로 중심 (화면)
+        const wy = d.y + h.k * WAIST_WIN;          // 창 안 허리 (화면)
+        const tl = screenOf(0, 0), br = screenOf(innerWidth, innerHeight);   // DSH 창 영역 (펫 창이 다시 붙을지 판단)
+        const dock = {
+          k: +k2.toFixed(3),
+          x: Math.round(wx - k2 * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
+          y: Math.round(wy - k2 * WAIST_PET),
+          win: { l: Math.round(tl.x), t: Math.round(tl.y), r: Math.round(br.x), b: Math.round(br.y) },
         };
-        setTimeout(warmUp, 5000);
-        setInterval(() => {
-          if (link.opening && performance.now() - link.opening > 15000) link.opening = 0;   // 펫 창이 끝내 안 뜨면 포기
-          if (!link.open && !link.opening && !link.follow) return;
-          if (link.open || link.follow) {   // 붙을 자리(DSH 창의 제자리, 창이 좁으면 구석)와 소품·옷을 펫 창에 알려 줌
-            const h = dockTarget(homePose()), d = screenOf(h.x - fleeX, h.y);
-            // 붙는 순간 창 안 상반신 그림과 정확히 겹치도록, 허리(잘린 단면)와 가슴 중심을 기준으로 자리를 잡는다.
-            //  · 창 안: 허리는 캔버스 y = WAIST_WIN, 상반신 가로 중심은 캔버스 가운데
-            //  · 펫 창: 같은 허리·중심이 그 지점에 오도록 배율(PET_HEAD_RATIO)과 위치를 역산
-            const k2 = h.k * PET_HEAD_RATIO;
-            const wx = d.x + W * h.k / 2;              // 창 안 상반신 가로 중심 (화면)
-            const wy = d.y + h.k * WAIST_WIN;          // 창 안 허리 (화면)
-            const tl = screenOf(0, 0), br = screenOf(innerWidth, innerHeight);   // DSH 창 영역 (펫 창이 다시 붙을지 판단)
-            const dock = {
-              k: +k2.toFixed(3),
-              x: Math.round(wx - k2 * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
-              y: Math.round(wy - k2 * WAIST_PET),
-              win: { l: Math.round(tl.x), t: Math.round(tl.y), r: Math.round(br.x), b: Math.round(br.y) },
-            }, outfit = prefs.outfit || {};
-            const sig = JSON.stringify([dock, outfit]);
-            if (sig !== link.last) { link.last = sig; link.queue.push(["dock", [dock]], ["outfit", [outfit]]); }
-            // 이동 보조 키 설정이 바뀌면 펫 창에도 알려 줌 (펫 창은 설정 파일을 읽지 않는다)
-            const dragNow = dragKeyRaw();
-            if (dragNow !== link.dragMod) { link.dragMod = dragNow; link.queue.push(["drag", [dragNow]]); }
-            if (link.queue.length) { const list = link.queue; link.queue = []; linkPost("send", { list }); }
-          }
-          poll();
-        }, 150);
-        // 입 모양(외부 음성 상태)은 따로 자주 보냄
-        setInterval(() => {
-          if (!link.open || voiceState === link.voiceSent) return;
-          link.voiceSent = voiceState;
-          linkPost("send", { list: [["voice", [voiceState]]] });
-        }, 60);
-      }
-
-      // ---------- 단축키: 바깥 펫 창으로 내보내기 / 돌아오기 ----------
-      // 창 안 캐릭터만. 내보내기는 준비된(또는 만들기 시작할) 펫 창을 지금 자리에서 열고,
-      // 돌아오기는 펫 창을 숨겨 poll('hidden') → leaveLink()가 창 안 제자리로 되돌린다.
-      if (!PET) {
-        const petOpenPose = () => (SLEEP.state === "active" && shown.k > 0 ? { k: shown.k, x: shown.x, y: shown.y } : dockTarget(homePose()));
-        const petToggle = () => {
-          // 캔버스를 숨긴 상태에서는 펫 창으로 내보내지 않는다 (명시적 no-op).
-          // 숨김은 '잠시 그리기만 멈춤'이고 복구 칩·설정·단축키로 되돌리는 경로가 이미 있다.
-          // 여기서 펫 창을 열면 숨긴 캐릭터가 바깥에 나타나 의도와 어긋나고, 보이지 않는 상태의
-          // 옛 포즈(shown)로 창을 배치하게 된다. 복구 후 다시 누르면 정상 동작한다.
-          if (hidden) return;
-          if (link.open || link.follow?.shown) { link.opening = 0; linkPost("hide"); return; }   // 펫 창이 떠 있음 → 창 안으로
-          if (!PET_URL) return;
-          if (link.petState === "shown") { enterLink(); return; }   // 다른 화면에서 열어 둔 펫 창이 이어받게
-          const pose = petOpenPose(), s = screenOf(pose.x, pose.y);
-          link.opening = performance.now();
-          linkPost("open", { from: { k: pose.k, x: s.x, y: s.y }, to: { k: pose.k, x: s.x, y: s.y }, seq: ++link.seq });
-        };
-        hooks.togglePet = petToggle;
-      }
-
+        return { dock, outfit: prefs.outfit || {} };
+      };
+      // 단축키로 펫 창을 열 자리: 지금 그린 자리 (잠들었거나 그린 적이 없으면 제자리), 화면 좌표
+      const petOpenScreenPose = () => {
+        const pose = SLEEP.state === "active" && shown.k > 0 ? { k: shown.k, x: shown.x, y: shown.y } : dockTarget(homePose());
+        const s = screenOf(pose.x, pose.y);
+        return { k: pose.k, x: s.x, y: s.y };
+      };
+      link.start();   // 펫 경로가 없으면(펫 창 자신·ASAR) 아무것도 하지 않는다
+      // 단축키: 바깥 펫 창으로 내보내기 / 돌아오기 (창 안 캐릭터만)
+      if (!PET) hooks.togglePet = link.toggle;
       // ---------- 펫 창 쪽: 창 안 캐릭터가 보낸 반응을 그대로 재생 ----------
       if (PET) {
         const local = { say, play, setMood, flashExp, setExp, hush };

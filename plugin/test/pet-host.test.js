@@ -340,11 +340,14 @@ test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프�
   assert.ok(!dsc.includes('link.home'), '매 프레임 저장하던 link.home 이 남아 있으면 안 된다')
   assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*const home = homePose\(\);/)
   assert.match(dsc, /const h = dockTarget\(homePose\(\)\)/)
-  // link.open 을 끄는 두 곳(leaveLink, 캔버스 다시 표시)에서 루프를 깨운다
-  assert.match(dsc, /const leaveLink = \(\) => \{[^\n]*\n[^\n]*\n\s*link\.open = false; link\.opening = 0; link\.queue = \[\];\n\s*wakeRaf\(\);/)
-  assert.match(dsc, /link\.open = false; link\.follow = null; link\.opening = 0; try \{ linkPost\("hide"\); \} catch \{\} \}\n\s*wakeRaf\(\);\n\s*place\(\);/)
+  // link.open 을 끄는 두 곳(연결의 leave, 캔버스 다시 표시)에서 루프를 깨운다
+  const petLink = await readFile(new URL('../../character/pet-link.js', import.meta.url), 'utf8')
+  assert.match(petLink, /link\.open = false; link\.opening = 0; link\.queue = \[\];\n\s*deps\.onLeave\(\);/)
+  assert.match(dsc, /onLeave: \(\) => petLinkLeave\(\)/)
+  assert.match(dsc, /const petLinkLeave = \(\) => \{\n\s*wakeRaf\(\);/)
+  assert.match(dsc, /link\.open = false; link\.follow = null; link\.opening = 0; try \{ link\.post\("hide"\); \} catch \{\} \}\n\s*wakeRaf\(\);\n\s*place\(\);/)
   // link.open = false 를 대입하는 곳은 이 두 곳뿐이어야 한다 (새 경로가 생기면 wakeRaf 도 필요)
-  assert.equal(dsc.match(/link\.open = false/g).length, 2)
+  assert.equal(dsc.match(/link\.open = false/g).length + petLink.match(/link\.open = false/g).length, 2)
 })
 
 test('펫 프로세스의 커서 확인 타이머는 창이 보이는 동안만 돈다', async () => {
@@ -386,9 +389,11 @@ test('restorePriority: 주 프로세스와 자식의 백그라운드를 풀고, 
 })
 
 test('웜업: 시작 인사·작업 중에는 미루고 한가할 때 숨긴 펫을 미리 띄운다', async () => {
+  // 미루기·재시도·warm 요청은 plugin/test/pet-link.test.js가 실행해 확인하고, 여기서는 '한가함'의 기준만 확인한다
   const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
-  assert.match(dsc, /const warmUp = \(tries = 0\) => \{[\s\S]*intro\.phase !== "done" \|\| running \|\| document\.hidden[\s\S]*linkPost\("warm"\)/)
-  assert.match(dsc, /setTimeout\(warmUp, 5000\)/)
+  assert.match(dsc, /idle: \(\) => intro\.phase === "done" && !running && !document\.hidden/)
+  const petLink = await readFile(new URL('../../character/pet-link.js', import.meta.url), 'utf8')
+  assert.match(petLink, /setTimeout\(warmUp, 5000\)/)
 })
 
 test('ready가 오지 않으면 시간 제한 뒤 펫을 끝내고 오류를 알리며, 다음 시도에서 다시 띄운다', async () => {
@@ -430,7 +435,7 @@ test('펫 창 크기: 기본(머리 맞춤) 대비 배율로 기억하고, 패�
   assert.match(dsc, /else \{ petRememberRatio\(petRatio\(\)\); petSyncMenu\(\); renderPetPanel\(\); \}/)
   assert.match(dsc, /function petPanelBox\(body\)/)   // 패널 영역도 클릭을 받도록 hitbox에 더함
   assert.match(dsc, /petPanel\.contains\(e\.target\)/)
-  assert.match(dsc, /else if \(ev\.type === "config" && Array\.isArray\(ev\.list\)\)/)
+  assert.match(dsc, /onConfig: \(key, value\) => onSetting\?\.\(key, value\)/)   // 펫 창 메뉴 값 → 플러그인 설정 (처리 규칙은 pet-link.test.js)
   assert.match(dsc, /PET\.send\(\{ type: "fit", w: fitW, h: fitH \}\)/)   // 패널/캐릭터에 맞춰 창 크기
 })
 
