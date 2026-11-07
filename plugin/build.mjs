@@ -12,12 +12,6 @@ const replace = (from, to) => {
   character = character.replace(from, to)
 }
 replace('const BASE = new URL("./", document.currentScript.src).href;', 'const BASE = ROOT;')
-// Theme enforcement and layout tags have independent lifecycles in the adapter.
-const themeStart = character.indexOf('    // ---------- 밝은 모드 고정 + 테마용 표시 ----------')
-const stateStart = character.indexOf('    // ---------- 상태 감시 ----------')
-if (themeStart < 0 || stateStart < themeStart) throw new Error('Character theme/layout boundary changed')
-character = character.slice(0, themeStart) + character.slice(stateStart)
-replace('      if (!tagQueued) { tagQueued = true; requestAnimationFrame(tag); }\n', '')
 // Keep original behavior; add only ownership/cancellation boundaries for plugin unload.
 character = character.replaceAll('document.addEventListener(', 'life.listen(document, ')
 character = character.replaceAll('document.createElement(', 'life.own(document.createElement(')

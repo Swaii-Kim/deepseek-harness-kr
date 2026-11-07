@@ -1,8 +1,8 @@
-// LOCAL PATCH: DeepSeek짱 — Harness 화면에 밝은 파스텔 테마와 Live2D 캐릭터(상반신)를 띄우고,
+// DeepSeek짱 — Harness 화면에 밝은 파스텔 테마와 Live2D 캐릭터(상반신)를 띄우고,
 // 지금 열린 대화의 Harness 작업 상태(작업 중 / 도구 / 승인·질문 대기 / 완료 / 실패)에 반응한다.
-// 바깥 신호는 받지 않는다(포트 없음). 제거: dist/index.html의 dsc 두 줄을 지우면 된다.
+// 바깥 신호는 받지 않는다(포트 없음).
 (() => {
-  const BASE = new URL("./", document.currentScript.src).href;   // dsh-app://app/assets/dsc/
+  const BASE = new URL("./", document.currentScript.src).href;   // 이 파일이 있는 assets/ 폴더
   const TEXT = {
     hello: "안녕하세요, 주인님! 오늘은… 저랑 뭐 해 볼까요?",
     start: "알겠어요! …잘 부탁드려요, 주인님",
@@ -32,18 +32,6 @@
 
   const ready = (fn) => (document.body ? fn() : addEventListener("DOMContentLoaded", fn, { once: true }));
   ready(() => {
-    // ---------- 밝은 모드 고정 + 테마용 표시 ----------
-    let tagQueued = false;
-    const tag = () => {
-      tagQueued = false;
-      document.querySelectorAll('[class*="_card"]').forEach((e) => {
-        if (!e.classList.contains("dsc-composer") && e.closest('[class*="_root"]') && e.querySelector('[class*="_input"]')) e.classList.add("dsc-composer");
-      });
-      document.querySelectorAll(UI.send.split(", ").map((s) => s + ":not(.dsc-send)").join(", ")).forEach((e) => e.classList.add("dsc-send"));
-      document.querySelectorAll('button[class*="_newSession"]:not(.dsc-newsession)').forEach((e) => e.classList.add("dsc-newsession"));
-    };
-    tag();
-
     // ---------- 상태 감시 ----------
     let running = false, lastError = -1e9, lastToolSay = 0, waitingKind = null;
     const listeners = { tool: null };
@@ -60,8 +48,7 @@
         }
       }
     };
-    new MutationObserver((records) => {
-      if (!tagQueued) { tagQueued = true; requestAnimationFrame(tag); }
+    if (!window.__dscPetMode) new MutationObserver((records) => {
       for (const r of records) for (const n of r.addedNodes) scanAdded(n);
     }).observe(document.body, { childList: true, subtree: true });
 
@@ -2925,7 +2912,7 @@
         setRender(false);   // 처음엔 숨은 채 대기 (open 이 오면 그리기 시작)
         PET.send({ type: "ready" });
       }
-      setInterval(() => {
+      if (!PET) setInterval(() => {
         const nowRunning = !!document.querySelector(UI.stop);
         const kind = document.querySelector(UI.approval + ', [class*="Zf6DNq_card"]') ? "approval"
           // 질문 카드 클래스명은 셸 빌드마다 해시가 바뀌어 곧 죽은 셀렉터가 된다. 셸이 안정적으로 내보내는
