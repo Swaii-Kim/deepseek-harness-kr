@@ -8,6 +8,8 @@
 // onSetting(key, value): 펫 창 메뉴에서 바꾼 설정을 플러그인 설정에 저장하도록 알린다.
 // 반환: { setPrefs, togglePet, toggleCanvas, canvasHidden } — 플러그인 화면(plugin/client.js)이 쓰는 유일한 통로.
 import { OUTFIT_ITEMS, BODY_TYPES } from "../shared/settings.js";
+import { HOME_GAP, SHOW_K, MIN_SHOW_K, homeLayout, bubbleLayout, bubbleTail, tailRight, tailLeft } from "./layout.js";
+import { chordDown, chordWithinGrace, chordUp } from "./chord.js";
 
 export function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
   const BASE = base;
@@ -329,59 +331,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // 모바일에서만 시각 뷰포트(주소창·키보드)를 쓴다. 데스크톱은 예전처럼 창 크기로 계산한다.
       const layoutViewport = () => coarsePointer() ? viewport() : { w: innerWidth, h: innerHeight, top: 0, left: 0 };
-      // 제자리 배치: 컴포저(입력 카드) 오른쪽·아래 여유가 있으면 오른쪽 아래(데스크톱),
-      // 좁은 화면처럼 옆 여유가 없으면 컴포저 위로 올린다. 위쪽에는 말풍선 자리(BUBBLE_ROOM)를 남겨 두고,
-      // 자동 크기일 때 컴포저 위 자리는 대화 내역을 덜 가리도록 조금 작게(MOBILE_ABOVE_SCALE) 둔다
-      const HOME_GAP = 8, BUBBLE_ROOM = 78, SHOW_K = 0.42, MIN_SHOW_K = 0.18, MOBILE_ABOVE_SCALE = 0.3;
-      const homeLayout = ({ vp, r, maxK, W, visW, H, visH, minK, allowAbove = true }) => {
-        const rightX = (k) => vp.left + vp.w - 4 - (W + visW) / 2 * k;
-        const bottomY = (k) => vp.top + vp.h - H * k;
-        const fit = (k, above) => {
-          const cap = above ? Math.min(maxK, ((r.top - vp.top) - HOME_GAP) / H) : Math.min(maxK, (vp.w - HOME_GAP) / visW);
-          const want = k * (above ? MOBILE_ABOVE_SCALE : 1);   // 컴포저 위(모바일 세로)는 자동 맞춤 크기의 30%로 줄인다
-          const kk = Math.max(MIN_SHOW_K, Math.min(cap, want));
-          return above
-            ? { k: kk, x: rightX(kk), y: r.top - HOME_GAP - H * kk, above: true }
-            : { k: kk, x: rightX(kk), y: bottomY(kk), above: false };
-        };
-        if (!r) {
-          const k = maxK;   // 맞출 자리(카드)가 없으면 자동 크기 상한 그대로
-          return { k, x: rightX(k), y: bottomY(k), above: false };
-        }
-        const sideK = Math.min(maxK, Math.max((vp.w - (r.right - vp.left) - HOME_GAP) / visW, (vp.h - (r.bottom - vp.top) - (allowAbove ? 4 : 10)) / visH));
-        // 데스크톱은 업스트림과 같은 계산을 그대로 쓴다 (작은 창에서도 붙을 자리는 dockTarget이 처리)
-        if (!allowAbove) return { k: sideK, x: rightX(sideK), y: bottomY(sideK), above: false };
-        const aboveRoom = (r.top - vp.top) - HOME_GAP - BUBBLE_ROOM;
-        const aboveK = Math.min(maxK, aboveRoom / H, (vp.w - HOME_GAP) / visW);
-        if (sideK >= Math.min(minK, maxK)) return fit(sideK, false);
-        // 컴포저 위 배치(자동 크기의 30%)는 터치 화면에서만 쓴다
-        if (aboveK >= MIN_SHOW_K) return fit(aboveK, true);
-        const k = Math.min(maxK, MIN_SHOW_K);
-        return { k, x: rightX(k), y: bottomY(k), above: false, noSafe: true };   // 컴포저 위·아래 어디에도 피할 자리가 없음 → 제자리에서는 숨긴다
-      };
-      // 말풍선 배치: 머리 위가 기본. 카드와 겹치면 옆/아래로 피하되, 뷰포트 밖으로 나가지 않게 자른다
-      const bubbleLayout = ({ vp, headX, headTop, bw, bh, r, above, tail = BUBBLE_TAIL }) => {
-        const clampX = (left) => Math.min(Math.max(vp.left + HOME_GAP, left), Math.max(vp.left + HOME_GAP, vp.left + vp.w - bw - HOME_GAP));
-        const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh - HOME_GAP));
-        const hit = (left, top) => r && left < r.right && left + bw > r.left && top < r.bottom && top + bh > r.top;
-        const aboveTop = clampY(headTop - bh - 10);
-        const aboveLeft = clampX(headX + tail - bw);   // 꼬리(오른쪽 tail px)가 머리 가운데에 오게
-        if (!hit(aboveLeft, aboveTop) || above) return { left: aboveLeft, top: aboveTop, side: false };
-        const below = r.bottom + HOME_GAP, sideLeft = clampX(vp.left + vp.w - bw - HOME_GAP);
-        if (below + bh <= vp.top + vp.h - HOME_GAP) return { left: sideLeft, top: clampY(below), side: true };
-        // 아래로도 자리가 없으면(모바일처럼 컴포저가 화면 끝까지 차지) 머리 위로 유지하고 뷰포트 안으로만 자른다
-        return { left: aboveLeft, top: aboveTop, side: false };
-      };
-      // 말풍선 꼬리(오른쪽 55px)를 코(noseX)에 맞추는 기준. 화면 오른쪽 경계는 HOME_GAP만 남기고,
-      // 왼쪽 기준(등장 연출)은 뷰포트 안으로 자른다. 순수 함수라 테스트에서 그대로 실행한다.
-      const BUBBLE_TAIL = 55;
-      // 짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁혀 몸통 밖에 뜨지 않게 한다 (CSS 꼬리 가운데 --dsc-tail-c = 이 값 - 2px)
-      const bubbleTail = (bw) => Math.min(BUBBLE_TAIL, Math.round((bw || 2 * BUBBLE_TAIL) / 2) + 2);
-      const tailRight = ({ noseX, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.max(margin, width - (noseX + tail));
-      const tailLeft = ({ noseX, bw, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.min(
-        Math.max(margin, noseX - (bw - tail)),
-        Math.max(margin, width - bw - margin),
-      );
+      // 제자리·말풍선 위치 계산은 character/layout.js
       let curK = 1, fleeX = 0;     // 현재 배율, 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽)
       // 자유 위치: 끌어서 옮긴 자리 (창 안 = 창 좌표, 펫 창 = 화면 좌표). 제자리 근처에 놓으면 다시 붙음.
       const free = { on: false, x: 0, y: 0, k: 1, anim: null, mode: null, applied: true };
@@ -2209,23 +2159,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // 좌우 버튼 코드: 첫 버튼을 누른 채 150ms 안에 다른 버튼을 누르면 집기로 자연스럽게 넘어가게 하는 시간 마진.
       // 두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 그대로 처리하므로 150ms로 제한하지 않는다.
-      const CHORD_GRACE_MS = 150;
-      const chordDown = (chord, button, buttons, now) => {
-        if (button !== 0 && button !== 2) return chord;
-        const other = button === 0 ? 2 : 1;
-        if (buttons & other) return chord;   // 두 번째 버튼: 첫 버튼 누른 시각은 유지
-        return { at: now, button, valid: false };
-      };
-      const chordWithinGrace = (chord, button, buttons, now, graceMs = CHORD_GRACE_MS) => {
-        if (!chord || chord.valid !== true || !Number.isFinite(chord.at)) return false;
-        if (button === chord.button) return false;   // 같은 버튼 반복은 코드가 아님
-        const firstBit = chord.button === 0 ? 1 : chord.button === 2 ? 2 : 0;
-        const secondBit = button === 0 ? 1 : button === 2 ? 2 : 0;
-        if (!firstBit || !secondBit) return false;
-        if (!(buttons & firstBit) || !(buttons & secondBit)) return false;   // 첫 버튼이 아직 눌려 있어야 함
-        return now >= chord.at && now - chord.at <= graceMs;
-      };
-      const chordUp = (chord, buttons) => ((buttons & 3) === 0 ? { at: null, button: null, valid: false } : chord);
       // 두 번째 버튼이 합류할 때: 그 사이 예약된 쓰다듬기·가슴 끌기를 버리고 집기 예약을 되살린다.
       // (pointerdown은 첫 버튼에만 오므로, 두 번째 버튼은 mousedown/pointermove에서 이 함수를 부른다.)
       const armChordGrab = (e, now, pointerId = e.pointerId) => {

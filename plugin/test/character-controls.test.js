@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
+import * as layout from '../../character/layout.js'
+import * as chordFns from '../../character/chord.js'
 
 // dsc.js의 순수 계산/상태 조각을 그대로 실행해 확인한다. DOM·캔버스 없이 돌 수 있게
 // 필요한 값만 vm 컨텍스트에 넣고, 실제 소스 구간(문자열 경계)을 잘라 쓴다.
@@ -17,9 +19,7 @@ const sliceBetween = (startText, endText) => {
 const runScript = (script, context, expose) => vm.runInContext(`${script}\n${expose}`, vm.createContext(context))
 
 test('말풍선 꼬리는 코에 맞추고, 화면 경계는 최소 여백만 남긴다', () => {
-  // HOME_GAP·tailRight·tailLeft·BUBBLE_TAIL 이 함께 있는 구간 (homeLayout/bubbleLayout 정의는 실행하지 않는다)
-  const slice = sliceBetween('const HOME_GAP = 8', 'let curK = 1, fleeX = 0;')
-  const { tailRight, tailLeft, BUBBLE_TAIL } = runScript(slice, {}, '({ tailRight, tailLeft, BUBBLE_TAIL })')
+  const { tailRight, tailLeft, BUBBLE_TAIL } = layout
   assert.equal(BUBBLE_TAIL, 55)
 
   // 꼬리(오른쪽 55px)의 중심이 정확히 코(noseX)에 온다: width - right - 55 === noseX
@@ -43,8 +43,7 @@ test('말풍선 꼬리는 코에 맞추고, 화면 경계는 최소 여백만 �
 })
 
 test('짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁힌다', () => {
-  const slice = sliceBetween('const HOME_GAP = 8', 'let curK = 1, fleeX = 0;')
-  const { bubbleTail, tailRight, tailLeft } = runScript(slice, {}, '({ bubbleTail, tailRight, tailLeft })')
+  const { bubbleTail, tailRight, tailLeft } = layout
   // 넓은 말풍선(폭 106px 이상)은 기존 55px 그대로
   assert.equal(bubbleTail(300), 55)
   assert.equal(bubbleTail(106), 55)
@@ -377,8 +376,7 @@ test('worker는 전달받은 parts opacities(귀 포함)를 Core 모델에 그�
 })
 
 test('좌우 버튼 코드: 첫 버튼 누른 채 150ms 이내 두 번째 버튼이면 grab, 떨어진 클릭/단일 버튼은 제외', () => {
-  const slice = sliceBetween('const CHORD_GRACE_MS = 150;', 'life.listen(document, "pointerdown"')
-  const { chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS } = runScript(slice, {}, '({ chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS })')
+  const { chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS } = chordFns
   assert.equal(CHORD_GRACE_MS, 150)
   const empty = { at: null, button: null, valid: false }
 

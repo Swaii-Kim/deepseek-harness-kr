@@ -7,7 +7,9 @@ import vm from 'node:vm'
 // 이 테스트는 dsc.js에서 실제 등록된 mousedown/mouseup handler 코드와 chord helper를 그대로 잘라
 // 이벤트 시퀀스를 주입해 pending 생성/차단을 검증한다. (pointermove grab 자체는 소스 배선으로 확인)
 const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
-const chordBlock = source.slice(source.indexOf('const CHORD_GRACE_MS = 150;'), source.indexOf('life.listen(document, "pointerdown"'))
+// 순수 판정 함수는 character/chord.js, 버튼 합류 처리(armChordGrab 등)는 캐릭터 본체 구간을 잘라 쓴다
+const chordFns = await import('../../character/chord.js')
+const chordBlock = source.slice(source.indexOf('// 두 번째 버튼이 합류할 때'), source.indexOf('life.listen(document, "pointerdown"'))
 const mouseStart = source.indexOf('// 마우스 좌우 버튼 코드 보완')
 const mouseEnd = source.indexOf('\n', source.indexOf('life.listen(document, "mouseup"', mouseStart))
 const mouseBlock = source.slice(mouseStart, mouseEnd)
@@ -28,6 +30,7 @@ function harness() {
     overBody: () => false,
     pt: (event) => [event.clientX, event.clientY],
     clearInterval: () => {},
+    ...chordFns,
     // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
     life: { listen: (target, type, fn, options) => target.addEventListener(type, fn, options), own: (value) => value, add() {}, stopped: false },
     document: {

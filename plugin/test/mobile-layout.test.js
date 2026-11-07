@@ -8,8 +8,7 @@ const root = new URL('../../', import.meta.url)
 const source = await readFile(new URL('character/index.js', root), 'utf8')
 
 // 배치 계산은 캔버스·DOM과 분리된 순수 함수라, 소스에서 그 구간만 떼어 내 검증한다.
-const slice = source.slice(source.indexOf('const HOME_GAP = 8'), source.indexOf('      let curK = 1, fleeX = 0;'))
-const { homeLayout, bubbleLayout, SHOW_K } = vm.runInContext(slice + '\n({ homeLayout, bubbleLayout, SHOW_K })', vm.createContext({}))
+const { homeLayout, bubbleLayout, SHOW_K } = await import('../../character/layout.js')
 
 const dims = { W: 300, visW: 300, H: 300, visH: 285 }
 
