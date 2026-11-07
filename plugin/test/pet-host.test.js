@@ -334,6 +334,14 @@ test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마�
   assert.match(dsc, /m\.type === "open"\) \{[^\n]*\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
 })
 
+test('펫 프로세스의 커서 확인 타이머는 창이 보이는 동안만 돈다', async () => {
+  const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
+  assert.ok(!/^setInterval\(checkCursor/m.test(main), '숨은 동안에도 30ms마다 깨우는 전역 타이머가 없어야 한다')
+  assert.match(main, /win\.on\('show', \(\) => watchCursor\(true\)\)/)
+  assert.match(main, /win\.on\('hide', \(\) => watchCursor\(false\)\)/)
+  assert.match(main, /const watchCursor = \(on\) => \{ clearInterval\(cursorTimer\); cursorTimer = on \? setInterval\(checkCursor, 30\) : null \}/)
+})
+
 test('펫 창 따라오기: 커서는 펫 프로세스가 직접 읽어 페이지로 보내고, 창 안 캐릭터는 위치를 HTTP로 보내지 않는다', async () => {
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
   const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')

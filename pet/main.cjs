@@ -51,7 +51,9 @@ function checkCursor() {
   const p = screen.getCursorScreenPoint(), b = win.getBounds()
   setAccept(p.x >= b.x + box.l && p.x <= b.x + box.r && p.y >= b.y + box.t && p.y <= b.y + box.b)
 }
-setInterval(checkCursor, 30)
+// 커서 확인은 창이 보이는 동안만 30ms마다 (숨은 동안엔 클릭을 받을 일이 없음). 창이 만들어진 뒤 show/hide 이벤트로 켜고 끈다
+let cursorTimer = null
+const watchCursor = (on) => { clearInterval(cursorTimer); cursorTimer = on ? setInterval(checkCursor, 30) : null }
 // 따라오기: 창 안 캐릭터가 끌어낼 때 창 위치는 여기서 커서를 읽는 즉시 옮김 (페이지로 보내 다음 프레임에 계산해 되돌려 받으면
 // 프레임마다 위치가 밀리거나 건너뛰어 끊겨 보임). 페이지에는 몸 흔들림 계산용으로 커서만 알려 줌. grab = 커서가 몸을 잡은 자리, off = 창 안 몸 왼쪽 위 좌표
 let tracker = null
@@ -107,6 +109,8 @@ app.whenReady().then(() => {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
   }
   win.setIgnoreMouseEvents(true, { forward: true })   // 처음엔 클릭 통과 (accepting = false)
+  win.on('show', () => watchCursor(true))   // showInactive 도 show 를 보냄 (Windows 실측)
+  win.on('hide', () => watchCursor(false))
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
   win.loadURL(`dscpet://assets${OWN}/index.html`)
