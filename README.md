@@ -1,5 +1,7 @@
 # DeepSeek쟝 Plugin for DSH with KR
 
+> 기존 `deepseek-harness-kr`에서 저장소명과 프로젝트명을 변경했습니다. 기존 설치와 설정은 그대로 유지됩니다.
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)를 한국어로 쓰고, 화면 안에 살아 움직이는 Live2D 버튜버 **DeepSeek짱**을 더하는 DSH 플러그인입니다.
 
 ![DeepSeek짱 소개 영상](docs/preview.gif)
