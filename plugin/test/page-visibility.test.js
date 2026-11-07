@@ -1,0 +1,459 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import vm from 'node:vm'
+
+// dsc.js의 패널 숨김 구간을 그대로 잘라 실행한다. 실제 모델/PIXI 없이도
+// DOM 표시·렌더 정지·복구 칩·외부 펫 명령 여부를 확인할 수 있게 필요한 값만 둔다.
+const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+
+const sliceBetween = (startText, endText) => {
+  const start = source.indexOf(startText)
+  const end = source.indexOf(endText, start)
+  assert.ok(start >= 0, `dsc.js에서 시작 지점을 찾지 못했습니다: ${startText}`)
+  assert.ok(end > start, `dsc.js에서 끝 지점을 찾지 못했습니다: ${endText}`)
+  return source.slice(start, end)
+}
+const pageHiddenLine = source.match(/const pageHiddenNow = [^\n]+/)?.[0]
+assert.ok(pageHiddenLine, 'pageHiddenNow 정의가 필요합니다')
+
+function contextBase(pageHidden = false) {
+  const context = {
+    PET: false,
+    petPower: false,
+    mobileHiddenNow: false,
+    window: { __dscPageHidden: pageHidden },
+    SLEEP: { state: 'active', lastActive: 0 },
+    drag: { pending: null, on: false },
+    strokeFrom: null,
+    chestFrom: null,
+    link: { open: false, follow: null, opening: 0 },
+    sleepTimer: 0,
+    cancelSleepSlide: null,
+    fleeX: 0,
+    hushCalls: 0,
+    linkPosts: [],
+    chipAppended: 0,
+    chipRemoved: 0,
+    rafCalls: 0,
+    app: {
+      ticker: {
+        started: true,
+        start() { this.started = true },
+        stop() { this.started = false },
+      },
+      // PR24: InteractionManager의 Ticker.system 구독을 끄고 켜는 대상
+      renderer: { plugins: { interaction: { useSystemTicker: true } } },
+    },
+    canvas: { style: {} },
+    bubble: { style: {} },
+    veil: { style: {} },
+    document: {
+      createElement() {
+        return {
+          id: '', textContent: '', type: '', style: {},
+          addEventListener() {},
+          remove() { context.chipRemoved++ },
+        }
+      },
+      body: { append() { context.chipAppended++ } },
+      documentElement: { classList: { remove() {} } },
+    },
+    performance: { now: () => 0 },
+    typingActive: () => false,
+    homePose() { throw new Error('외부 펫이 표시 중이면 homePose를 호출하지 않아야 한다') },
+    // wakeRaf가 다시 예약하는지만 센다 (실제 프레임은 돌리지 않는다)
+    requestAnimationFrame() { context.rafCalls++ },
+    setTimeout() { return 0 },
+    clearTimeout() {},
+  }
+  context.hush = () => { context.hushCalls++ }
+  context.linkPost = (...args) => context.linkPosts.push(args)
+  context.addEventListener = (type, fn) => {
+    context.listeners ??= new Map()
+    context.listeners.set(type, fn)
+  }
+  return context
+}
+
+// PR24의 systemTicker/rafIdle/wakeRaf/raf 정의를 실제 소스에서 잘라 쓴다.
+const rafHelpers = [
+  sliceBetween('const systemTicker =', 'const model = await'),
+  // 초기 requestAnimationFrame(raf) 호출은 포함하지 않고 테스트가 프레임을 직접 돌린다.
+  sliceBetween('let rafIdle = false;', '\n      requestAnimationFrame(raf);'),
+].join('\n')
+
+function runPageContext() {
+  const context = contextBase(false)
+  const preamble = [
+    'let hidden = false, pageHiddenApplied = false, lastPlaceKey = "", placeCalls = 0;',
+    pageHiddenLine,
+    'const mobileHidden = () => mobileHiddenNow;',
+    'const place = () => { placeCalls++; return true; };',
+    rafHelpers,
+  ].join('\n')
+  const script = [
+    preamble,
+    sliceBetween('const setRender =', 'const place = () =>'),
+    sliceBetween('const hideChipVisible =', 'let placeErrorWarned'),
+    sliceBetween('let hideChip = null;', '      if (!PET) {'),
+  ].join('\n')
+  const expose = `({
+    hideForPage, restoreFromPage, syncPageHidden, setHidden, syncHideChip, hideChipVisible,
+    setPageHidden(value) { window.__dscPageHidden = value },
+    setSleep(value) { SLEEP.state = value },
+    setMobile(value) { mobileHiddenNow = value },
+    setExternal(value) { link.open = value; link.follow = value ? { shown: true } : null },
+    hidden: () => hidden,
+    pageHiddenApplied: () => pageHiddenApplied,
+    raf,
+    rafIdle: () => rafIdle,
+    rafCalls: () => rafCalls,
+    tickerSystem: () => app.renderer.plugins.interaction.useSystemTicker,
+    chip: () => hideChip,
+    placeCalls: () => placeCalls,
+    chipAppended: () => chipAppended,
+    chipRemoved: () => chipRemoved,
+    hushCalls: () => hushCalls,
+    linkPosts: () => linkPosts,
+    listenerTypes: () => [...(listeners?.keys() || [])],
+    canvas: canvas.style,
+    bubble: bubble.style,
+    veil: veil.style,
+    ticker: app.ticker,
+  })`
+  return vm.runInContext(`${script}\n${expose}`, vm.createContext(context))
+}
+
+function runPlaceContext() {
+  const context = contextBase(true)
+  const preamble = [
+    'let hidden = false, pageHiddenApplied = false, lastPlaceKey = "", placeCalls = 0;',
+    pageHiddenLine,
+    'const mobileHidden = () => mobileHiddenNow;',
+    rafHelpers,
+  ].join('\n')
+  const script = [
+    preamble,
+    sliceBetween('const setRender =', 'const place = () =>'),
+    sliceBetween('const hideChipVisible =', 'let placeErrorWarned'),
+    sliceBetween('let hideChip = null;', '      if (!PET) {'),
+    sliceBetween('const place = () =>', 'const hideChipVisible ='),
+  ].join('\n')
+  const expose = `({
+    place, syncPageHidden, raf,
+    setPageHidden(value) { window.__dscPageHidden = value },
+    setExternal(value) { link.open = value },
+    external: () => link.open,
+    linkPosts: () => linkPosts,
+    pageHiddenApplied: () => pageHiddenApplied,
+    rafIdle: () => rafIdle,
+    tickerSystem: () => app.renderer.plugins.interaction.useSystemTicker,
+    canvas: canvas.style,
+    bubble: bubble.style,
+    veil: veil.style,
+    ticker: app.ticker,
+  })`
+  return vm.runInContext(`${script}\n${expose}`, vm.createContext(context))
+}
+
+function runClientApply() {
+  const eventListeners = new Map()
+  const panelListeners = new Set()
+  let activePanelId = null
+  const window = {
+    __dscPageHidden: undefined,
+    CustomEvent: class CustomEvent {
+      constructor(type) { this.type = type }
+    },
+    addEventListener(type, fn) {
+      if (!eventListeners.has(type)) eventListeners.set(type, new Set())
+      eventListeners.get(type).add(fn)
+    },
+    removeEventListener(type, fn) { eventListeners.get(type)?.delete(fn) },
+    dispatchEvent(event) {
+      for (const fn of [...(eventListeners.get(event.type) || [])]) fn(event)
+      return true
+    },
+    setTimeout() { return 0 },
+    clearTimeout() {},
+    setInterval() { return 0 },
+    clearInterval() {},
+    requestAnimationFrame() { return 0 },
+    cancelAnimationFrame() {},
+    MutationObserver: class { observe() {} disconnect() {} },
+  }
+  const form = {
+    getSnapshot: () => ({
+      status: 'ready',
+      writable: true,
+      value: { character: false, theme: false, translation: false, canvasToggle: false },
+    }),
+    subscribe() { return () => {} },
+    async set() { return true },
+  }
+  const layout = {
+    panelInfo: {
+      getSnapshot: () => ({ activePanelId }),
+      subscribe(fn) { panelListeners.add(fn); return () => panelListeners.delete(fn) },
+    },
+  }
+  const cleanups = []
+  const ctx = {
+    effect(fn) { const cleanup = fn(); cleanups.push(cleanup); return cleanup },
+    configForms: { get: () => form },
+    slots: {
+      inject(name, fn) { return fn() },
+      register() { return () => {} },
+    },
+    locale: { subscribe() { return () => {} } },
+    theme: { getTheme: () => ({ active: { colorScheme: 'dark' } }) },
+    inject(services, fn) {
+      if (!services.includes('layout')) return
+      const scopeCleanups = []
+      fn({
+        layout,
+        effect(callback) {
+          const cleanup = callback()
+          scopeCleanups.push(cleanup)
+          return cleanup
+        },
+      })
+      cleanups.push(() => { for (const cleanup of scopeCleanups.reverse()) cleanup() })
+    },
+    dispose() { for (const cleanup of cleanups.reverse()) cleanup() },
+  }
+  return {
+    window,
+    ctx,
+    select(panelId) {
+      activePanelId = panelId
+      for (const fn of [...panelListeners]) fn()
+    },
+    panelListenerCount: () => panelListeners.size,
+  }
+}
+
+test('플러그인 클라이언트는 URL이 아니라 패널 id로만 창 안 숨김을 켠다', async () => {
+  const client = await readFile(new URL('../../plugin/client.js', import.meta.url), 'utf8')
+  const context = { require: () => ({}), exports: {}, module: { exports: {} }, window: {}, console }
+  vm.runInNewContext(client, context)
+  const { panelHidesInWindowCharacter } = context.exports.internals
+  assert.equal(panelHidesInWindowCharacter('plugins'), true)
+  assert.equal(panelHidesInWindowCharacter('schedules'), true)
+  for (const id of [null, undefined, 'conversation', 'settings', 'plugins-settings']) {
+    assert.equal(panelHidesInWindowCharacter(id), false, `${String(id)} 패널은 창 안 캐릭터를 숨기지 않는다`)
+  }
+})
+
+test('layout의 activePanelId 구독으로 plugins/schedules에서만 숨기고 정리한다', async () => {
+  const client = await readFile(new URL('../../plugin/client.js', import.meta.url), 'utf8')
+  const h = runClientApply()
+  const context = { require: () => ({}), exports: {}, module: { exports: {} }, window: h.window, console, PLUGIN_ID: 'deepseek-harness-kr', KOREAN_DICTIONARIES: {} }
+  vm.runInNewContext(client, context)
+  const events = []
+  h.window.addEventListener('dsc:page-hidden', () => events.push(h.window.__dscPageHidden))
+
+  context.exports.apply(h.ctx)
+  assert.equal(h.window.__dscPageHidden, false)
+  assert.equal(h.panelListenerCount(), 1)
+
+  h.select('plugins')
+  assert.equal(h.window.__dscPageHidden, true)
+  h.select(null)
+  assert.equal(h.window.__dscPageHidden, false)
+  h.select('schedules')
+  assert.equal(h.window.__dscPageHidden, true)
+  h.select('conversation')
+  assert.equal(h.window.__dscPageHidden, false)
+  h.select('plugins')
+
+  h.ctx.dispose()
+  assert.equal(h.window.__dscPageHidden, false)
+  assert.equal(h.panelListenerCount(), 0)
+  assert.equal(events.at(-1), false)
+})
+
+test('빌드된 lib/client.js도 layout 패널 상태를 캐릭터 코드에 전달한다', async () => {
+  const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
+  // 생성 번들에도 캐릭터 쪽 수신부와 lifecycle 래퍼가 그대로 들어가야 한다
+  assert.match(bundle, /if \(!PET\) addEventListener\("dsc:page-hidden", syncPageHidden\);/)
+  assert.match(bundle, /const addEventListener = \(\.\.\.args\) => life\.listen\(window, \.\.\.args\)/)
+  assert.match(bundle, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return; \}/)
+  const h = runClientApply()
+  let client
+  h.window.__ModuleLoader__ = {
+    load({ factory }) { client = factory(() => ({})) },
+  }
+  vm.runInNewContext(bundle, { window: h.window, console })
+  const events = []
+  h.window.addEventListener('dsc:page-hidden', () => events.push(h.window.__dscPageHidden))
+  client.apply(h.ctx)
+  h.select('plugins')
+  assert.equal(h.window.__dscPageHidden, true)
+  h.select(null)
+  assert.equal(h.window.__dscPageHidden, false)
+  h.ctx.dispose()
+  assert.equal(events.at(-1), false)
+})
+
+test('플러그인·자동화 패널을 열면 창 안 캐릭터를 숨기고, 나가면 원래대로 돌아온다', () => {
+  const h = runPageContext()
+  assert.equal(JSON.stringify(h.listenerTypes()), JSON.stringify(['dsc:page-hidden']), '캐릭터는 패널 알림을 직접 듣는다')
+
+  h.setPageHidden(true)
+  h.syncPageHidden()
+  assert.equal(h.canvas.display, 'none')
+  assert.equal(h.bubble.display, 'none')
+  assert.equal(h.veil.opacity, 0)
+  assert.equal(h.ticker.started, false)
+  assert.equal(h.pageHiddenApplied(), true)
+  assert.equal(h.hushCalls(), 0, '페이지 숨김은 hush/relay를 보내지 않는다')
+  assert.equal(h.linkPosts().length, 0, '페이지 숨김은 외부 펫에 명령을 보내지 않는다')
+
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.canvas.display, '')
+  assert.equal(h.bubble.display, '')
+  assert.equal(h.veil.opacity, '')
+  assert.equal(h.placeCalls(), 1, '페이지를 나가면 정상 배치로 복구한다')
+  assert.equal(h.hushCalls(), 0)
+  assert.equal(h.linkPosts().length, 0)
+})
+
+test('place() 자체도 패널 숨김을 지켜 창 밖 펫 분기보다 먼저 멈춘다', () => {
+  const h = runPlaceContext()
+  h.place()
+  assert.equal(h.canvas.display, 'none')
+  assert.equal(h.bubble.display, 'none')
+  assert.equal(h.ticker.started, false)
+  assert.equal(h.pageHiddenApplied(), true)
+
+  const pageBranch = source.indexOf('if (pageHiddenNow()) { hideForPage(); return; }')
+  const petBranch = source.indexOf('if (link.open || link.follow?.shown)', pageBranch)
+  assert.ok(pageBranch >= 0 && petBranch > pageBranch, '패널 숨김 검사가 외부 펫 분기보다 앞서야 한다')
+})
+
+test('PR24 배치 루프: 패널 숨김은 rAF/시스템 티커를 쉬게 하고 복귀 시 다시 깨운다', () => {
+  const h = runPageContext()
+  h.setPageHidden(true)
+  h.syncPageHidden()
+  assert.equal(h.ticker.started, false)
+  assert.equal(h.tickerSystem(), false, '숨은 동안 InteractionManager의 시스템 티커도 끈다')
+  assert.equal(h.rafIdle(), false, '이벤트만으로 예약된 프레임을 중복 취소하지 않는다')
+
+  // 다음 배치 프레임: place가 hideForPage를 부르고, raf 하단이 pageHiddenNow를 보고 스스로 쉰다
+  h.raf()
+  assert.equal(h.rafIdle(), true)
+  assert.equal(h.ticker.started, false)
+  assert.equal(h.tickerSystem(), false)
+
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.rafIdle(), false)
+  assert.equal(h.tickerSystem(), true, '복귀하면 시스템 티커를 되돌린다')
+  assert.equal(h.rafCalls(), 1, 'wakeRaf가 다음 프레임을 예약한다')
+
+  // 실제 루프도 rafIdle/패널 상태를 보고 다음 프레임을 예약하지 않아야 한다
+  const idleGuards = [...source.matchAll(/if \(rafIdle\) \{ systemTicker\(false\); return; \}/g)]
+  assert.equal(idleGuards.length, 2)
+  const pageGuard = source.indexOf('if (!PET && pageHiddenNow()) { rafIdle = true; systemTicker(false); return; }')
+  const linkGuard = source.indexOf('if (PET ? !petPower : link.open)', pageGuard)
+  assert.ok(pageGuard >= 0 && linkGuard > pageGuard, '하단의 패널 유휴 검사가 펫/link 검사보다 앞서야 한다')
+})
+
+test('같은 프레임 안에 패널을 열고 닫아도 시스템 티커를 복구하고 루프를 중복 예약하지 않는다', () => {
+  const h = runPageContext()
+  h.setPageHidden(true)
+  h.syncPageHidden()
+  assert.equal(h.rafIdle(), false, '이미 예약된 프레임이 아직 실행되지 않았다')
+  assert.equal(h.tickerSystem(), false)
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.tickerSystem(), true, 'rafIdle이 켜지기 전에도 껐던 시스템 티커를 복구한다')
+  assert.equal(h.rafCalls(), 0, '기존 프레임이 있으므로 추가 예약하지 않는다')
+})
+
+test('이미 밖으로 나간 독립 펫은 패널 진입·이탈에도 닫히거나 돌아오지 않는다', () => {
+  const h = runPageContext()
+  h.setExternal(true)
+  h.syncPageHidden()
+
+  h.setPageHidden(true)
+  h.syncPageHidden()
+  assert.equal(h.pageHiddenApplied(), true)
+  assert.equal(h.hushCalls(), 0)
+  assert.equal(h.linkPosts().length, 0, 'hide/linkPost 같은 외부 펫 명령이 없어야 한다')
+
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.placeCalls(), 1, '창 안 복구 시도는 하되')
+  assert.equal(h.hushCalls(), 0)
+  assert.equal(h.linkPosts().length, 0, '외부 펫을 닫거나 돌려보내지 않는다')
+})
+
+test('실제 place도 외부 펫이 떠 있으면 패널 복귀 후 창 안 그림을 다시 표시하지 않는다', () => {
+  const h = runPlaceContext()
+  h.setExternal(true)
+  h.syncPageHidden()
+  h.raf()
+  assert.equal(h.rafIdle(), true)
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.canvas.display, 'none')
+  assert.equal(h.bubble.display, 'none')
+  assert.equal(h.ticker.started, false)
+  assert.equal(h.external(), true)
+  assert.equal(h.linkPosts().length, 0)
+  h.raf()
+  assert.equal(h.rafIdle(), true, 'PR24의 외부 펫 대기 최적화도 유지한다')
+  assert.equal(h.tickerSystem(), false)
+})
+
+test('사용자 hidden 상태는 패널 진입/이탈과 별개로 보존되고 복구 칩만 잠시 사라진다', () => {
+  const h = runPageContext()
+  h.setHidden(true)
+  assert.equal(h.hidden(), true)
+  assert.ok(h.chip(), '사용자가 숨긴 동안에는 복구 칩이 있다')
+  const appended = h.chipAppended()
+
+  h.setPageHidden(true)
+  h.syncPageHidden()
+  assert.equal(h.hidden(), true, '패널 숨김이 사용자 hidden을 바꾸지 않는다')
+  assert.equal(h.chip(), null, '패널 화면에는 복구 칩을 남기지 않는다')
+  assert.equal(h.ticker.started, false)
+
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.hidden(), true)
+  assert.ok(h.chip(), '패널을 나가면 사용자 숨김 칩이 다시 보인다')
+  assert.equal(h.chipAppended(), appended + 1)
+})
+
+test('모바일 숨김 설정은 패널을 나가도 유지된다', () => {
+  const h = runPageContext()
+  h.setMobile(true)
+  h.setPageHidden(true)
+  h.syncPageHidden()
+
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.hidden(), false, '패널 숨김이 모바일 hidden 값을 바꾸지 않는다')
+  assert.equal(h.placeCalls(), 1, '표시 여부는 기존 place()가 다시 판단한다')
+  assert.equal(h.chip(), null)
+})
+
+test('잠든 상태에서는 패널 진입/이탈이 잠을 깨우거나 다시 그리지 않는다', () => {
+  const h = runPageContext()
+  h.setSleep('asleep')
+  h.setPageHidden(true)
+  h.syncPageHidden()
+  assert.equal(h.canvas.display, 'none')
+  assert.equal(h.ticker.started, false)
+
+  h.setPageHidden(false)
+  h.syncPageHidden()
+  assert.equal(h.placeCalls(), 0, '잠든 캐릭터를 place()로 깨우지 않는다')
+  assert.equal(h.canvas.display, 'none')
+  assert.equal(h.ticker.started, false)
+})

@@ -556,6 +556,9 @@
       };
       let lastPlaceKey = "";
       let hidden = false;   // 캔버스만 숨김 상태 (캐릭터는 내리지 않음)
+      let pageHiddenApplied = false;   // 플러그인·자동화 패널 때문에 창 안 캐릭터를 숨긴 상태 (사용자 hidden 과 별개)
+      // 패널 상태는 URL이 아니라 플러그인 클라이언트가 알려 주는 값(layout.activePanelId)을 따른다.
+      const pageHiddenNow = () => !PET && window.__dscPageHidden === true;
       let petPower = !PET;   // 펫 창: 창이 보이는 동안만 그린다 (숨으면 pet 프로세스가 power off 를 보냄)
       let lastClip = "";
       let lastMask = "", lastMaskComposite = "";
@@ -580,6 +583,13 @@
       };
       const place = () => {
         if (hidden) { canvas.style.display = bubble.style.display = "none"; return; }
+        if (pageHiddenNow()) { hideForPage(); return; }
+        if (pageHiddenApplied) {   // 이벤트를 놓쳤더라도 정상 배치로 돌아오면 페이지 숨김 표시를 푼다
+          pageHiddenApplied = false;
+          veil.style.opacity = ""; veil.style.pointerEvents = "";
+          lastPlaceKey = "";
+          wakeRaf();
+        }
         const now = performance.now();
         if (mobileHidden()) {   // 설정에서 모바일 표시를 껐을 때
           skipIntro();   // 숨긴 상태에서 인트로를 대기시키지 않는다. 다시 켜도 가운데 인트로가 재생되지 않게 한다
@@ -762,12 +772,13 @@
       };
       // 캔버스 숨김 칩: 캐릭터를 다시 부를 수 있는 상태에서만 보여 준다.
       // 모바일 숨김 설정(mobileCharacter=false)이면 칩도 남기지 않고, 설정을 되돌리면 다음 프레임에 다시 보인다.
-      const hideChipVisible = ({ pet = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet && isHidden && !mobileHiddenNow;
+      const hideChipVisible = ({ pet = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet && isHidden && !mobileHiddenNow && !pageHiddenNow();
       let placeErrorWarned = false;
       // 배치 루프를 쉬는 중인지. 숨은 펫 창과, 펫 창이 대신 보여 주는 동안의 창 안 캐릭터는 배치할 것이 없으므로 쉬고 다시 필요해지면 wakeRaf로 깨운다
       let rafIdle = false;
       const wakeRaf = () => { if (rafIdle) { rafIdle = false; systemTicker(true); requestAnimationFrame(raf); } };
       const raf = () => {
+        if (rafIdle) { systemTicker(false); return; }   // 펫/link/패널 때문에 쉬는 중이면 예약된 프레임도 즉시 쉰다
         if (hidden) {
           // 설정이 바뀌어도 복구 칩이 따라가게 한다 (모바일 숨김 설정이면 칩을 남기지 않는다)
           syncHideChip();
@@ -778,6 +789,9 @@
             if (!placeErrorWarned) { placeErrorWarned = true; console.warn("캐릭터 배치 실패:", error); }
           }
         }
+        // 패널 숨김 때문에 쉬는 중이면(place가 hideForPage를 불렀거나 이벤트로 멈춘 경우) 다음 프레임을 예약하지 않는다.
+        if (!PET && pageHiddenNow()) { rafIdle = true; systemTicker(false); return; }
+        if (rafIdle) { systemTicker(false); return; }
         // 펫: 창이 숨음(open 이 오면 다시 시작). 창 안: 펫 창이 대신 보여 주는 중(leaveLink·setHidden(false)에서 다시 시작)
         if (PET ? !petPower : link.open) { rafIdle = true; systemTicker(false); return; }
         requestAnimationFrame(raf);
@@ -825,6 +839,45 @@
       const clearHideChip = () => { if (hideChip) { hideChip.remove(); hideChip = null; } };
       // 숨김 상태의 복구 칩을 설정·화면 상태에 맞춘다 (매 프레임 호출해도 싸다).
       const syncHideChip = () => { if (hideChipVisible()) showHideChip(); else clearHideChip(); };
+      // 플러그인·자동화 패널에서는 창 안 캐릭터만 숨긴다. setHidden()과 달리 hush/linkPost를 쓰지 않으므로
+      // 이미 밖으로 나간 독립 펫 창은 닫히거나 돌아오지 않는다.
+      const hideForPage = () => {
+        pageHiddenApplied = true;
+        canvas.style.display = bubble.style.display = "none";
+        veil.style.opacity = 0; veil.style.pointerEvents = "none";
+        setRender(false);
+        clearHideChip();
+        lastPlaceKey = "";
+        // rafIdle은 여기서 직접 켜지 않는다: 이미 예약된 프레임이 있으면 wakeRaf가 중복 루프를 만들 수 있다.
+        // 다음 프레임의 raf() 하단이 pageHiddenNow()를 보고 스스로 쉰다 (외부 펫 link.open과 같은 방식).
+        systemTicker(false);
+      };
+      const restoreFromPage = () => {
+        if (PET) return;
+        const applied = pageHiddenApplied;
+        pageHiddenApplied = false;
+        if (!applied) { syncHideChip(); return; }
+        veil.style.opacity = ""; veil.style.pointerEvents = "";
+        // 같은 프레임 안에 패널을 닫으면 rafIdle은 아직 false다. wakeRaf의 조건과 별개로 구독을 복구한다.
+        systemTicker(true);
+        if (!hidden && SLEEP.state !== "asleep") {
+          canvas.style.display = bubble.style.display = "";
+          lastPlaceKey = "";
+          wakeRaf();
+          try { place(); } catch (error) { console.warn("캐릭터 배치 실패:", error); }
+        } else {
+          canvas.style.display = bubble.style.display = "none";
+          setRender(false);
+          wakeRaf();   // 칩·절전 감시가 다시 돌도록 배치 루프를 되돌린다 (숨김/잠든 상태는 place가 그대로 유지)
+        }
+        syncHideChip();
+      };
+      const syncPageHidden = () => {
+        if (PET) return;
+        if (pageHiddenNow()) hideForPage(); else restoreFromPage();
+      };
+      if (!PET) addEventListener("dsc:page-hidden", syncPageHidden);
+      if (pageHiddenNow()) hideForPage();
       const setHidden = (next) => {
         if (PET || hidden === next) return hidden;
         hidden = next;

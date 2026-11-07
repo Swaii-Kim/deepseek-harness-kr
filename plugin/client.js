@@ -15,6 +15,10 @@ const OUTFIT_FIELDS = [
 ]
 const BODY_TYPES = [['default', '기본 체형', 'Default'], ['type1', '체형 1', 'Body type 1'], ['type2', '체형 2 (꼬마)', 'Body type 2 (chibi)']]
 const React = require('react')
+// 이 두 화면에서는 창 안 캐릭터만 숨긴다 (대화 화면과 바깥 펫 창은 그대로).
+// 패널 id는 URL이 아니라 layout 서비스의 activePanelId로 판정한다.
+const HIDDEN_IN_WINDOW_PANELS = new Set(['plugins', 'schedules'])
+const panelHidesInWindowCharacter = (activePanelId) => HIDDEN_IN_WINDOW_PANELS.has(activePanelId)
 const sleepMinutes = (value) => {
   const n = Number(value ?? 1)
   return Number.isFinite(n) ? Math.min(60, Math.max(0.5, n)) : 1
@@ -852,6 +856,34 @@ function apply(ctx) {
     }
     window.__dscSetConfig = applyPetConfig
     life.add(() => { if (window.__dscSetConfig === applyPetConfig) delete window.__dscSetConfig })
+    // 플러그인/자동화 패널에서 창 안 캐릭터를 숨긴다. 캐릭터 코드는 이 값과 이벤트만 보고,
+    // 바깥 펫 창(link)에는 hide/leave 같은 명령을 보내지 않는다.
+    const setPageHidden = (next) => {
+      if (window.__dscPageHidden === next) return
+      window.__dscPageHidden = next
+      try { window.dispatchEvent(new window.CustomEvent('dsc:page-hidden')) } catch {}
+    }
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['layout'], (scope) => {
+        const panelInfo = scope.layout?.panelInfo
+        if (!panelInfo || typeof panelInfo.getSnapshot !== 'function' || typeof panelInfo.subscribe !== 'function') return
+        // 재주입 때 이전 인스턴스의 정리 콜백이 새 인스턴스의 상태를 지우지 않게 소유자를 표시한다.
+        const owner = {}
+        window.__dscPageVisibilityOwner = owner
+        const syncPanelVisibility = () => {
+          if (window.__dscPageVisibilityOwner !== owner) return
+          setPageHidden(panelHidesInWindowCharacter(panelInfo.getSnapshot()?.activePanelId))
+        }
+        syncPanelVisibility()
+        const off = panelInfo.subscribe(syncPanelVisibility)
+        scope.effect(() => () => {
+          off?.()
+          if (window.__dscPageVisibilityOwner !== owner) return
+          window.__dscPageVisibilityOwner = null
+          setPageHidden(false)
+        }, 'deepseek-harness-kr: in-window character visibility')
+      })
+    }
     // 플러그인 관리자는 선택적으로 연결: 없어도 캐릭터·테마·번역은 그대로 동작한다.
     if (typeof ctx.inject === 'function') {
       ctx.inject(['remote', 'remote.pluginManager'], (scope) => {
@@ -976,4 +1008,4 @@ function apply(ctx) {
 exports.inject = ['locale', 'theme', 'configForms', 'slots']
 exports.apply = apply
 // 테스트용
-exports.internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut }
+exports.internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter }

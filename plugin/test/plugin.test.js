@@ -146,7 +146,7 @@ test('disabling the character during dragging clears grabbing state', () => {
   } finally { h.dom.window.close() }
 })
 
-function clientHarness(initial = {}, status = 'ready') {
+function clientHarness(initial = {}, status = 'ready', { layout } = {}) {
   const dom = new JSDOM('<!doctype html><html><head></head><body data-ds-dark-theme></body></html>', { url: 'http://127.0.0.1/', runScripts: 'outside-only', pretendToBeVisual: true })
   let client, resolveModel, appDestroyed = 0, appCreated = 0
   const pending = new Promise((resolve) => { resolveModel = resolve })
@@ -203,6 +203,19 @@ function clientHarness(initial = {}, status = 'ready') {
         setLocale(id) { selected = id },
       },
       theme: { getTheme: () => ({ active: { colorScheme: 'dark' } }) },
+      inject(services, fn) {
+        if (!layout || !services.includes('layout')) return
+        const scopeCleanups = []
+        fn({
+          layout,
+          effect(callback) {
+            const cleanup = callback()
+            scopeCleanups.push(cleanup)
+            return cleanup
+          },
+        })
+        cleanups.push(() => { for (const cleanup of scopeCleanups.reverse()) cleanup() })
+      },
       dispose() { for (const cleanup of cleanups.reverse()) cleanup() },
     }
   }
@@ -573,6 +586,67 @@ test('client registers Korean independently, mounts once, and rolls back on disa
     assert.equal(h.dom.window.__dsc, undefined)
   } finally { h.dom.window.close() }
 })
+
+test('plugin and automation panels hide only the in-window character and clean up', () => {
+  let activePanelId = null
+  const listeners = new Set()
+  const layout = {
+    panelInfo: {
+      getSnapshot: () => ({ activePanelId }),
+      subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    },
+  }
+  const select = (id) => {
+    activePanelId = id
+    for (const fn of [...listeners]) fn()
+  }
+  const h = clientHarness({ character: false, theme: false, translation: false }, 'ready', { layout })
+  try {
+    const events = []
+    h.dom.window.addEventListener('dsc:page-hidden', () => events.push(h.dom.window.__dscPageHidden))
+    const ctx = h.ctx()
+    h.client.apply(ctx)
+    assert.equal(h.dom.window.__dscPageHidden, false)
+    select('plugins')
+    assert.equal(h.dom.window.__dscPageHidden, true, 'plugins panel must hide the in-window character')
+    select(null)
+    assert.equal(h.dom.window.__dscPageHidden, false, 'conversation must restore the in-window character')
+    select('schedules')
+    assert.equal(h.dom.window.__dscPageHidden, true, 'automation panel must hide the in-window character')
+    select('plugins')
+    ctx.dispose()
+    assert.equal(h.dom.window.__dscPageHidden, false, 'unloading the plugin must clear the panel override')
+    assert.equal(listeners.size, 0, 'the layout subscription must be released')
+    assert.equal(events.at(-1), false)
+  } finally { h.dom.window.close() }
+})
+
+test('a stale panel-visibility disposer does not clear a reinjected instance state', () => {
+  let activePanelId = 'plugins'
+  const listeners = new Set()
+  const layout = {
+    panelInfo: {
+      getSnapshot: () => ({ activePanelId }),
+      subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    },
+  }
+  const h = clientHarness({ character: false, theme: false, translation: false }, 'ready', { layout })
+  try {
+    const first = h.ctx()
+    h.client.apply(first)
+    assert.equal(h.dom.window.__dscPageHidden, true)
+    const second = h.ctx()
+    h.client.apply(second)
+    assert.equal(h.dom.window.__dscPageHidden, true)
+    first.dispose()
+    assert.equal(h.dom.window.__dscPageHidden, true, 'the old instance must not reset the new instance override')
+    assert.equal(listeners.size, 1, 'only the old subscription is released')
+    second.dispose()
+    assert.equal(h.dom.window.__dscPageHidden, false)
+    assert.equal(listeners.size, 0)
+  } finally { h.dom.window.close() }
+})
+
 
 test('reinjection takes over without duplicate dictionaries or stale disposer removing the new instance', () => {
   const h = clientHarness()

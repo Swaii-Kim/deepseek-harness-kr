@@ -375,6 +375,9 @@ function runChipContext() {
     placeCalls: 0,
     removed: 0,
     hiddenNow: false,
+    window: { __dscPageHidden: false },
+    addEventListener() {},
+    systemTickerCalls: [],
     document: {
       createElement() {
         return {
@@ -409,10 +412,14 @@ function runChipContext() {
   }
   const preamble = [
     'let hidden = false;',
+    'let pageHiddenApplied = false;',
     'let sleepTimer = 0, cancelSleepSlide = null, fleeX = 0, strokeFrom = null, chestFrom = null, lastPlaceKey = "";',
+    'const pageHiddenNow = () => !PET && window.__dscPageHidden === true;',
     'const mobileHidden = () => mobileHiddenNow;',
     'const place = () => { placeCalls++ };',
-    'let wakeCalls = 0; const wakeRaf = () => { wakeCalls++ };',
+    'let rafIdle = false;',
+    'const systemTicker = (on) => { systemTickerCalls.push(on) };',
+    'let wakeCalls = 0; const wakeRaf = () => { rafIdle = false; wakeCalls++ };',
   ].join('\n')
   const script = [
     preamble,
