@@ -1,5 +1,5 @@
 {
-  // 설정 화면·호스트 JS는 아직 느슨하게 검사한다 (없는 이름·잘못된 import·호출 모양은 잡고, 암묵적 any와 null 검사는 끔).
+  // 설정 화면은 아직 느슨하게 검사한다 (없는 이름·잘못된 import·호출 모양은 잡고, 암묵적 any와 null 검사는 끔).
   // 함수를 나눠 타입을 붙이면 tsconfig.json(엄격)으로 옮긴다.
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -7,9 +7,6 @@
     "noImplicitAny": false,
     "strictNullChecks": false
   },
-  "include": [
-    "plugin/client.ts",
-    // Node가 직접 실행하는 JS (// @ts-check). 인자 타입(JSDoc)은 아직 일부만 있다
-    "plugin/host.js", "plugin/pet-host.js", "plugin/app-icon.js", "pet/placement.cjs"
-  ]
+  "include": ["plugin/client.ts"]
+
 }
