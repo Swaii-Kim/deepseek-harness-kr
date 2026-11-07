@@ -2,7 +2,7 @@
 // PIXI·Live2D 모델·시간·난수·rAF·타이머를 가짜로 바꿔 같은 입력이면 늘 같은 결과가 나오게 한다.
 // 프레임마다 모델 파라미터 값(표정 갱신·물리 뒤), 캔버스·말풍선·베일 스타일, 렌더 해상도를 기록한다.
 //   node plugin/test/trace/harness.mjs --update            지금 소스로 기준 기록(golden.json)을 다시 만든다
-//   node plugin/test/trace/harness.mjs --diff <다른 저장소>  두 소스의 기록을 프레임별로 비교해 처음 다른 곳을 보여 준다
+//   node plugin/test/trace/harness.mjs --diff <다른 저장소> [--pet]  두 소스의 기록을 프레임별로 비교해 처음 다른 곳을 보여 준다 (--pet: 펫 창 시나리오)
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -11,6 +11,7 @@ import { JSDOM, VirtualConsole } from 'jsdom'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const GOLDEN = join(here, 'golden.json')
+export const GOLDEN_PET = join(here, 'golden-pet.json')
 const BASE = 'http://127.0.0.1/deepseek-harness-kr/assets/'
 
 // 저장소 root의 character/ 소스를 브라우저용 IIFE로 묶는다 (index.js·index.ts 모두)
@@ -18,7 +19,7 @@ export async function bundleCharacter(root) {
   const esbuild = await import('esbuild')
   const entry = `import { createCharacter } from ${JSON.stringify(join(root, 'character/index').replaceAll('\\', '/'))}
 import { createLifetime } from ${JSON.stringify(join(root, 'character/lifetime').replaceAll('\\', '/'))}
-globalThis.__traceCharacter = createCharacter({ base: ${JSON.stringify(BASE)}, life: createLifetime(), prefs: globalThis.__tracePrefs || {} })`
+globalThis.__traceCharacter = createCharacter({ base: ${JSON.stringify(BASE)}, life: createLifetime(), prefs: globalThis.__tracePrefs || {}, pet: globalThis.__tracePet || null })`
   const out = await esbuild.build({ stdin: { contents: entry, resolveDir: root, loader: 'js' }, bundle: true, format: 'iife', platform: 'browser', target: 'es2022', charset: 'utf8', write: false, logLevel: 'silent' })
   return out.outputFiles[0].text
 }
@@ -173,7 +174,7 @@ function installLayout(win, size) {
 }
 
 // 정해 둔 입력(인트로 클릭·마우스·말하기·작업 상태·소품 설정·창 크기·절전)을 프레임 순서대로 넣고 기록을 돌려준다
-export async function runTrace(code) {
+export async function runTrace(code, { pet = false } = {}) {
   const virtualConsole = new VirtualConsole()   // JSDOM의 "구현 안 됨" 경고(캔버스 등)는 버린다
   if (process.env.TRACE_CONSOLE) virtualConsole.on('warn', (...a) => console.error('[trace warn]', ...a))   // 캐릭터 코드의 오류 경고(배치 실패 등)를 보려면 TRACE_CONSOLE=1
   const dom = new JSDOM('<!doctype html><html><head></head><body><div class="x_root"><div class="x_card dsc-composer"><div class="x_input"></div></div></div></body></html>', { url: 'http://127.0.0.1/', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole })   // 보이는 화면(document.hidden=false). rAF는 아래에서 가짜로 바꾼다
@@ -186,6 +187,19 @@ export async function runTrace(code) {
   win.Math.random = seeded(20261108)
   win.fetch = async (url) => String(url).includes('/model/exp/') ? { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamCheek', Value: 1, Blend: 'Add' }] }) } : { ok: false, json: async () => null }
   Object.defineProperty(doc, 'currentScript', { configurable: true, get: () => ({ src: BASE + 'dsc.js' }) })
+  // 펫 모드: 펫 창 preload가 넣어 주는 통로를 가짜로 두고, 화면(모니터)·창 위치를 정해 둔다
+  const petBus = { handler: null, sent: [] }
+  if (pet) {
+    win.__tracePet = {
+      on: (fn) => { petBus.handler = fn },
+      send: (m) => petBus.sent.push(m),
+      move: (x, y) => petBus.sent.push({ move: [x, y] }),
+      press: (on) => petBus.sent.push({ press: on }),
+      menu: () => petBus.sent.push({ menu: true }),
+    }
+    for (const [key, value] of Object.entries({ screenX: 100, screenY: 50, outerWidth: size.w, outerHeight: size.h + 30 })) Object.defineProperty(win, key, { configurable: true, value })
+    Object.defineProperty(win, 'screen', { configurable: true, value: { availLeft: 0, availTop: 0, availWidth: 2560, availHeight: 1400, width: 2560, height: 1440 } })
+  }
   win.eval(code)
   const character = win.__traceCharacter
   const flush = () => new Promise((r) => setImmediate(r))
@@ -208,6 +222,7 @@ export async function runTrace(code) {
       res: r6(win.__traceRes?.() ?? null),
       renders: sink.renders, resizes: sink.resizes,
       params: sink.params,
+      pet: pet ? petBus.sent.splice(0) : undefined,
     })
     sink.params = null
   }
@@ -245,8 +260,27 @@ export async function runTrace(code) {
     for (let i = 0; i < 6; i++) { doc.getElementById('dsc-stage').dispatchEvent(new win.WheelEvent('wheel', { clientX: body[0], clientY: body[1], deltaY: -120, bubbles: true, cancelable: true })); await run(3) }
     await run(150)                                                                   // 휠로 키우기
   }
+  // 펫 창 쪽: 펫 프로세스(pet/main.cjs)와 창 안 캐릭터가 보내는 메시지를 순서대로 넣는다
+  const emit = (m) => petBus.handler(m)
+  const petScenario = async () => {
+    await run(30)                                                                    // 숨은 채 대기 (ready)
+    emit({ type: 'open', from: { k: 1, x: 200, y: 300 }, to: { x: 420, y: 320 }, follow: false }); await run(90)   // 던진 자리에서 나타나 미끄러짐
+    emit({ type: 'cmd', list: [
+      ['outfit', [{ glasses: true }]], ['dock', [{ k: 0.5, x: 900, y: 500, win: { l: 100, t: 80, r: 1700, b: 1040 } }]],
+      ['say', ['펫 창에서 안녕하세요', 2000]], ['play', ['nod', 1300]], ['setMood', ['work', 0]], ['drag', ['Alt']], ['dragheld', ['f', true]], ['voice', [{ speaking: true, level: 0.6 }]],
+    ] }); await run(120)                                                             // 창 안 캐릭터가 보낸 반응 재생
+    emit({ type: 'size', ratio: 1.25 }); await run(60)                              // 우클릭 메뉴: 크기
+    emit({ type: 'panel', focus: 'size' }); await run(30)                           // 우클릭 메뉴: 설정 패널
+    emit({ type: 'power', on: false }); await run(20)                               // 창이 숨음 → 그리기 멈춤
+    emit({ type: 'power', on: true }); await run(30)
+    emit({ type: 'open', from: { k: 0.8, x: 300, y: 300 }, to: { x: 300, y: 300 }, follow: true, grab: { x: 50, y: 80 } }); await run(10)   // 끌어서 창 밖으로: 커서를 따라옴
+    for (let i = 1; i <= 10; i++) { emit({ type: 'cursor', x: 400 + 30 * i, y: 400 + 5 * i }); await run(2) }
+    emit({ type: 'cmd', list: [['release', [600, 0]]] }); await run(90)              // 창 밖에서 놓음 → 미끄러짐
+    emit({ type: 'home' }); await run(120)                                           // 우클릭 메뉴: 창으로 돌아가기 (붙는 애니메이션)
+  }
   const mouse = (x, y) => { win.dispatchEvent(new win.MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true })); pointer('pointermove', x, y) }
 
+  if (pet) { await petScenario(); win.close(); return frames }
   await run(150)                                   // 인트로 대기 → 가운데 등장
   const veil = [...doc.body.children].find((el) => (el.getAttribute('style') || '').includes('z-index'))
   veil?.dispatchEvent(new win.PointerEvent('pointerdown', { bubbles: true }))
@@ -281,12 +315,16 @@ export function summarize(frames) {
 async function main() {
   const root = resolve(here, '../../..')
   if (process.argv.includes('--update')) {
-    const s = summarize(await runTrace(await bundleCharacter(root)))
-    await writeFile(GOLDEN, JSON.stringify(s) + '\n')
-    console.log(`golden.json: ${s.frames} frames`)
+    const code = await bundleCharacter(root)
+    for (const [file, opts] of [[GOLDEN, {}], [GOLDEN_PET, { pet: true }]]) {
+      const s = summarize(await runTrace(code, opts))
+      await writeFile(file, JSON.stringify(s) + '\n')
+      console.log(`${file.split(/[\\/]/).pop()}: ${s.frames} frames`)
+    }
   } else if (process.argv.includes('--diff')) {
     const other = resolve(process.argv[process.argv.indexOf('--diff') + 1])
-    const [a, b] = [await runTrace(await bundleCharacter(other)), await runTrace(await bundleCharacter(root))]
+    const opts = { pet: process.argv.includes('--pet') }   // --pet: 펫 창 시나리오를 비교
+    const [a, b] = [await runTrace(await bundleCharacter(other), opts), await runTrace(await bundleCharacter(root), opts)]
     const i = a.findIndex((f, k) => JSON.stringify(f) !== JSON.stringify(b[k]))
     if (i < 0 && a.length === b.length) { console.log(`같음: ${a.length} frames`); return }
     console.log(`처음 다른 프레임 ${i} (frames ${a.length} vs ${b.length})`)
