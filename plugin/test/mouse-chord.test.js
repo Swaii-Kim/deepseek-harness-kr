@@ -173,5 +173,7 @@ test('pointermove grab 배선: pending이 있고 두 버튼이 함께 눌리면 
   assert.match(source, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
   assert.match(source, /const p = drag\.pending;\s*\n\s*if \(!p \|\| e\.pointerId !== p\.id\) return;/)
   assert.match(source, /if \(!both\) \{ if \(drag\.on\) endDrag\(e, false\); return; \}/)
-  assert.match(source, /if \(!drag\.on\) \{[\s\S]*?drag\.on = true;/)
+  assert.match(source, /if \(!drag\.on\) beginCarry\(e, p, px, py, now\);/)   // 처음 움직일 때 집어 옮기기 시작
+  assert.match(source, /const beginCarry = \(e, p, px, py, now\) => \{[\s\S]*?drag\.on = true;/)
+  assert.match(source, /carryMove\(e, p\);/)
 })

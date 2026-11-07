@@ -2385,80 +2385,76 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (Math.abs(dy) > verticalPx || Math.hypot(dx, dy) > movePx) return "stroke";
         return heldMs >= grabMs ? "grab" : "wait";
       };
-      life.listen(document, "pointermove", (e) => {
-        if (hidden) return;
-        if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;   // 패널 안 조작은 캐릭터 끌기로 이어지지 않음
-        if (e.pointerType !== "touch") chordButtonsMoved(e, performance.now());   // 두 번째 마우스 버튼 합류 (pointerdown preventDefault와 무관)
-        // 터치: 가로로 끌면 길게 누르기를 기다리지 않고 바로 집기, 세로로 움직이면 쓰다듬기로 남긴다.
-        if (e.pointerType === "touch" && drag.pending && !drag.pending.touchGrab && !drag.pending.touchStroke && e.pointerId === drag.pending.id) {
-          const dx = e.clientX - drag.pending.sx, dy = e.clientY - drag.pending.sy;
-          const gesture = touchGesture({ dx, dy });
-          if (gesture !== "wait") {
-            clearTimeout(touchHold);   // 움직이기 시작했으면 길게 누르기로 넘어가지 않는다
-            if (gesture === "grab") drag.pending.touchGrab = true;
-            else drag.pending.touchStroke = true;   // 세로 쓰다듬기: 타이머가 뒤늦게 집기로 바꾸지 않게
-          }
+      // ---- 포인터 이동: 터치 제스처 판정 → 가슴 끌기 → 쓰다듬기 → 집어 옮기기 순서로 넘긴다 ----
+      // 터치: 가로로 끌면 길게 누르기를 기다리지 않고 바로 집기, 세로로 움직이면 쓰다듬기로 남긴다.
+      const classifyTouchMove = (e) => {
+        if (!(e.pointerType === "touch" && drag.pending && !drag.pending.touchGrab && !drag.pending.touchStroke && e.pointerId === drag.pending.id)) return;
+        const dx = e.clientX - drag.pending.sx, dy = e.clientY - drag.pending.sy;
+        const gesture = touchGesture({ dx, dy });
+        if (gesture === "wait") return;
+        clearTimeout(touchHold);   // 움직이기 시작했으면 길게 누르기로 넘어가지 않는다
+        if (gesture === "grab") drag.pending.touchGrab = true;
+        else drag.pending.touchStroke = true;   // 세로 쓰다듬기: 타이머가 뒤늦게 집기로 바꾸지 않게
+      };
+      // 가슴을 누른 채 움직임: 위로 끌면 가슴 끌기, 다른 쪽이면 평소 끌기로 넘긴다. 이 이동을 여기서 끝냈으면 true
+      const chestMove = (e) => {
+        const dy = e.clientY - chestFrom.y, dx = e.clientX - chestFrom.x, now = performance.now();
+        if (!chestDragging) {
+          if (dy < -12 && Math.abs(dy) > Math.abs(dx) && canPullChest(now)) {
+            chestDragging = true; shy.count = 0; headClicks = []; clicks = [];
+            cover.until = 0;   // 다시 잡았으면 가슴을 가리던 팔을 내린다 (떠는 중 재입력 대응)
+            drag.pending = null;   // 가슴 끌기로 넘어가면 집어 옮기기는 취소 (펫 창은 놓을 때까지 클릭을 계속 받음)
+            walk.lastTouch = now; speak("chest_pull", 3000);
+            armChestLong();   // 3초 넘게 붙잡고 있으면 자극적인 대사로
+            flashExp("squint", 400); flashExp("blush", 400);
+          } else if (Math.hypot(dx, dy) >= 6 && !(dy < 0 && Math.abs(dy) > Math.abs(dx))) chestFrom = null;   // 위가 아닌 쪽으로 움직이면 평소 끌기
+          else { e.preventDefault(); return true; }
         }
-        // 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급한다
-        const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
-        // 왼쪽·오른쪽을 함께 누르거나, 보조 키(기본 Alt)를 누른 채 움직이면 곧바로 집어 옮긴다.
-        // 머리 쓰다듬기·가슴 끌기 판정과 6px 기준을 거치지 않는다
-        const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
-        if (chestFrom && !both && e.pointerId === chestFrom.id) {
-          const dy = e.clientY - chestFrom.y, dx = e.clientX - chestFrom.x, now = performance.now();
-          if (!chestDragging) {
-            if (dy < -12 && Math.abs(dy) > Math.abs(dx) && canPullChest(now)) {
-              chestDragging = true; shy.count = 0; headClicks = []; clicks = [];
-              cover.until = 0;   // 다시 잡았으면 가슴을 가리던 팔을 내린다 (떠는 중 재입력 대응)
-              drag.pending = null;   // 가슴 끌기로 넘어가면 집어 옮기기는 취소 (펫 창은 놓을 때까지 클릭을 계속 받음)
-              walk.lastTouch = now; speak("chest_pull", 3000);
-              armChestLong();   // 3초 넘게 붙잡고 있으면 자극적인 대사로
-              flashExp("squint", 400); flashExp("blush", 400);
-            } else if (Math.hypot(dx, dy) >= 6 && !(dy < 0 && Math.abs(dy) > Math.abs(dx))) chestFrom = null;   // 위가 아닌 쪽으로 움직이면 평소 끌기
-            else { e.preventDefault(); return; }
-          }
-          if (chestDragging) {
-            const up = Math.max(0, -dy / curK);
-            chestTarget = 1 - Math.exp(-up / 85);   // 조금만 끌어올려도 크게 반응
-            // 마우스를 좌우로 움직이면 그 방향으로 가슴이 끌려간다 (끌어올린 만큼 좌우로도 크게)
-            chestShiftTarget = clamp(dx / (curK * 110), -1, 1) * (0.45 + 0.55 * Math.min(1, chestTarget * 1.4));
-            // 흔든 양을 누적 (잡고만 있는 것과 구분 — 이 값이 있어야 3초 뒤 긴 대사가 나온다)
-            const moved = Math.hypot(dx - chestShake.x, dy - chestShake.y);
-            chestShake.x = dx; chestShake.y = dy;
-            if (moved > 1) { chestShake.acc += moved; chestShake.last = now; }
-            e.preventDefault(); e.stopPropagation(); swallowClick = true;
-            return;
-          }
+        if (!chestDragging) return false;
+        const up = Math.max(0, -dy / curK);
+        chestTarget = 1 - Math.exp(-up / 85);   // 조금만 끌어올려도 크게 반응
+        // 마우스를 좌우로 움직이면 그 방향으로 가슴이 끌려간다 (끌어올린 만큼 좌우로도 크게)
+        chestShiftTarget = clamp(dx / (curK * 110), -1, 1) * (0.45 + 0.55 * Math.min(1, chestTarget * 1.4));
+        // 흔든 양을 누적 (잡고만 있는 것과 구분 — 이 값이 있어야 3초 뒤 긴 대사가 나온다)
+        const moved = Math.hypot(dx - chestShake.x, dy - chestShake.y);
+        chestShake.x = dx; chestShake.y = dy;
+        if (moved > 1) { chestShake.acc += moved; chestShake.last = now; }
+        e.preventDefault(); e.stopPropagation(); swallowClick = true;
+        return true;
+      };
+      // 머리를 누른 채 움직임: 빠르게 쓸면 냄비, 천천히 쓸면 세숫대야. 아직 판단을 미뤄야 해도 true (끌기 시작 안 함)
+      const strokeMove = (e) => {
+        const st = strokeFrom, kind = strokeKind(st, e);
+        if (kind) {
+          strokeFrom = null; if (drag.pending) { drag.pending = null; if (PET) PET.press(false); }
+          if (kind === "pot") potHit(st.x, st.y); else putBasin();
+          return true;
         }
-        if (strokeFrom && !both) {
-          const st = strokeFrom, kind = strokeKind(st, e);
-          if (kind) { strokeFrom = null; if (drag.pending) { drag.pending = null; if (PET) PET.press(false); } return kind === "pot" ? potHit(st.x, st.y) : putBasin(); }
-          const dy = e.clientY - st.y, dx = Math.abs(e.clientX - st.x);
-          // 아직 6px 안 움직였거나 아래로 쓸어내리는 중일 수 있으면 끌기 시작을 미룸, 끌 수 없는 때(시작 연출·도망 중)는 떼는 순간 터치
-          if (!drag.pending || Math.hypot(dx, dy) < 6 || (dy > 0 && dy > dx * 0.8)) return;
-          strokeFrom = null;
+        const dy = e.clientY - st.y, dx = Math.abs(e.clientX - st.x);
+        // 아직 6px 안 움직였거나 아래로 쓸어내리는 중일 수 있으면 끌기 시작을 미룸, 끌 수 없는 때(시작 연출·도망 중)는 떼는 순간 터치
+        if (!drag.pending || Math.hypot(dx, dy) < 6 || (dy > 0 && dy > dx * 0.8)) return true;
+        strokeFrom = null;
+        return false;
+      };
+      // 집어 옮기기를 시작한다 (들고 있는 동안 식은땀, 펫 창이면 창 이동을 펫 프로세스에 맡김)
+      const beginCarry = (e, p, px, py, now) => {
+        cancelWalk();   // 산책 가려고 말하던 중이면 취소
+        drag.on = true; drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false;
+        try { document.documentElement.setPointerCapture(e.pointerId); } catch {}
+        document.documentElement.classList.add("dsc-grabbing");
+        until.sweat = Infinity;   // 들고 있는 동안 식은땀
+        walk.lastTouch = now;
+        if (PET) {   // 펫 창을 직접 끌 때도 창은 펫 프로세스가 커서를 읽는 즉시 옮김 (이벤트 → 페이지 계산 → 되돌려 받는 왕복은 몇 프레임 늦고 끊김)
+          petGrab = { x: p.ox, y: p.oy }; petTracking = true;
+          drag.x = px - p.ox; drag.y = py - p.oy; drag.samples = [[now, px, py]];
+          PET.send({ type: "track", on: true, grab: petGrab, off: { x: (innerWidth - W * free.k) / 2, y: innerHeight - H * free.k } });
         }
-        const p = drag.pending;
-        if (!p || e.pointerId !== p.id) return;
-        // 손을 뗀 이벤트(pointerup)를 놓쳤으면 버튼 상태로 알아채고 그 자리에서 놓음 (펫 창이 커서 아래로 따라오며 다시 그려질 때 등)
-        if (e.buttons === 0) return endDrag(e, false);
-        // 집어 옮기기는 왼쪽·오른쪽 버튼을 함께 눌렀을 때만. 한쪽만 누른 채 끌면 예전처럼 터치·머리 쓰다듬기·가슴 끌기로 남는다
-        if (!both) { if (drag.on) endDrag(e, false); return; }
+      };
+      // 들고 움직이는 중: 위치와 던질 속도를 갱신하고, 창 밖으로 나가면 펫 창이 따라오게 한다
+      const carryMove = (e, p) => {
         strokeFrom = null; chestFrom = null;   // 좌우 함께 = 무조건 집어 옮기기 (남아 있던 제스처 예약을 버림)
         const [px, py] = pt(e), now = performance.now();
-        if (!drag.on) {
-          cancelWalk();   // 산책 가려고 말하던 중이면 취소
-          drag.on = true; drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false;
-          try { document.documentElement.setPointerCapture(e.pointerId); } catch {}
-          document.documentElement.classList.add("dsc-grabbing");
-          until.sweat = Infinity;   // 들고 있는 동안 식은땀
-          walk.lastTouch = now;
-          if (PET) {   // 펫 창을 직접 끌 때도 창은 펫 프로세스가 커서를 읽는 즉시 옮김 (이벤트 → 페이지 계산 → 되돌려 받는 왕복은 몇 프레임 늦고 끊김)
-            petGrab = { x: p.ox, y: p.oy }; petTracking = true;
-            drag.x = px - p.ox; drag.y = py - p.oy; drag.samples = [[now, px, py]];
-            PET.send({ type: "track", on: true, grab: petGrab, off: { x: (innerWidth - W * free.k) / 2, y: innerHeight - H * free.k } });
-          }
-        }
+        if (!drag.on) beginCarry(e, p, px, py, now);
         if (PET && petTracking) { e.preventDefault(); return; }   // 이후 위치·속도는 펫 프로세스가 보내는 cursor 메시지로 갱신
         drag.x = px - p.ox; drag.y = py - p.oy;
         drag.samples.push([now, px, py]);
@@ -2467,6 +2463,26 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         carry.vx += ((px - x0) / dt - carry.vx) * 0.5; carry.vy += ((py - y0) / dt - carry.vy) * 0.5;
         if (!PET) followPet(now);
         e.preventDefault();
+      };
+      life.listen(document, "pointermove", (e) => {
+        if (hidden) return;
+        if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;   // 패널 안 조작은 캐릭터 끌기로 이어지지 않음
+        if (e.pointerType !== "touch") chordButtonsMoved(e, performance.now());   // 두 번째 마우스 버튼 합류 (pointerdown preventDefault와 무관)
+        classifyTouchMove(e);
+        // 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급한다
+        const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
+        // 왼쪽·오른쪽을 함께 누르거나, 보조 키(기본 Alt)를 누른 채 움직이면 곧바로 집어 옮긴다.
+        // 머리 쓰다듬기·가슴 끌기 판정과 6px 기준을 거치지 않는다
+        const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
+        if (chestFrom && !both && e.pointerId === chestFrom.id && chestMove(e)) return;
+        if (strokeFrom && !both && strokeMove(e)) return;
+        const p = drag.pending;
+        if (!p || e.pointerId !== p.id) return;
+        // 손을 뗀 이벤트(pointerup)를 놓쳤으면 버튼 상태로 알아채고 그 자리에서 놓음 (펫 창이 커서 아래로 따라오며 다시 그려질 때 등)
+        if (e.buttons === 0) return endDrag(e, false);
+        // 집어 옮기기는 왼쪽·오른쪽 버튼을 함께 눌렀을 때만. 한쪽만 누른 채 끌면 예전처럼 터치·머리 쓰다듬기·가슴 끌기로 남는다
+        if (!both) { if (drag.on) endDrag(e, false); return; }
+        carryMove(e, p);
       }, true);
       // 끄는 도중 몸이 창 밖으로 나가면 같은 자리에 펫 창을 띄워 커서를 따라오게 함 (창 안 그림은 창 경계에서 잘리므로)
       // 펫 창이 준비된 뒤에만 따라붙고, 위치는 한 번에 하나만 보냄 (여러 요청이 겹치면 도착 순서가 뒤섞여 예전 자리로 튐)
@@ -2886,23 +2902,31 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         setRender(false);   // 처음엔 숨은 채 대기 (open 이 오면 그리기 시작)
         PET.send({ type: "ready" });
       }
-      if (!PET) setInterval(() => {
-        const { running: nowRunning, waiting: kind } = readStatus(document);
+      // ---- 400ms마다: DSH 작업 상태 → 반응, 절전 판정 ----
+      // 절전 설정을 읽는다 (0.5~60분)
+      const readSleepPrefs = () => {
         const cfg = prefs.sleep || {};
         SLEEP.enabled = !PET && cfg.enabled !== false;
         const cfgMin = Number(cfg.minutes);
         SLEEP.minutes = Number.isFinite(cfgMin) ? Math.min(60, Math.max(0.5, cfgMin)) : 1;
-        // 잠든 동안에도 대기 카드를 확인하고 기존 반응으로 이어감
-        if (nowRunning || kind || !SLEEP.enabled) sleepActivity();
-        if (SLEEP.state === "asleep") return;
-        if (nowRunning && !waitingKind && !kind) mutterCheck();
-        if (kind !== waitingKind) {
-          waitingKind = kind;
-          setExp("sweat", kind === "approval");
-          setExp("squint", kind === "question");
-          if (kind) { say(TEXT[kind], 0, false, "reaction"); setMood("wait"); play("tilt", 1800); }
-          else { setMood(running ? "work" : "idle"); if (running) hush(); }
-        }
+      };
+      // 승인·질문 대기가 생기거나 풀릴 때
+      const reactToWaiting = (kind) => {
+        if (kind === waitingKind) return;
+        waitingKind = kind;
+        setExp("sweat", kind === "approval");
+        setExp("squint", kind === "question");
+        if (kind) { say(TEXT[kind], 0, false, "reaction"); setMood("wait"); play("tilt", 1800); }
+        else { setMood(running ? "work" : "idle"); if (running) hush(); }
+      };
+      // 작업이 끝났을 때: 실패 문구가 보였으면 시무룩, 아니면 칭찬해 달라고 함
+      const reactToFinish = () => {
+        if (running) return;
+        if (performance.now() - lastError < 8000) { flashExp("tears", 5000); flashExp("dizzy", 2500); say(TEXT.error, 5000, false, "reaction"); setMood("sad", 5000); play("droop", 2000); }
+        else { flashExp("heart", 4000); flashExp("blush", 4000); say(TEXT.done, 4000, false, "reaction"); setMood("idle"); play("laugh", 1700); }
+      };
+      // 작업이 시작되거나 끝날 때
+      const reactToRunning = (nowRunning) => {
         if (nowRunning && !running) {
           running = true; lastError = -1e9;
           setExp("loading", true);
@@ -2910,17 +2934,23 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         } else if (!nowRunning && running) {
           running = false;
           setExp("loading", false);
-          setTimeout(() => {   // 실패 문구가 늦게 그려질 수 있어 잠깐 기다림
-            if (running) return;
-            if (performance.now() - lastError < 8000) { flashExp("tears", 5000); flashExp("dizzy", 2500); say(TEXT.error, 5000, false, "reaction"); setMood("sad", 5000); play("droop", 2000); }
-            else { flashExp("heart", 4000); flashExp("blush", 4000); say(TEXT.done, 4000, false, "reaction"); setMood("idle"); play("laugh", 1700); }
-          }, 600);
+          setTimeout(reactToFinish, 600);   // 실패 문구가 늦게 그려질 수 있어 잠깐 기다림
         }
-        // 절전 판정: 설정된 시간 동안 입력·작업·대기·화면 전환이 없으면 잠시 쉬러 감
-        if (SLEEP.enabled && SLEEP.state === "active" && !running && !waitingKind && !document.hidden &&
-            performance.now() - SLEEP.lastActive > SLEEP.minutes * 60000 &&
-            performance.now() - lastSayAt > 5000 && !bubble.classList.contains("show"))
-          sleepGo();
+      };
+      // 절전 판정: 설정된 시간 동안 입력·작업·대기·화면 전환이 없으면 잠시 쉬러 감
+      const sleepDue = () => SLEEP.enabled && SLEEP.state === "active" && !running && !waitingKind && !document.hidden &&
+        performance.now() - SLEEP.lastActive > SLEEP.minutes * 60000 &&
+        performance.now() - lastSayAt > 5000 && !bubble.classList.contains("show");
+      if (!PET) setInterval(() => {
+        const { running: nowRunning, waiting: kind } = readStatus(document);
+        readSleepPrefs();
+        // 잠든 동안에도 대기 카드를 확인하고 기존 반응으로 이어감
+        if (nowRunning || kind || !SLEEP.enabled) sleepActivity();
+        if (SLEEP.state === "asleep") return;
+        if (nowRunning && !waitingKind && !kind) mutterCheck();
+        reactToWaiting(kind);
+        reactToRunning(nowRunning);
+        if (sleepDue()) sleepGo();
       }, 400);
     })().catch((e) => console.warn("DeepSeek짱 캐릭터 로드 실패:", e));
   });
