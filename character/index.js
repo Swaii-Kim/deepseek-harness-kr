@@ -3,8 +3,21 @@
 // 바깥 신호는 받지 않는다(포트 없음).
 // base: 캐릭터 자산 폴더(assets/) 주소. life: 타이머·프레임·리스너·DOM 노드를 묶는 수명 객체(character/lifetime.js).
 // 플러그인 화면은 기능을 끌 때 life를 정리하고, 펫 창은 창이 닫힐 때까지 그대로 둔다.
-export function createCharacter({ base, life }) {
+// pet: 바깥 펫 창에서 돌 때 preload가 넣어 준 window.dscPet (창 안이면 null).
+// prefs: 플러그인 설정에서 온 값 { outfit, sleep, intro, mobile, drag, pageHidden }. 매 프레임·이벤트마다 읽으므로 setPrefs로 바꾸면 바로 반영된다.
+// onSetting(key, value): 펫 창 메뉴에서 바꾼 설정을 플러그인 설정에 저장하도록 알린다.
+// 반환: { setPrefs, togglePet, toggleCanvas, canvasHidden } — 플러그인 화면(plugin/client.js)이 쓰는 유일한 통로.
+export function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
   const BASE = base;
+  const prefs = { ...initialPrefs };
+  const hooks = {};   // 모델이 준비된 뒤 채워지는 동작 (펫 창·캔버스 토글, 패널 숨김 반영)
+  let petUsed = false;   // 이 화면에서 바깥 펫 창을 쓴 적이 있는지 (내려갈 때 펫 창도 숨긴다)
+  const previousDsc = window.__dsc;
+  life.add(() => {
+    if (window.__dsc !== previousDsc) { if (previousDsc === undefined) delete window.__dsc; else window.__dsc = previousDsc; }
+    document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
+    if (petUsed) { try { fetch(new URL("../pet/hide", new URL(BASE, location.href)).href, { method: "POST", keepalive: true }).catch(() => {}); } catch {} }
+  });
   // 아래 코드가 쓰는 타이머·프레임·창 리스너·DOM 감시는 모두 life에 묶여 한 번에 정리된다
   const setTimeout = life.timeout, setInterval = life.interval, requestAnimationFrame = life.frame;
   const addEventListener = (...args) => life.listen(window, ...args);
@@ -54,7 +67,7 @@ export function createCharacter({ base, life }) {
         }
       }
     };
-    if (!window.__dscPetMode) new MutationObserver((records) => {
+    if (!pet) new MutationObserver((records) => {
       for (const r of records) for (const n of r.addedNodes) scanAdded(n);
     }).observe(document.body, { childList: true, subtree: true });
 
@@ -115,7 +128,7 @@ export function createCharacter({ base, life }) {
 
       // 창 안 캐릭터는 상반신(머리 ~ 허리)만 캔버스에 담고 아래는 잘린다.
       // 바깥 펫 창(PET)은 다리·신발까지 전신이 보이도록 모델 전체를 캔버스에 맞춘다.
-      const WHOLE_BODY = !!window.__dscPetMode;
+      const WHOLE_BODY = !!pet;
       core.update();
       const cm = core.getModel();
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -220,7 +233,7 @@ export function createCharacter({ base, life }) {
       const OUTFIT_LINE = { glasses: "outfit_glasses", monocle: "outfit_glasses", skirt: "outfit_clothes", chestClothes: "outfit_clothes", shoesOff: "outfit_shoes", tailHide: "outfit_tail" };
       const BODY_VALUE = { type1: 0.4, type2: 1 };   // 체형 = Clothes2 (기본 0, 체형 1 0.4, 체형 2 꼬마 1)
       const outfitW = {};
-      for (const [key] of OUTFIT_PARAMS) outfitW[key] = (window.__dscOutfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
+      for (const [key] of OUTFIT_PARAMS) outfitW[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
       // 동물귀(#22): 파라미터가 아니라 모델의 별도 파트(Part159)다. 파트 ID로 런타임 인덱스를 찾고,
       // 파트가 없으면(다른 모델) 조용히 아무 것도 하지 않는다. 실제 적용은 bbox 계산이 끝난 뒤 프레임에서만 한다.
       const EAR_PART_ID = "Part159";
@@ -242,18 +255,18 @@ export function createCharacter({ base, life }) {
         parts.opacities[index] = earOpacityValue(w);
         return true;
       };
-      let earW = (window.__dscOutfit || {}).earHide ? 1 : 0;   // 처음엔 저장된 상태 그대로 (로드 직후 깜빡이지 않게)
+      let earW = (prefs.outfit || {}).earHide ? 1 : 0;   // 처음엔 저장된 상태 그대로 (로드 직후 깜빡이지 않게)
       // 귀 drawable은 earHide로 감쇠되기 전의 가시성을 hit 판정에만 유지한다(이슈 #22: 터치 영역 불변).
       // earHide가 꺼져 있으면 평소처럼 현재 opacity/플래그로 판정하므로, 다른 원인으로 숨겨진 메시는 클릭되지 않는다.
       const earHitVisible = (i) => earW > 0.005
         ? earBaseVisible.get(i) === true
         : earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i]);
       let basinUntil = 0, basinW = 0;   // 세숫대야 (머리를 천천히 쓸어내리면)
-      let bodyW = BODY_VALUE[(window.__dscOutfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
+      let bodyW = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
       // ---------- 바깥 펫 창 ----------
       // PET: 이 코드가 바깥 펫 창 안에서 도는 중 (preload가 window.dscPet을 넣어 줌). 좌표 = 화면 px, 창이 캐릭터를 따라 움직임.
       // link: 창 안 캐릭터 쪽에서 펫 창이 열려 있으면 캐릭터를 숨기고, 반응(말·몸짓·표정)을 플러그인 호스트를 거쳐 펫 창으로 보냄.
-      const PET = window.__dscPetMode ? window.dscPet : null;
+      const PET = pet;
       const PET_URL = PET ? null : (() => { try { return new URL("../pet/", new URL(BASE, location.href)).href; } catch { return null; } })();
       // follow: 끄는 도중 창 밖으로 나가 펫 창이 커서를 따라오는 중 ({ shown, pose, busy }), boot: 화면을 처음 불러온 뒤 첫 조회 전,
       // petState: 호스트가 알려 준 펫 프로세스 상태 (none | starting | hidden | shown),
@@ -296,7 +309,7 @@ export function createCharacter({ base, life }) {
         if (!coarseMql) coarseMql = matchMedia("(hover: none) and (pointer: coarse)");
         return coarseMql.matches;
       };
-      const mobileHidden = () => !!window.__dscMobile && window.__dscMobile.enabled === false && coarsePointer();
+      const mobileHidden = () => !!prefs.mobile && prefs.mobile.enabled === false && coarsePointer();
       // 입력 중(모바일 키보드가 열린 상태)이면 캐릭터·말풍선을 잠시 숨긴다 — 입력창과 대화를 가리지 않고, 키보드가 화면을 밀 때 따라 올라가지도 않게
       // 주의: DSH 컴포저는 마운트 직후 포커스만 잡고 키보드를 열지 않을 수 있다. 포커스만으로 숨기면
       // 모바일에서 캐릭터가 항상 사라지므로, 실제 visualViewport 축소/pan 신호가 있을 때만 숨긴다.
@@ -457,7 +470,7 @@ export function createCharacter({ base, life }) {
         return { k, x: vp.left + vp.w / 2 - W * k / 2, y: vp.top + vp.h - H * k };
       };
       // 설정에서 '시작할 때 등장 연출'을 끄면 가운데 인사 없이 처음부터 제자리에 뜬다
-      const introOff = !!window.__dscIntro && window.__dscIntro.enabled === false;
+      const introOff = !!prefs.intro && prefs.intro.enabled === false;
       if (!introOff) { intro.kc = centerPose().k; setRes(intro.kc); }
       // 펫 창이거나 이미 펫 창이 떠 있으면 시작 연출 없이 바로 제자리
       const skipIntro = () => {
@@ -571,7 +584,7 @@ export function createCharacter({ base, life }) {
       let hidden = false;   // 캔버스만 숨김 상태 (캐릭터는 내리지 않음)
       let pageHiddenApplied = false;   // 플러그인·자동화 패널 때문에 창 안 캐릭터를 숨긴 상태 (사용자 hidden 과 별개)
       // 패널 상태는 URL이 아니라 플러그인 클라이언트가 알려 주는 값(layout.activePanelId)을 따른다.
-      const pageHiddenNow = () => !PET && window.__dscPageHidden === true;
+      const pageHiddenNow = () => !PET && prefs.pageHidden === true;
       let petPower = !PET;   // 펫 창: 창이 보이는 동안만 그린다 (숨으면 pet 프로세스가 power off 를 보냄)
       let lastClip = "";
       let lastMask = "", lastMaskComposite = "";
@@ -893,7 +906,7 @@ export function createCharacter({ base, life }) {
         if (PET) return;
         if (pageHiddenNow()) hideForPage(); else restoreFromPage();
       };
-      if (!PET) addEventListener("dsc:page-hidden", syncPageHidden);
+      if (!PET) hooks.syncPageHidden = syncPageHidden;
       if (pageHiddenNow()) hideForPage();
       const setHidden = (next) => {
         if (PET || hidden === next) return hidden;
@@ -931,8 +944,8 @@ export function createCharacter({ base, life }) {
         return hidden;
       };
       if (!PET) {
-        window.__dscCanvasToggle = () => setHidden(!hidden);
-        window.__dscCanvasHidden = () => hidden;
+        hooks.toggleCanvas = () => setHidden(!hidden);
+        hooks.canvasHidden = () => hidden;
       }
 
       // ---------- 버튜버식 움직임 (얼굴 추적처럼) ----------
@@ -1288,8 +1301,8 @@ export function createCharacter({ base, life }) {
               core.addParameterValueById("Param61", clamp(vel * 0.06, -0.2, 0.2) * Math.sin(Math.PI * q));
             }
           }
-          // ---- 소품·옷·체형 (플러그인 설정 → window.__dscOutfit) ----
-          const of = window.__dscOutfit || {};
+          // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
+          const of = prefs.outfit || {};
           for (const [key, id, v] of OUTFIT_PARAMS) {
             const w = outfitW[key] = (outfitW[key] || 0) + ((of[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
             if (w > 0.005) core.addParameterValueById(id, v * w);
@@ -2326,10 +2339,10 @@ export function createCharacter({ base, life }) {
         if (performance.now() - st.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
         return dy > 40 && dy > dx * 0.8 ? "basin" : null;
       };
-      // 집어 옮기기 키: 설정(window.__dscDrag.key)을 누른 채 왼쪽 버튼으로 끌면 옮길 수 있다.
+      // 집어 옮기기 키: 설정(prefs.drag.key)을 누른 채 왼쪽 버튼으로 끌면 옮길 수 있다.
       // 수식 키(Alt·Ctrl·Shift·Cmd)는 포인터 이벤트의 상태로, 그 밖의 키 하나는 keydown/keyup으로 기억한다.
       // 기존처럼 왼쪽·오른쪽 버튼을 함께 누르는 방식도 그대로 동작한다.
-      const dragKeyRaw = () => String(window.__dscDrag?.key ?? "Alt").trim();   // 빈 문자열은 '이동 키 없음'으로 유지한다
+      const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();   // 빈 문자열은 '이동 키 없음'으로 유지한다
       const dragKeyToken = () => {
         const text = dragKeyRaw().toLowerCase();
         if (!text || text === "none") return "";
@@ -2618,7 +2631,7 @@ export function createCharacter({ base, life }) {
       }
       function petSyncMenu() {   // 우클릭 메뉴 체크 표시용 상태 (펫 프로세스가 메뉴를 만들 때 씀)
         if (!PET) return;
-        const outfit = window.__dscOutfit || {};
+        const outfit = prefs.outfit || {};
         const sig = JSON.stringify([+petRatio().toFixed(3), outfit]);
         if (sig === petMenuSig) return;
         petMenuSig = sig;
@@ -2658,7 +2671,7 @@ export function createCharacter({ base, life }) {
         }
         const out = petPanel.querySelector("[data-size-value]");
         if (out) out.textContent = pct + "%";
-        const outfit = window.__dscOutfit || {};
+        const outfit = prefs.outfit || {};
         for (const input of petPanel.querySelectorAll("[data-outfit]")) input.checked = outfit[input.dataset.outfit] === true;
         const body = outfit.bodyType || "default";
         for (const input of petPanel.querySelectorAll("[data-body]")) input.checked = input.value === body;
@@ -2802,7 +2815,7 @@ export function createCharacter({ base, life }) {
       // ---------- 바깥 펫 창 연결 (창 안 캐릭터 쪽) ----------
       // 플러그인 호스트가 /deepseek-harness-kr/pet/ 아래에서 펫 프로세스를 띄우고 메시지를 이어 줌 (ASAR 패치 방식에는 없어서 꺼짐)
       linkPost = (path, body = {}) => {
-        window.__dscPetUsed = true;   // 플러그인이 내려갈 때 펫 창을 숨길지 판단
+        petUsed = true;   // 플러그인이 내려갈 때 펫 창을 숨길지 판단
         return fetch(PET_URL + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
           .then((r) => (r.ok ? r.json() : null)).then((s) => { if (s?.state) link.petState = s.state; return s; }).catch(() => null);
       };
@@ -2814,7 +2827,7 @@ export function createCharacter({ base, life }) {
       };
       const enterLink = () => {   // 펫 창이 보이기 시작함 → 창 안 캐릭터는 숨기고 그리기를 멈춤
         const already = !!link.follow?.shown;
-        link.open = true; link.opening = 0; link.last = ""; window.__dscPetUsed = true;
+        link.open = true; link.opening = 0; link.last = ""; petUsed = true;
         skipIntro(); free.anim = null; drag.pending = null; drag.on = false;
         if (!already) syncPet();
         link.queue.push(["drag", [dragKeyRaw()]]);   // 펫 창 안에서도 같은 이동 키로 옮길 수 있게
@@ -2850,7 +2863,7 @@ export function createCharacter({ base, life }) {
             else if (ev.type === "hidden" && link.follow?.shown) link.follow.shown = false;   // 따라오던 펫 창이 숨음 → 창 안 캐릭터가 다시 보이게
             else if (ev.type === "config" && Array.isArray(ev.list)) {   // 펫 창 우클릭 메뉴·설정 패널에서 바꾼 값
               for (const pair of ev.list) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
-                try { window.__dscSetConfig?.(pair[0], pair[1]); } catch {}
+                try { onSetting?.(pair[0], pair[1]); } catch {}
               }
             }
           }
@@ -2887,7 +2900,7 @@ export function createCharacter({ base, life }) {
               x: Math.round(wx - k2 * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
               y: Math.round(wy - k2 * WAIST_PET),
               win: { l: Math.round(tl.x), t: Math.round(tl.y), r: Math.round(br.x), b: Math.round(br.y) },
-            }, outfit = window.__dscOutfit || {};
+            }, outfit = prefs.outfit || {};
             const sig = JSON.stringify([dock, outfit]);
             if (sig !== link.last) { link.last = sig; link.queue.push(["dock", [dock]], ["outfit", [outfit]]); }
             // 이동 보조 키 설정이 바뀌면 펫 창에도 알려 줌 (펫 창은 설정 파일을 읽지 않는다)
@@ -2923,7 +2936,7 @@ export function createCharacter({ base, life }) {
           link.opening = performance.now();
           linkPost("open", { from: { k: pose.k, x: s.x, y: s.y }, to: { k: pose.k, x: s.x, y: s.y }, seq: ++link.seq });
         };
-        window.__dscPetToggle = petToggle;
+        hooks.togglePet = petToggle;
       }
 
       // ---------- 펫 창 쪽: 창 안 캐릭터가 보낸 반응을 그대로 재생 ----------
@@ -2984,10 +2997,10 @@ export function createCharacter({ base, life }) {
             else PET.send({ type: "attach" });
           } else if (m.type === "cmd") {
             for (const [fn, a] of m.list || []) {
-              if (fn === "outfit") { window.__dscOutfit = a[0]; renderPetPanel(); petSyncMenu(); }
+              if (fn === "outfit") { prefs.outfit = a[0]; renderPetPanel(); petSyncMenu(); }
               else if (fn === "dock") petDock = a[0];
               else if (fn === "voice") voiceState = a[0];
-              else if (fn === "drag") window.__dscDrag = { key: a[0] };   // 창 안 캐릭터와 같은 이동 키
+              else if (fn === "drag") prefs.drag = { key: a[0] };   // 창 안 캐릭터와 같은 이동 키
               else if (fn === "dragheld") { if (a[1]) pressedKeys.add(a[0]); else pressedKeys.delete(a[0]); }   // 포커스 없는 펫 창에 키 상태 전달
               else if (fn === "release" && drag.on) {   // 창 밖에서 놓음 → 여기서 이어서 미끄러지거나 붙음
                 petGrab = null; petTracking = false; PET.send({ type: "track", on: false });
@@ -3006,7 +3019,7 @@ export function createCharacter({ base, life }) {
           // 질문 카드 클래스명은 셸 빌드마다 해시가 바뀌어 곧 죽은 셀렉터가 된다. 셸이 안정적으로 내보내는
           // data 속성을 먼저 보고, 구버전 셸을 위해 기존 해시도 함께 남긴다.
           : document.querySelector('[data-question-reply], [data-question-key], [class*="Nksazq_card"], [class*="wnLwla_card"]') ? "question" : null;
-        const cfg = window.__dscSleep || {};
+        const cfg = prefs.sleep || {};
         SLEEP.enabled = !PET && cfg.enabled !== false;
         const cfgMin = Number(cfg.minutes);
         SLEEP.minutes = Number.isFinite(cfgMin) ? Math.min(60, Math.max(0.5, cfgMin)) : 1;
@@ -3042,4 +3055,16 @@ export function createCharacter({ base, life }) {
       }, 400);
     })().catch((e) => console.warn("DeepSeek짱 캐릭터 로드 실패:", e));
   });
+  return {
+    // 플러그인 설정이 바뀌면 부른다. 패널 숨김(pageHidden)이 바뀌면 바로 숨김/복구를 반영한다
+    setPrefs(next) {
+      const pageChanged = "pageHidden" in next && next.pageHidden !== prefs.pageHidden;
+      Object.assign(prefs, next);
+      if (pageChanged) hooks.syncPageHidden?.();
+    },
+    // 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않는다)
+    get togglePet() { return hooks.togglePet || null; },
+    get toggleCanvas() { return hooks.toggleCanvas || null; },
+    canvasHidden: () => hooks.canvasHidden?.() === true,
+  };
 }

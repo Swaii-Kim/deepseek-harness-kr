@@ -22,7 +22,9 @@ function contextBase(pageHidden = false) {
     PET: false,
     petPower: false,
     mobileHiddenNow: false,
-    window: { __dscPageHidden: pageHidden },
+    // 플러그인 설정에서 온 값(createCharacter의 prefs)과 모델 준비 뒤 채워지는 동작(hooks)
+    prefs: { pageHidden },
+    hooks: {},
     SLEEP: { state: 'active', lastActive: 0 },
     drag: { pending: null, on: false },
     strokeFrom: null,
@@ -103,7 +105,7 @@ function runPageContext() {
   ].join('\n')
   const expose = `({
     hideForPage, restoreFromPage, syncPageHidden, setHidden, syncHideChip, hideChipVisible,
-    setPageHidden(value) { window.__dscPageHidden = value },
+    setPageHidden(value) { prefs.pageHidden = value },
     setSleep(value) { SLEEP.state = value },
     setMobile(value) { mobileHiddenNow = value },
     setExternal(value) { link.open = value; link.follow = value ? { shown: true } : null },
@@ -119,7 +121,7 @@ function runPageContext() {
     chipRemoved: () => chipRemoved,
     hushCalls: () => hushCalls,
     linkPosts: () => linkPosts,
-    listenerTypes: () => [...(listeners?.keys() || [])],
+    hookNames: () => Object.keys(hooks),
     canvas: canvas.style,
     bubble: bubble.style,
     veil: veil.style,
@@ -145,7 +147,7 @@ function runPlaceContext() {
   ].join('\n')
   const expose = `({
     place, syncPageHidden, raf,
-    setPageHidden(value) { window.__dscPageHidden = value },
+    setPageHidden(value) { prefs.pageHidden = value },
     setExternal(value) { link.open = value },
     external: () => link.open,
     linkPosts: () => linkPosts,
@@ -165,7 +167,6 @@ function runClientApply() {
   const panelListeners = new Set()
   let activePanelId = null
   const window = {
-    __dscPageHidden: undefined,
     CustomEvent: class CustomEvent {
       constructor(type) { this.type = type }
     },
@@ -258,50 +259,53 @@ test('플러그인 클라이언트는 URL이 아니라 패널 id로만 창 안 �
 test('layout의 activePanelId 구독으로 plugins/schedules에서만 숨기고 정리한다', async () => {
   const h = runClientApply()
   const client = await loadClient(h.window)
-  const events = []
-  h.window.addEventListener('dsc:page-hidden', () => events.push(h.window.__dscPageHidden))
-
   client.apply(h.ctx)
-  assert.equal(h.window.__dscPageHidden, false)
+  const link = client.internals.linkOf(h.ctx)
+  // 붙어 있는 캐릭터에는 바뀔 때만 setPrefs({ pageHidden })로 전달한다
+  const sent = []
+  link.attach({ setPrefs: (next) => { if ('pageHidden' in next) sent.push(next.pageHidden) } })
+  assert.equal(link.pageHidden, false)
   assert.equal(h.panelListenerCount(), 1)
 
   h.select('plugins')
-  assert.equal(h.window.__dscPageHidden, true)
+  assert.equal(link.pageHidden, true)
   h.select(null)
-  assert.equal(h.window.__dscPageHidden, false)
+  assert.equal(link.pageHidden, false)
   h.select('schedules')
-  assert.equal(h.window.__dscPageHidden, true)
+  assert.equal(link.pageHidden, true)
   h.select('conversation')
-  assert.equal(h.window.__dscPageHidden, false)
+  assert.equal(link.pageHidden, false)
   h.select('plugins')
+  h.select('plugins')   // 같은 값이면 다시 보내지 않는다
+  assert.deepEqual(sent, [true, false, true, false, true])
 
   h.ctx.dispose()
-  assert.equal(h.window.__dscPageHidden, false)
+  assert.equal(link.pageHidden, false)
   assert.equal(h.panelListenerCount(), 0)
-  assert.equal(events.at(-1), false)
+  assert.deepEqual(Object.keys(h.window).filter((key) => key.startsWith('__dsc')), [], '캐릭터 통신용 window 전역을 남기지 않는다')
 })
 
-test('빌드된 lib/client.js도 layout 패널 상태를 캐릭터 코드에 전달한다', async () => {
+test('패널 숨김은 캐릭터 API로만 전달하고, 캐릭터는 setPrefs에서 바로 반영한다', async () => {
   // 캐릭터 쪽 수신부와 수명 래퍼는 소스에서 확인하고(번들은 esbuild가 다시 찍는다), 전달 경로는 번들을 실제로 실행해 확인한다
-  assert.match(source, /if \(!PET\) addEventListener\("dsc:page-hidden", syncPageHidden\);/)
+  assert.match(source, /if \(!PET\) hooks\.syncPageHidden = syncPageHidden;/)
+  assert.match(source, /if \(pageChanged\) hooks\.syncPageHidden\?\.\(\);/)
   assert.match(source, /const addEventListener = \(\.\.\.args\) => life\.listen\(window, \.\.\.args\)/)
   assert.match(source, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return; \}/)
+  assert.doesNotMatch(source, /window\.__dsc(?!\b)[A-Za-z]/, '캐릭터는 window.__dsc(디버그·TTS용) 말고는 전역을 쓰지 않는다')
   const h = runClientApply()
   const client = await loadClient(h.window)
-  const events = []
-  h.window.addEventListener('dsc:page-hidden', () => events.push(h.window.__dscPageHidden))
   client.apply(h.ctx)
+  const link = client.internals.linkOf(h.ctx)
+  const sent = []
+  link.attach({ setPrefs: (next) => sent.push(next) })
   h.select('plugins')
-  assert.equal(h.window.__dscPageHidden, true)
   h.select(null)
-  assert.equal(h.window.__dscPageHidden, false)
   h.ctx.dispose()
-  assert.equal(events.at(-1), false)
+  assert.deepEqual(sent.map((next) => next.pageHidden), [true, false])
 })
-
 test('플러그인·자동화 패널을 열면 창 안 캐릭터를 숨기고, 나가면 원래대로 돌아온다', () => {
   const h = runPageContext()
-  assert.equal(JSON.stringify(h.listenerTypes()), JSON.stringify(['dsc:page-hidden']), '캐릭터는 패널 알림을 직접 듣는다')
+  assert.ok(h.hookNames().includes('syncPageHidden'), '패널 숨김은 createCharacter API(setPrefs)가 이 동작으로 바로 반영한다')
 
   h.setPageHidden(true)
   h.syncPageHidden()

@@ -18,6 +18,8 @@ import { PET_PATH } from '../pet-host.js'
 
 const packageName = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).name
 const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
+// 캐릭터와 플러그인 화면은 createCharacter API로만 통신한다. window에 남은 캐릭터 통신용 전역(__dsc 디버그 핸들 제외)을 모은다
+const dscGlobals = (window) => Object.keys(window).filter((key) => key.startsWith('__dsc'))
 
 test('source build preserves sleep code and matches the committed bundle', async () => {
   const character = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
@@ -49,7 +51,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
       app: { ticker: { get started() { return !stopped }, start: () => { stopped = false }, stop: () => { stopped = true } } },
       setRender: (on) => { stopped = !on },   // 배치 코드가 쓰는 상태 기반 티커 제어 (테스트에선 stopped 로만 확인)
       document: { hidden: false, querySelector: (selector) => selector === 'stop' ? working : selector.includes(card) && card },
-      window: { __dscSleep: { enabled: true, minutes: 0.5 } },
+      prefs: { sleep: { enabled: true, minutes: 0.5 } },
       PET: false, drag: {}, free: {}, link: {},
       UI: { stop: 'stop', approval: 'approval' }, intro: { phase: 'center' }, walk: { phase: '', slideId: 0, timers: [] },
       speak: (line) => lines.push(line), say: (line) => lines.push(line), hush() {}, place() {},
@@ -75,11 +77,11 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
     for (const trigger of ['work', 'disable', 'approval', 'data-question-reply']) {
       read('sleepGo()')
       if (trigger === 'work') working = true
-      else if (trigger === 'disable') context.window.__dscSleep.enabled = false
+      else if (trigger === 'disable') context.prefs.sleep.enabled = false
       else card = trigger
       poll(); assert.equal(read('SLEEP.state'), 'waking')
       assert.equal(timers.size, 0)
-      frame(); working = false; card = null; context.window.__dscSleep.enabled = true; poll()
+      frame(); working = false; card = null; context.prefs.sleep.enabled = true; poll()
       timers.clear()
     }
     for (const waiting of ['approval', 'data-question-reply']) {
@@ -269,7 +271,7 @@ test('character shortcut debounces, guards permissions/failures and disposes', a
     resolveSave(true); await new Promise((resolve) => setImmediate(resolve))
     ctx.dispose()
     await wait(180); await key(); assert.equal(calls, pendingCalls + 1)
-    assert.equal(h.dom.window.__dscSleep, undefined)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
@@ -356,7 +358,7 @@ test('empty drag key stays empty so both buttons are required again', () => {
   const h = clientHarness({ character: true, theme: false, translation: false, dragKey: '' })
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
-    assert.equal(h.dom.window.__dscDrag?.key, '', '빈 값이 Alt로 되돌아가면 안 된다')
+    assert.equal(h.client.internals.linkOf(ctx).prefs.drag.key, '', '빈 값이 Alt로 되돌아가면 안 된다')
     const Page = h.pages.get(packageName + '#deepseek-harness-kr')
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
     assert.match(html, /aria-label="Record drag key"[^>]*value=""/)
@@ -460,9 +462,10 @@ test('canvas shortcut row is disabled while the character setting is off', () =>
 
 test('settings page explains a hidden canvas instead of implying the setting is off', () => {
   const h = clientHarness({ character: true, theme: true, translation: true, canvasToggle: true })
-  h.dom.window.__dscCanvasHidden = () => true
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
+    // 모델이 준비된 캐릭터 대신 숨김 상태만 알려 주는 가짜 캐릭터를 붙인다
+    h.client.internals.linkOf(ctx).attach({ setPrefs() {}, canvasHidden: () => true, toggleCanvas: () => {} })
     const Page = h.pages.get(packageName + '#deepseek-harness-kr')
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
     assert.match(html, /The canvas is hidden right now \(the character setting is still on\)/)
@@ -476,7 +479,7 @@ test('pet window shortcut calls the toggle the character exposes', () => {
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
     let calls = 0
-    h.dom.window.__dscPetToggle = () => { calls++ }
+    h.client.internals.linkOf(ctx).attach({ setPrefs() {}, canvasHidden: () => false, togglePet: () => { calls++ } })
     const press = (extra = {}, target = h.dom.window) => {
       const event = new h.dom.window.KeyboardEvent('keydown', { key: 'P', code: 'KeyP', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true, ...extra })
       target.dispatchEvent(event)
@@ -501,7 +504,7 @@ test('canvas shortcut only runs when enabled and works inside the composer', asy
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
     let calls = 0
-    h.dom.window.__dscCanvasToggle = () => { calls++ }
+    h.client.internals.linkOf(ctx).attach({ setPrefs() {}, canvasHidden: () => false, toggleCanvas: () => { calls++ } })
     const fire = (type, extra = {}, target = h.dom.window) => {
       const event = new h.dom.window.KeyboardEvent(type, { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true, ...extra })
       target.dispatchEvent(event)
@@ -540,11 +543,11 @@ test('character source supports modifier drag and a pet window toggle', async ()
   const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   for (const code of [source, bundle]) {
     assert.match(code, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
-    assert.match(code, /window\.__dscPetToggle = petToggle/)
+    assert.match(code, /hooks\.togglePet = petToggle/)
     assert.match(code, /link\.queue\.push\(\["drag", \[dragKeyRaw\(\)\]\]\)/)
-    assert.match(code, /fn === "drag"\) window\.__dscDrag = \{ key: a\[0\] \}/)
+    assert.match(code, /fn === "drag"\) prefs\.drag = \{ key: a\[0\] \}/)
     assert.match(code, /fn === "dragheld"\)/)
-    assert.match(code, /window\.__dscCanvasToggle = \(\) => setHidden\(!hidden\)/)
+    assert.match(code, /hooks\.toggleCanvas = \(\) => setHidden\(!hidden\)/)
     assert.match(code, /id = "dsc-hide-chip"/)
     assert.match(code, /\["earHide", "동물귀 숨기기"\]/)   // 펫 창 우클릭 소품·옷 메뉴에도 같은 항목
   }
@@ -559,7 +562,7 @@ test('sleep minutes are bounded in schema and client settings', () => {
     const ctx = h.ctx(); h.client.apply(ctx)
     for (const [value, expected] of [[undefined, 1], [NaN, 1], [Infinity, 1], [-1, 0.5], [0.5, 0.5], [60, 60], [100, 60]]) {
       h.form.update({ character: false, theme: false, translation: false, idleSleepMinutes: value })
-      assert.equal(h.dom.window.__dscSleep.minutes, expected)
+      assert.equal(h.client.internals.linkOf(ctx).prefs.sleep.minutes, expected)
     }
     ctx.dispose()
   } finally { h.dom.window.close() }
@@ -587,6 +590,7 @@ test('client registers Korean independently, mounts once, and rolls back on disa
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(modelDestroyed, 1, 'late model completion must be disposed')
     assert.equal(h.dom.window.__dsc, undefined)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
@@ -605,22 +609,21 @@ test('plugin and automation panels hide only the in-window character and clean u
   }
   const h = clientHarness({ character: false, theme: false, translation: false }, 'ready', { layout })
   try {
-    const events = []
-    h.dom.window.addEventListener('dsc:page-hidden', () => events.push(h.dom.window.__dscPageHidden))
     const ctx = h.ctx()
     h.client.apply(ctx)
-    assert.equal(h.dom.window.__dscPageHidden, false)
+    const link = h.client.internals.linkOf(ctx)
+    assert.equal(link.pageHidden, false)
     select('plugins')
-    assert.equal(h.dom.window.__dscPageHidden, true, 'plugins panel must hide the in-window character')
+    assert.equal(link.pageHidden, true, 'plugins panel must hide the in-window character')
     select(null)
-    assert.equal(h.dom.window.__dscPageHidden, false, 'conversation must restore the in-window character')
+    assert.equal(link.pageHidden, false, 'conversation must restore the in-window character')
     select('schedules')
-    assert.equal(h.dom.window.__dscPageHidden, true, 'automation panel must hide the in-window character')
+    assert.equal(link.pageHidden, true, 'automation panel must hide the in-window character')
     select('plugins')
     ctx.dispose()
-    assert.equal(h.dom.window.__dscPageHidden, false, 'unloading the plugin must clear the panel override')
+    assert.equal(link.pageHidden, false, 'unloading the plugin must clear the panel override')
     assert.equal(listeners.size, 0, 'the layout subscription must be released')
-    assert.equal(events.at(-1), false)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
@@ -637,15 +640,16 @@ test('a stale panel-visibility disposer does not clear a reinjected instance sta
   try {
     const first = h.ctx()
     h.client.apply(first)
-    assert.equal(h.dom.window.__dscPageHidden, true)
+    assert.equal(h.client.internals.linkOf(first).pageHidden, true)
     const second = h.ctx()
     h.client.apply(second)
-    assert.equal(h.dom.window.__dscPageHidden, true)
+    const link = h.client.internals.linkOf(second)
+    assert.equal(link.pageHidden, true)
     first.dispose()
-    assert.equal(h.dom.window.__dscPageHidden, true, 'the old instance must not reset the new instance override')
+    assert.equal(link.pageHidden, true, 'the old instance must not reset the new instance override')
     assert.equal(listeners.size, 1, 'only the old subscription is released')
     second.dispose()
-    assert.equal(h.dom.window.__dscPageHidden, false)
+    assert.equal(link.pageHidden, false)
     assert.equal(listeners.size, 0)
   } finally { h.dom.window.close() }
 })
@@ -806,15 +810,21 @@ test('settings page offers accessories, outfit and body type, and shares them wi
     assert.doesNotMatch(html, /basin|Lean forward/i)
     assert.equal((html.match(/type="radio"/g) || []).length, 3)
     assert.match(html, /type="radio" name="deepseek-harness-kr-body" checked=""[^>]*\/><span>Body type 2 \(chibi\)/)
-    assert.deepEqual({ ...h.dom.window.__dscOutfit }, { glasses: true, monocle: false, skirt: false, chestClothes: false, shoesOff: false, tailHide: false, earHide: false, bodyType: 'type2' })
+    const link = h.client.internals.linkOf(ctx)
+    const outfit = () => ({ ...link.prefs.outfit })
+    assert.deepEqual(outfit(), { glasses: true, monocle: false, skirt: false, chestClothes: false, shoesOff: false, tailHide: false, earHide: false, bodyType: 'type2' })
+    // 붙어 있는 캐릭터에도 같은 값이 전달된다
+    const sent = []
+    link.attach({ setPrefs: (next) => { if (next.outfit) sent.push(next.outfit.bodyType) }, canvasHidden: () => false })
     await h.form.set('bodyType', 'type1')
-    assert.equal(h.dom.window.__dscOutfit.bodyType, 'type1')
+    assert.equal(outfit().bodyType, 'type1')
+    assert.deepEqual(sent, ['type1'])
     await h.form.set('earHide', true)
-    assert.equal(h.dom.window.__dscOutfit.earHide, true, '귀 숨김 설정이 캐릭터(아웃핏)로 동기화되어야 한다')
+    assert.equal(outfit().earHide, true, '귀 숨김 설정이 캐릭터(아웃핏)로 동기화되어야 한다')
     await h.form.set('earHide', false)
-    assert.equal(h.dom.window.__dscOutfit.earHide, false)
+    assert.equal(outfit().earHide, false)
     ctx.dispose()
-    assert.equal(h.dom.window.__dscOutfit, undefined)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 

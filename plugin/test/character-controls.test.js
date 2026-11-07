@@ -74,10 +74,10 @@ test('터치 제스처: 가로 끌기는 집기, 세로 움직임은 쓰다듬�
 
 test('이동 키가 빈 문자열이면 드래그 보조 키가 꺼진다', () => {
   const slice = sliceBetween('const dragKeyRaw =', 'const TOUCH = {')
-  const context = { window: {}, PET: false, link: { open: false }, linkPost() {}, addEventListener() {} }
+  const context = { prefs: {}, PET: false, link: { open: false }, linkPost() {}, addEventListener() {} }
   const { dragKeyToken, dragKeyHeld, rememberKey } = runScript(
     slice, context, '({ dragKeyRaw, dragKeyToken, dragKeyHeld, rememberKey })')
-  const setKey = (key) => { context.window.__dscDrag = { key } }
+  const setKey = (key) => { context.prefs.drag = { key } }
 
   setKey('')
   assert.equal(dragKeyToken(), '')
@@ -218,7 +218,7 @@ test('렌더 해상도는 실제로 바뀔 때만 버퍼를 다시 만든다', (
 })
 
 test('캔버스를 숨긴 동안 펫 창 단축키는 아무 것도 하지 않고, 복구하면 다시 열린다', () => {
-  const slice = sliceBetween('const petOpenPose = () =>', 'window.__dscPetToggle = petToggle;')
+  const slice = sliceBetween('const petOpenPose = () =>', 'hooks.togglePet = petToggle;')
   const context = {
     hidden: true,
     PET_URL: '/dsc-pet/',
@@ -256,7 +256,7 @@ test('동물귀 파트 lookup: Part159 인덱스를 찾고, 없으면 -1로 안�
     parts: { ids: ['Part81', 'Part156', 'Part159'] },
     drawables: { count: 1, parentPartIndices: [2], opacities: [1], dynamicFlags: [1] },
   }
-  const api = runScript(slice, { cm, window: {} }, `({
+  const api = runScript(slice, { cm, prefs: {} }, `({
     earPartIndexFor, earPartIndex, earDrawables,
     earPartIndexMissing: earPartIndexFor(['Part81'], 'Part159'),
     earPartIndexNull: earPartIndexFor(null, 'Part159'),
@@ -271,7 +271,7 @@ test('귀 파트 opacity만 바꾸고 다른 파트·기하(model.x/scale)는 �
   const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')
   const cm = { parts: { ids: ['Part159'], opacities: new Float32Array([1]) }, drawables: { count: 0, parentPartIndices: [], opacities: [], dynamicFlags: [] } }
   const model = { x: 12.5, y: -3, scale: { x: 0.42, y: 0.42 } }
-  const { applyEarOpacity, earOpacityValue } = runScript(slice, { cm, window: {} }, '({ applyEarOpacity, earOpacityValue })')
+  const { applyEarOpacity, earOpacityValue } = runScript(slice, { cm, prefs: {} }, '({ applyEarOpacity, earOpacityValue })')
   const parts = { opacities: new Float32Array([1, 1, 1, 1]) }
   const before = { x: model.x, y: model.y, sx: model.scale.x, sy: model.scale.y }
   assert.equal(applyEarOpacity(parts, 2, 1), true)
@@ -290,7 +290,7 @@ test('귀 파트 opacity만 바꾸고 다른 파트·기하(model.x/scale)는 �
 test('귀 숨김은 부드럽게 0..1 사이로 보간되고, 끄면 원래대로 돌아온다', () => {
   const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')
   const cm = { parts: { ids: ['Part159'] }, drawables: { count: 0, parentPartIndices: [], opacities: [], dynamicFlags: [] } }
-  const { earOpacityStep, earOpacityValue, setEarW, getEarW } = runScript(slice, { cm, window: {} }, '({ earOpacityStep, earOpacityValue, setEarW: (v) => { earW = v }, getEarW: () => earW })')
+  const { earOpacityStep, earOpacityValue, setEarW, getEarW } = runScript(slice, { cm, prefs: {} }, '({ earOpacityStep, earOpacityValue, setEarW: (v) => { earW = v }, getEarW: () => earW })')
   let w = 0
   w = earOpacityStep(w, true, 0.1)
   assert.ok(w > 0 && w < 1, '한 프레임에 1로 점프하지 않는다')
@@ -314,7 +314,7 @@ test('귀 터치 판정: earHide 감쇠 전 가시성을 유지하되, 다른 �
       parts: { ids: ['Part159'] },
       drawables: { count: 2, parentPartIndices: [0, 0], opacities: new Float32Array(opacities), dynamicFlags: new Uint8Array(flags) },
     }
-    return { cm, api: runScript(slice, { cm, window: {} }, '({ earHitVisible, earBaseVisible, setEarW: (v) => { earW = v } })') }
+    return { cm, api: runScript(slice, { cm, prefs: {} }, '({ earHitVisible, earBaseVisible, setEarW: (v) => { earW = v } })') }
   }
   const normal = make([1, 1], [1, 1])
   assert.equal(normal.api.earBaseVisible.get(0), true)
@@ -429,7 +429,8 @@ function runChipContext() {
     placeCalls: 0,
     removed: 0,
     hiddenNow: false,
-    window: { __dscPageHidden: false },
+    prefs: { pageHidden: false },
+    hooks: {},
     addEventListener() {},
     systemTickerCalls: [],
     // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
@@ -466,7 +467,7 @@ function runChipContext() {
     'let hidden = false;',
     'let pageHiddenApplied = false;',
     'let sleepTimer = 0, cancelSleepSlide = null, fleeX = 0, strokeFrom = null, chestFrom = null, lastPlaceKey = "";',
-    'const pageHiddenNow = () => !PET && window.__dscPageHidden === true;',
+    'const pageHiddenNow = () => !PET && prefs.pageHidden === true;',
     'const mobileHidden = () => mobileHiddenNow;',
     'const place = () => { placeCalls++ };',
     'let rafIdle = false;',

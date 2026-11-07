@@ -436,7 +436,9 @@ test('펫 창 크기: 기본(머리 맞춤) 대비 배율로 기억하고, 패�
 
 test('펫 창 설정 패널: 값을 설정 저장소로 넘기고 이 플러그인이 아는 키만 반영한다', async () => {
   const client = await readFile(new URL('../../plugin/client.js', import.meta.url), 'utf8')
-  assert.match(client, /window\.__dscSetConfig = applyPetConfig/)
+  // 펫 창 메뉴 값은 createCharacter의 onSetting으로 받아 저장한다 (window 전역 없음)
+  assert.match(client, /startCharacter\(feature, link, applyPetConfig\)/)
+  assert.match(client, /createCharacter\(\{ base: ROOT, life, prefs: link\.initialPrefs\(\), onSetting \}\)/)
   assert.match(client, /PET_CONFIG_KEYS = new Set\(\[\.\.\.OUTFIT_FIELDS\.map/)
   assert.match(client, /'bodyType', 'character'/)
 })

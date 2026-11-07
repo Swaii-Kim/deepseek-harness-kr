@@ -1,8 +1,26 @@
 // 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.js)를 고친 뒤 npm run build 하세요.
 (() => {
   // character/index.js
-  function createCharacter({ base, life }) {
+  function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
     const BASE = base;
+    const prefs = { ...initialPrefs };
+    const hooks = {};
+    let petUsed = false;
+    const previousDsc = window.__dsc;
+    life.add(() => {
+      if (window.__dsc !== previousDsc) {
+        if (previousDsc === void 0) delete window.__dsc;
+        else window.__dsc = previousDsc;
+      }
+      document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
+      if (petUsed) {
+        try {
+          fetch(new URL("../pet/hide", new URL(BASE, location.href)).href, { method: "POST", keepalive: true }).catch(() => {
+          });
+        } catch {
+        }
+      }
+    });
     const setTimeout = life.timeout, setInterval = life.interval, requestAnimationFrame = life.frame;
     const addEventListener = (...args) => life.listen(window, ...args);
     function MutationObserver(fn) {
@@ -73,7 +91,7 @@
           }
         }
       };
-      if (!window.__dscPetMode) new MutationObserver((records) => {
+      if (!pet) new MutationObserver((records) => {
         for (const r of records) for (const n of r.addedNodes) scanAdded(n);
       }).observe(document.body, { childList: true, subtree: true });
       const load = (src) => new Promise((ok, no) => {
@@ -136,7 +154,7 @@
             return result;
           };
         }
-        const WHOLE_BODY = !!window.__dscPetMode;
+        const WHOLE_BODY = !!pet;
         core.update();
         const cm = core.getModel();
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -283,7 +301,7 @@
         const OUTFIT_LINE = { glasses: "outfit_glasses", monocle: "outfit_glasses", skirt: "outfit_clothes", chestClothes: "outfit_clothes", shoesOff: "outfit_shoes", tailHide: "outfit_tail" };
         const BODY_VALUE = { type1: 0.4, type2: 1 };
         const outfitW = {};
-        for (const [key] of OUTFIT_PARAMS) outfitW[key] = (window.__dscOutfit || {})[key] ? 1 : 0;
+        for (const [key] of OUTFIT_PARAMS) outfitW[key] = (prefs.outfit || {})[key] ? 1 : 0;
         const EAR_PART_ID = "Part159";
         const earPartIndexFor = (ids, id) => {
           if (!ids) return -1;
@@ -305,11 +323,11 @@
           parts.opacities[index] = earOpacityValue(w);
           return true;
         };
-        let earW = (window.__dscOutfit || {}).earHide ? 1 : 0;
+        let earW = (prefs.outfit || {}).earHide ? 1 : 0;
         const earHitVisible = (i) => earW > 5e-3 ? earBaseVisible.get(i) === true : earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i]);
         let basinUntil = 0, basinW = 0;
-        let bodyW = BODY_VALUE[(window.__dscOutfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
-        const PET = window.__dscPetMode ? window.dscPet : null;
+        let bodyW = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
+        const PET = pet;
         const PET_URL = PET ? null : (() => {
           try {
             return new URL("../pet/", new URL(BASE, location.href)).href;
@@ -378,7 +396,7 @@
           if (!coarseMql) coarseMql = matchMedia("(hover: none) and (pointer: coarse)");
           return coarseMql.matches;
         };
-        const mobileHidden = () => !!window.__dscMobile && window.__dscMobile.enabled === false && coarsePointer();
+        const mobileHidden = () => !!prefs.mobile && prefs.mobile.enabled === false && coarsePointer();
         const keyboardOpen = () => {
           const vv = typeof visualViewport !== "undefined" && visualViewport ? visualViewport : null;
           if (!vv || vv.scale !== 1) return false;
@@ -513,7 +531,7 @@
           const k = Math.min(vp.h * 0.74 / visH, vp.w * 0.55 / visW, 3.2);
           return { k, x: vp.left + vp.w / 2 - W * k / 2, y: vp.top + vp.h - H * k };
         };
-        const introOff = !!window.__dscIntro && window.__dscIntro.enabled === false;
+        const introOff = !!prefs.intro && prefs.intro.enabled === false;
         if (!introOff) {
           intro.kc = centerPose().k;
           setRes(intro.kc);
@@ -640,7 +658,7 @@
         let lastPlaceKey = "";
         let hidden = false;
         let pageHiddenApplied = false;
-        const pageHiddenNow = () => !PET && window.__dscPageHidden === true;
+        const pageHiddenNow = () => !PET && prefs.pageHidden === true;
         let petPower = !PET;
         let lastClip = "";
         let lastMask = "", lastMaskComposite = "";
@@ -915,7 +933,7 @@
           bubble.style.top = bl.top + "px";
           if (bl.side && !home.above) bubble.classList.add("side");
         };
-        const hideChipVisible = ({ pet = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet && isHidden && !mobileHiddenNow && !pageHiddenNow();
+        const hideChipVisible = ({ pet: pet2 = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet2 && isHidden && !mobileHiddenNow && !pageHiddenNow();
         let placeErrorWarned = false;
         let rafIdle = false;
         const wakeRaf = () => {
@@ -1056,7 +1074,7 @@
           if (pageHiddenNow()) hideForPage();
           else restoreFromPage();
         };
-        if (!PET) addEventListener("dsc:page-hidden", syncPageHidden);
+        if (!PET) hooks.syncPageHidden = syncPageHidden;
         if (pageHiddenNow()) hideForPage();
         const setHidden = (next) => {
           if (PET || hidden === next) return hidden;
@@ -1119,8 +1137,8 @@
           return hidden;
         };
         if (!PET) {
-          window.__dscCanvasToggle = () => setHidden(!hidden);
-          window.__dscCanvasHidden = () => hidden;
+          hooks.toggleCanvas = () => setHidden(!hidden);
+          hooks.canvasHidden = () => hidden;
         }
         let mx = innerWidth / 2, my = innerHeight / 2, lastMove = 0;
         addEventListener("mousemove", (e) => {
@@ -1618,7 +1636,7 @@
                 core.addParameterValueById("Param61", clamp(vel * 0.06, -0.2, 0.2) * Math.sin(Math.PI * q));
               }
             }
-            const of = window.__dscOutfit || {};
+            const of = prefs.outfit || {};
             for (const [key, id, v] of OUTFIT_PARAMS) {
               const w = outfitW[key] = (outfitW[key] || 0) + ((of[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
               if (w > 5e-3) core.addParameterValueById(id, v * w);
@@ -2809,7 +2827,7 @@
           if (performance.now() - st.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
           return dy > 40 && dy > dx * 0.8 ? "basin" : null;
         };
-        const dragKeyRaw = () => String(window.__dscDrag?.key ?? "Alt").trim();
+        const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();
         const dragKeyToken = () => {
           const text = dragKeyRaw().toLowerCase();
           if (!text || text === "none") return "";
@@ -3186,7 +3204,7 @@
         }
         function petSyncMenu() {
           if (!PET) return;
-          const outfit = window.__dscOutfit || {};
+          const outfit = prefs.outfit || {};
           const sig = JSON.stringify([+petRatio().toFixed(3), outfit]);
           if (sig === petMenuSig) return;
           petMenuSig = sig;
@@ -3231,7 +3249,7 @@
           }
           const out = petPanel.querySelector("[data-size-value]");
           if (out) out.textContent = pct + "%";
-          const outfit = window.__dscOutfit || {};
+          const outfit = prefs.outfit || {};
           for (const input of petPanel.querySelectorAll("[data-outfit]")) input.checked = outfit[input.dataset.outfit] === true;
           const body = outfit.bodyType || "default";
           for (const input of petPanel.querySelectorAll("[data-body]")) input.checked = input.value === body;
@@ -3391,7 +3409,7 @@
           voiceState = s2 && s2.speaking !== false ? s2 : null;
         } };
         linkPost = (path, body = {}) => {
-          window.__dscPetUsed = true;
+          petUsed = true;
           return fetch(PET_URL + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.ok ? r.json() : null).then((s2) => {
             if (s2?.state) link.petState = s2.state;
             return s2;
@@ -3407,7 +3425,7 @@
           link.open = true;
           link.opening = 0;
           link.last = "";
-          window.__dscPetUsed = true;
+          petUsed = true;
           skipIntro();
           free.anim = null;
           drag.pending = null;
@@ -3464,7 +3482,7 @@
               else if (ev.type === "config" && Array.isArray(ev.list)) {
                 for (const pair of ev.list) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
                   try {
-                    window.__dscSetConfig?.(pair[0], pair[1]);
+                    onSetting?.(pair[0], pair[1]);
                   } catch {
                   }
                 }
@@ -3511,7 +3529,7 @@
                 x: Math.round(wx - k2 * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
                 y: Math.round(wy - k2 * WAIST_PET),
                 win: { l: Math.round(tl.x), t: Math.round(tl.y), r: Math.round(br.x), b: Math.round(br.y) }
-              }, outfit = window.__dscOutfit || {};
+              }, outfit = prefs.outfit || {};
               const sig = JSON.stringify([dock, outfit]);
               if (sig !== link.last) {
                 link.last = sig;
@@ -3554,7 +3572,7 @@
             link.opening = performance.now();
             linkPost("open", { from: { k: pose2.k, x: s2.x, y: s2.y }, to: { k: pose2.k, x: s2.x, y: s2.y }, seq: ++link.seq });
           };
-          window.__dscPetToggle = petToggle;
+          hooks.togglePet = petToggle;
         }
         if (PET) {
           const local = { say, play, setMood, flashExp, setExp, hush };
@@ -3630,12 +3648,12 @@
             } else if (m.type === "cmd") {
               for (const [fn, a] of m.list || []) {
                 if (fn === "outfit") {
-                  window.__dscOutfit = a[0];
+                  prefs.outfit = a[0];
                   renderPetPanel();
                   petSyncMenu();
                 } else if (fn === "dock") petDock = a[0];
                 else if (fn === "voice") voiceState = a[0];
-                else if (fn === "drag") window.__dscDrag = { key: a[0] };
+                else if (fn === "drag") prefs.drag = { key: a[0] };
                 else if (fn === "dragheld") {
                   if (a[1]) pressedKeys.add(a[0]);
                   else pressedKeys.delete(a[0]);
@@ -3657,7 +3675,7 @@
         if (!PET) setInterval(() => {
           const nowRunning = !!document.querySelector(UI.stop);
           const kind = document.querySelector(UI.approval + ', [class*="Zf6DNq_card"]') ? "approval" : document.querySelector('[data-question-reply], [data-question-key], [class*="Nksazq_card"], [class*="wnLwla_card"]') ? "question" : null;
-          const cfg = window.__dscSleep || {};
+          const cfg = prefs.sleep || {};
           SLEEP.enabled = !PET && cfg.enabled !== false;
           const cfgMin = Number(cfg.minutes);
           SLEEP.minutes = Number.isFinite(cfgMin) ? Math.min(60, Math.max(0.5, cfgMin)) : 1;
@@ -3711,6 +3729,22 @@
         }, 400);
       })().catch((e) => console.warn("DeepSeek짱 캐릭터 로드 실패:", e));
     });
+    return {
+      // 플러그인 설정이 바뀌면 부른다. 패널 숨김(pageHidden)이 바뀌면 바로 숨김/복구를 반영한다
+      setPrefs(next) {
+        const pageChanged = "pageHidden" in next && next.pageHidden !== prefs.pageHidden;
+        Object.assign(prefs, next);
+        if (pageChanged) hooks.syncPageHidden?.();
+      },
+      // 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않는다)
+      get togglePet() {
+        return hooks.togglePet || null;
+      },
+      get toggleCanvas() {
+        return hooks.toggleCanvas || null;
+      },
+      canvasHidden: () => hooks.canvasHidden?.() === true
+    };
   }
 
   // character/lifetime.js
@@ -3793,5 +3827,9 @@
   }
 
   // character/standalone.js
-  createCharacter({ base: new URL("./", document.currentScript.src).href, life: createLifetime() });
+  createCharacter({
+    base: new URL("./", document.currentScript.src).href,
+    life: createLifetime(),
+    pet: window.__dscPetMode ? window.dscPet : null
+  });
 })();

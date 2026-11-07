@@ -8,7 +8,6 @@ import * as ttsClient from '../plugins/dsh-tts/src/client/index.js'
 import KOREAN_DICTIONARIES from './locales.ko.json'
 
 const ROOT = '/deepseek-harness-kr/assets/'
-const PET_ROOT = '/deepseek-harness-kr/pet/'
 const SLOT = '__deepseekHarnessKrDispose'
 const ENTRY_ID = 'deepseek-harness-kr'
 // 소품·옷 (데스크톱 펫 메뉴와 같은 항목, 세숫대야·앞으로 숙이기는 뺌)과 체형
@@ -116,10 +115,6 @@ function dragKeyDown(event) {
   return { action: 'save', key: label }
 }
 
-function mountCharacter(life) {
-  createCharacter({ base: ROOT, life })
-}
-
 function stylesheet(life, file) {
   const link = document.createElement('link')
   link.rel = 'stylesheet'; link.href = ROOT + file
@@ -169,29 +164,47 @@ function mountTranslation(ctx, life) {
   }
 }
 
-function startCharacter(life) {
-  const previous = window.__dsc
-  life.add(() => {
-    if (window.__dsc !== previous) {
-      if (previous === undefined) delete window.__dsc
-      else window.__dsc = previous
-    }
-    document.documentElement.classList.remove('dsc-hover', 'dsc-grabbing')
-  })
-  stylesheet(life, 'character.css')
-  // 캐릭터를 끄거나 플러그인이 내려가면 바깥 펫 창도 숨김 (이 화면에서 펫 창을 쓴 적이 있을 때만)
-  life.add(() => {
-    delete window.__dscPetToggle
-    delete window.__dscCanvasToggle
-    delete window.__dscCanvasHidden
-    document.getElementById('dsc-hide-chip')?.remove()
-    if (!window.__dscPetUsed) return
-    delete window.__dscPetUsed
-    try { window.fetch(PET_ROOT + 'hide', { method: 'POST', keepalive: true }).catch(() => {}) } catch {}
-  })
-  mountCharacter(life)
+// 캐릭터 연결: 설정값·패널 숨김 상태를 들고 있다가, 캐릭터 기능이 켜지면 넘겨주고 바뀔 때마다 전달한다.
+// 단축키·설정 화면은 이 객체를 통해서만 캐릭터를 부른다 (window 전역을 쓰지 않음). apply마다 하나씩 만든다.
+function createCharacterLink() {
+  let character = null, prefs = {}, pageHidden = false
+  return {
+    get character() { return character },
+    get prefs() { return prefs },
+    get pageHidden() { return pageHidden },
+    // 캐릭터 API를 붙인다. 돌려준 함수로 떼며, 그사이 다른 캐릭터가 붙었으면 건드리지 않는다
+    attach(next) { character = next; return () => { if (character === next) character = null } },
+    setPrefs(next) { prefs = next; character?.setPrefs(next) },
+    setPageHidden(next) {
+      if (pageHidden === next) return
+      pageHidden = next
+      character?.setPrefs({ pageHidden })
+    },
+    initialPrefs() { return { ...prefs, pageHidden } },
+  }
 }
 
+// 플러그인 설정값 → 캐릭터가 읽는 값 (순수 함수)
+function characterPrefs(value) {
+  return {
+    // 캐릭터는 매 프레임 이 값을 읽어 소품·옷·체형을 바로 바꾼다 (다시 띄우지 않음)
+    outfit: Object.fromEntries([...OUTFIT_FIELDS.map(([field]) => [field, value[field] === true]), ['bodyType', value.bodyType || 'default']]),
+    // 절전: 캐릭터의 상태 감시 인터벌이 읽음
+    sleep: { enabled: value.idleSleep !== false, minutes: sleepMinutes(value.idleSleepMinutes) },
+    // 시작 등장 연출 여부: 캐릭터가 처음 뜰 때 읽는다 (끄면 가운데 인사 없이 바로 제자리에)
+    intro: { enabled: value.intro !== false },
+    // 모바일(터치 전용) 화면에서 캐릭터를 숨길지: 캐릭터가 매 프레임 읽는다 (기본 표시)
+    mobile: { enabled: value.mobileCharacter !== false },
+    // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
+    drag: { key: value.dragKey ?? 'Alt' },
+  }
+}
+
+function startCharacter(life, link, onSetting) {
+  stylesheet(life, 'character.css')
+  const character = createCharacter({ base: ROOT, life, prefs: link.initialPrefs(), onSetting })
+  life.add(link.attach(character))
+}
 // ---------- 플러그인 업데이트 ----------
 // 설치 주소(GitHub)의 package.json 버전과 설치된 버전을 비교하고, Harness 플러그인 관리자의
 // installBundle(설치할 때와 같은 기능)을 같은 설치 주소로 다시 불러 최신 커밋을 받는다.
@@ -631,8 +644,8 @@ function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, ina
 }
 
 // 캔버스만 숨김 상태를 설정 화면에도 보여 준다 — 설정(캐릭터와 말풍선)이 꺼진 것과 혼동하지 않게.
-function CanvasHiddenNotice({ ko }) {
-  const read = () => (typeof window !== 'undefined' && window.__dscCanvasHidden?.() === true)
+function CanvasHiddenNotice({ ko, link }) {
+  const read = () => link.character?.canvasHidden() === true
   const [hidden, setHidden] = React.useState(read)
   React.useEffect(() => {
     const id = setInterval(() => setHidden(read()), 600)
@@ -641,11 +654,11 @@ function CanvasHiddenNotice({ ko }) {
   if (!hidden) return null
   return React.createElement('div', { role: 'status', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, opacity: 0.9 } },
     React.createElement('span', null, ko ? '지금 캔버스가 숨겨져 있습니다(캐릭터 설정은 켜져 있음).' : 'The canvas is hidden right now (the character setting is still on).'),
-    React.createElement('button', { type: 'button', onClick: () => { try { window.__dscCanvasToggle?.() } catch {} setHidden(false) } },
+    React.createElement('button', { type: 'button', onClick: () => { try { link.character?.toggleCanvas?.() } catch {} setHidden(false) } },
       ko ? '다시 표시' : 'Show again'))
 }
 
-function settingsPage(ctx, form, updater, keys) {
+function settingsPage(ctx, form, updater, keys, link) {
   return function FeatureSettings({ view }) {
     const state = React.useSyncExternalStore((fn) => form.subscribe(fn), () => form.getSnapshot(), () => form.getSnapshot())
     const locale = React.useSyncExternalStore((fn) => ctx.locale.subscribe(fn), () => ctx.locale.getLocale(), () => ctx.locale.getLocale())
@@ -754,7 +767,7 @@ function settingsPage(ctx, form, updater, keys) {
           ko, disabled: off || !canvasToggle || !characterOn, inactive: !canvasToggle || !characterOn,
           onChange: (combo) => change('canvasToggleKey', combo),
         }),
-        React.createElement(CanvasHiddenNotice, { ko }),
+        React.createElement(CanvasHiddenNotice, { ko, link }),
         React.createElement(ShortcutField, {
           label: ko ? '펫 창 내보내기·돌아오기 단축키 (비우면 사용 안 함)' : 'Pet window shortcut (empty to disable)',
           hintId: PET_SHORTCUT_HINT_ID,
@@ -797,6 +810,8 @@ function apply(ctx) {
     const form = ctx.configForms.get(ENTRY_ID)
     const updater = createUpdater()
     const keys = createKeyStore()
+    const link = createCharacterLink()
+    links.set(ctx, link)
     // 바깥 펫 창의 우클릭 메뉴·설정 패널이 보내는 값을 설정에 반영한다. 이 플러그인이 아는 키만 받는다.
     const PET_CONFIG_KEYS = new Set([...OUTFIT_FIELDS.map(([field]) => field), 'bodyType', 'character'])
     const applyPetConfig = (key, value) => {
@@ -810,33 +825,27 @@ function apply(ctx) {
         if (result && typeof result.catch === 'function') result.catch(() => {})
       } catch {}
     }
-    window.__dscSetConfig = applyPetConfig
-    life.add(() => { if (window.__dscSetConfig === applyPetConfig) delete window.__dscSetConfig })
-    // 플러그인/자동화 패널에서 창 안 캐릭터를 숨긴다. 캐릭터 코드는 이 값과 이벤트만 보고,
-    // 바깥 펫 창(link)에는 hide/leave 같은 명령을 보내지 않는다.
-    const setPageHidden = (next) => {
-      if (window.__dscPageHidden === next) return
-      window.__dscPageHidden = next
-      try { window.dispatchEvent(new window.CustomEvent('dsc:page-hidden')) } catch {}
-    }
+    // 플러그인/자동화 패널에서 창 안 캐릭터만 숨긴다. 바깥 펫 창에는 hide/leave 같은 명령을 보내지 않는다.
+    // 숨김 상태는 이 apply의 link가 들고 있어, 다른 플러그인 인스턴스의 정리가 이 인스턴스 상태를 지우지 못한다.
+    let panelOwner = null
     if (typeof ctx.inject === 'function') {
       ctx.inject(['layout'], (scope) => {
         const panelInfo = scope.layout?.panelInfo
         if (!panelInfo || typeof panelInfo.getSnapshot !== 'function' || typeof panelInfo.subscribe !== 'function') return
-        // 재주입 때 이전 인스턴스의 정리 콜백이 새 인스턴스의 상태를 지우지 않게 소유자를 표시한다.
+        // layout이 다시 주입되면 새 구독이 주인이 된다. 늦게 온 옛 구독의 정리는 새 상태를 지우지 않는다.
         const owner = {}
-        window.__dscPageVisibilityOwner = owner
+        panelOwner = owner
         const syncPanelVisibility = () => {
-          if (window.__dscPageVisibilityOwner !== owner) return
-          setPageHidden(panelHidesInWindowCharacter(panelInfo.getSnapshot()?.activePanelId))
+          if (panelOwner !== owner) return
+          link.setPageHidden(panelHidesInWindowCharacter(panelInfo.getSnapshot()?.activePanelId))
         }
         syncPanelVisibility()
         const off = panelInfo.subscribe(syncPanelVisibility)
         scope.effect(() => () => {
           off?.()
-          if (window.__dscPageVisibilityOwner !== owner) return
-          window.__dscPageVisibilityOwner = null
-          setPageHidden(false)
+          if (panelOwner !== owner) return
+          panelOwner = null
+          link.setPageHidden(false)
         }, 'deepseek-harness-kr: in-window character visibility')
       })
     }
@@ -870,23 +879,14 @@ function apply(ctx) {
       reconcile('translation', value.translation !== false, (feature) => mountTranslation(ctx, feature))
       reconcile('layout', value.character !== false || value.theme !== false, mountLayout)
       reconcile('theme', value.theme !== false, (feature) => mountTheme(ctx, feature))
-      reconcile('character', value.character !== false, startCharacter)
-      // 캐릭터는 매 프레임 이 값을 읽어 소품·옷·체형을 바로 바꾼다 (다시 띄우지 않음)
-      window.__dscOutfit = Object.fromEntries([...OUTFIT_FIELDS.map(([field]) => [field, value[field] === true]), ['bodyType', value.bodyType || 'default']])
+      // 설정값을 먼저 정해 두어야 캐릭터가 처음 붙을 때 같은 값으로 시작한다
+      link.setPrefs(characterPrefs(value))
+      reconcile('character', value.character !== false, (feature) => startCharacter(feature, link, applyPetConfig))
       keys.setRef(value.tts?.openai?.apiKeyEnv ?? DEFAULT_KEY_REF)
       syncTts(value)
-      // 절전 설정도 실시간으로 전달 (캐릭터의 상태 감시 인터벌이 읽음)
-      window.__dscSleep = { enabled: value.idleSleep !== false, minutes: sleepMinutes(value.idleSleepMinutes) }
-      // 시작 등장 연출 여부: 캐릭터가 처음 뜰 때 읽는다 (끄면 가운데 인사 없이 바로 제자리에)
-      window.__dscIntro = { enabled: value.intro !== false }
-      // 모바일(터치 전용) 화면에서 캐릭터를 숨길지: 캐릭터가 매 프레임 읽는다 (기본 표시)
-      window.__dscMobile = { enabled: value.mobileCharacter !== false }
-      // 캐릭터 이동 보조 키: 캐릭터가 포인터 이벤트마다 읽는다 (다시 띄우지 않음). 빈 문자열이면 '이동 키 없음'.
-      window.__dscDrag = { key: value.dragKey ?? 'Alt' }
       // 캔버스 숨김 기능을 끄면 숨겨 둔 캔버스를 다시 표시 (기능을 되돌렸을 때)
-      if (value.canvasToggle !== true && window.__dscCanvasHidden?.() === true) window.__dscCanvasToggle?.()
+      if (value.canvasToggle !== true && link.character?.canvasHidden() === true) link.character.toggleCanvas?.()
     }
-    life.add(() => { delete window.__dscOutfit; delete window.__dscSleep; delete window.__dscIntro; delete window.__dscMobile; delete window.__dscDrag })
     life.add(form.subscribe(sync))
     // 단축키로 캐릭터 토글: 설정의 character 스위치를 뒤집는다 (설정 화면과 같은 저장소·같은 마운트/정리 경로)
     // 키를 떼는 이벤트를 놓쳐도 다음 누름이 막히지 않도록, 누른 시각 기준으로만 연타를 막는다.
@@ -918,7 +918,7 @@ function apply(ctx) {
       if (event.repeat) return
       const snapshot = form.getSnapshot()
       const combo = snapshot.value?.petToggleKey ?? 'Ctrl+Shift+P'
-      const toggle = window.__dscPetToggle
+      const toggle = link.character?.togglePet
       if (!toggle || !parseShortcut(combo)) return
       // 텍스트 입력 중엔 발동하지 않게 (글자를 지우는 Shift+화살표 같은 조합 보호)
       const el = event.target
@@ -940,7 +940,7 @@ function apply(ctx) {
       const snapshot = form.getSnapshot()
       if (snapshot.status !== 'ready' || snapshot.value?.canvasToggle !== true) return
       const combo = snapshot.value?.canvasToggleKey ?? 'Ctrl+Shift+H'
-      const toggle = window.__dscCanvasToggle
+      const toggle = link.character?.toggleCanvas
       const parsed = parseShortcut(combo)
       if (!toggle || !parsed) return
       if (!matchesShortcut(combo, event)) return
@@ -956,12 +956,15 @@ function apply(ctx) {
     life.listen(window, 'keydown', canvasToggleListener)
     life.add(ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
       name: 'plugins.row.config', key: PLUGIN_ID + '#' + ENTRY_ID,
-    }, settingsPage(ctx, form, updater, keys))))
+    }, settingsPage(ctx, form, updater, keys, link))))
     sync()
   } catch (error) { dispose(); throw error }
 }
 
+// apply(ctx)마다 만든 캐릭터 연결 (테스트가 ctx로 찾아 상태를 확인하거나 가짜 캐릭터를 붙인다)
+const links = new WeakMap()
+
 export const inject = ['locale', 'theme', 'configForms', 'slots']
 export { apply }
 // 테스트용
-export const internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter }
+export const internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter, characterPrefs, linkOf: (ctx) => links.get(ctx) }
