@@ -332,12 +332,12 @@
         return { k, x: rightX(k), y: bottomY(k), above: false, noSafe: true };   // 컴포저 위·아래 어디에도 피할 자리가 없음 → 제자리에서는 숨긴다
       };
       // 말풍선 배치: 머리 위가 기본. 카드와 겹치면 옆/아래로 피하되, 뷰포트 밖으로 나가지 않게 자른다
-      const bubbleLayout = ({ vp, headX, headTop, bw, bh, r, above }) => {
+      const bubbleLayout = ({ vp, headX, headTop, bw, bh, r, above, tail = BUBBLE_TAIL }) => {
         const clampX = (left) => Math.min(Math.max(vp.left + HOME_GAP, left), Math.max(vp.left + HOME_GAP, vp.left + vp.w - bw - HOME_GAP));
         const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh - HOME_GAP));
         const hit = (left, top) => r && left < r.right && left + bw > r.left && top < r.bottom && top + bh > r.top;
         const aboveTop = clampY(headTop - bh - 10);
-        const aboveLeft = clampX(headX + 55 - bw);   // 꼬리(오른쪽 55px)가 머리 가운데에 오게
+        const aboveLeft = clampX(headX + tail - bw);   // 꼬리(오른쪽 tail px)가 머리 가운데에 오게
         if (!hit(aboveLeft, aboveTop) || above) return { left: aboveLeft, top: aboveTop, side: false };
         const below = r.bottom + HOME_GAP, sideLeft = clampX(vp.left + vp.w - bw - HOME_GAP);
         if (below + bh <= vp.top + vp.h - HOME_GAP) return { left: sideLeft, top: clampY(below), side: true };
@@ -347,9 +347,11 @@
       // 말풍선 꼬리(오른쪽 55px)를 코(noseX)에 맞추는 기준. 화면 오른쪽 경계는 HOME_GAP만 남기고,
       // 왼쪽 기준(등장 연출)은 뷰포트 안으로 자른다. 순수 함수라 테스트에서 그대로 실행한다.
       const BUBBLE_TAIL = 55;
-      const tailRight = ({ noseX, width, margin = HOME_GAP }) => Math.max(margin, width - (noseX + BUBBLE_TAIL));
-      const tailLeft = ({ noseX, bw, width, margin = HOME_GAP }) => Math.min(
-        Math.max(margin, noseX - (bw - BUBBLE_TAIL)),
+      // 짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁혀 몸통 밖에 뜨지 않게 한다 (CSS 꼬리 가운데 --dsc-tail-c = 이 값 - 2px)
+      const bubbleTail = (bw) => Math.min(BUBBLE_TAIL, Math.round((bw || 2 * BUBBLE_TAIL) / 2) + 2);
+      const tailRight = ({ noseX, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.max(margin, width - (noseX + tail));
+      const tailLeft = ({ noseX, bw, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.min(
+        Math.max(margin, noseX - (bw - tail)),
         Math.max(margin, width - bw - margin),
       );
       let curK = 1, fleeX = 0;     // 현재 배율, 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽)
@@ -709,24 +711,26 @@
         canvas.style.left = x + "px"; canvas.style.top = y + "px";
         const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
+        const fitTail = () => { const t = bubbleTail(bubble.offsetWidth); bubble.style.setProperty("--dsc-tail-c", t - 2 + "px"); return t; };   // 지금 폭에 맞춘 꼬리 자리 (최대폭을 정한 뒤 부름)
         if (introOn) {   // 가운데에선 머리 위에 큰 말풍선. 꼬리는 코에 맞추고 화면 밖으로 넘치지 않게 자른다
           bubble.style.right = "auto"; bubble.style.fontSize = "22px"; bubble.style.padding = "14px 24px"; bubble.style.maxWidth = "560px";
-          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight;
+          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
           if (!coarsePointer()) {   // 데스크톱: 창 오른쪽 경계만 남기고 자른다
-            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth }) + "px";
+            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
             bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
             return;
           }
           const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
-          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w }) + "px";
+          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
           bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
           return;
         }
         const card = home.card;
         if (!coarsePointer() && !home.above) {   // 데스크톱 말풍선은 기존 배치 그대로
           bubble.style.left = "auto";
-          bubble.style.right = tailRight({ noseX, width: innerWidth }) + "px";   // 꼬리(오른쪽 55px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다
           bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
+          const tail = fitTail();
+          bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";   // 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다
           bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
           if (card && home.r) {
             const r = home.r, bl = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl, top: bt, right: bl + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };   // 등장 애니메이션(transform) 영향 없는 레이아웃 크기
@@ -751,7 +755,7 @@
         bubble.style.right = "auto";
         bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
         // 머리 위가 기본. 카드와 겹치면 옆/아래로 피하고, 뷰포트(주소창·키보드) 밖으로는 나가지 않게 자른다
-        const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above });
+        const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
         bubble.style.left = bl.left + "px";
         bubble.style.top = bl.top + "px";
         if (bl.side && !home.above) bubble.classList.add("side");

@@ -42,6 +42,21 @@ test('말풍선 꼬리는 코에 맞추고, 화면 경계는 최소 여백만 �
   assert.equal(tailLeft({ noseX: 50, bw: 400, width: 330 }), 8)
 })
 
+test('짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁힌다', () => {
+  const slice = sliceBetween('const HOME_GAP = 8', 'let curK = 1, fleeX = 0;')
+  const { bubbleTail, tailRight, tailLeft } = runScript(slice, {}, '({ bubbleTail, tailRight, tailLeft })')
+  // 넓은 말풍선(폭 106px 이상)은 기존 55px 그대로
+  assert.equal(bubbleTail(300), 55)
+  assert.equal(bubbleTail(106), 55)
+  // 한두 글자 말풍선: 꼬리 끝 = 폭 절반 + 2px (CSS 꼬리 가운데가 말풍선 가운데)
+  assert.equal(bubbleTail(40), 22)
+  // 폭을 아직 모르면 기존 값
+  assert.equal(bubbleTail(0), 55)
+  // 좁힌 만큼 오른쪽 기준을 보정해 꼬리 끝은 계속 코에 온다
+  assert.equal(1000 - tailRight({ noseX: 300, width: 1000, tail: 22 }) - 22, 300)
+  assert.equal(tailLeft({ noseX: 300, bw: 40, width: 1000, tail: 22 }) + 40 - 22, 300)
+})
+
 test('터치 제스처: 가로 끌기는 집기, 세로 움직임은 쓰다듬기, 가만히 길게 누르면 집기', () => {
   const slice = sliceBetween('const TOUCH = {', 'document.addEventListener("pointermove"')
   const { touchGesture, TOUCH } = runScript(slice, {}, '({ touchGesture, TOUCH })')
