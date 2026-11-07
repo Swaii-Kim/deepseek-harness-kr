@@ -209,10 +209,12 @@ test('캐릭터 바깥에서 시작한 터치 스크롤을 캐릭터 위에서 �
 })
 
 test('모바일 숨김과 키보드 숨김 상태에서는 시작 인트로를 끝낸다', () => {
-  const hidden = source.slice(source.indexOf('if (mobileHidden())'), source.indexOf('if (typingActive())'))
-  const typing = source.slice(source.indexOf('if (typingActive())'), source.indexOf('const home = homePose();'))
-  assert.match(hidden, /skipIntro\(\)/)
-  assert.match(typing, /skipIntro\(\)/)
+  // 두 경우는 placeBlocked()의 한 분기에서 함께 처리한다
+  const start = source.indexOf('if (mobileHidden() || typingActive()) {')
+  const branch = source.slice(start, source.indexOf('return true;', start))
+  assert.ok(start >= 0, '모바일 숨김·입력 중 분기가 있어야 한다')
+  assert.match(branch, /skipIntro\(\)/)
+  assert.match(branch, /setRender\(false\)/)
 })
 
 test('위로 올린 자리는 panned visualViewport에서도 카드 바로 위에 붙는다', () => {

@@ -167,6 +167,7 @@ function installLayout(win, size) {
 // 정해 둔 입력(인트로 클릭·마우스·말하기·작업 상태·소품 설정·창 크기·절전)을 프레임 순서대로 넣고 기록을 돌려준다
 export async function runTrace(code) {
   const virtualConsole = new VirtualConsole()   // JSDOM의 "구현 안 됨" 경고(캔버스 등)는 버린다
+  if (process.env.TRACE_CONSOLE) virtualConsole.on('warn', (...a) => console.error('[trace warn]', ...a))   // 캐릭터 코드의 오류 경고(배치 실패 등)를 보려면 TRACE_CONSOLE=1
   const dom = new JSDOM('<!doctype html><html><head></head><body><div class="x_root"><div class="x_card dsc-composer"><div class="x_input"></div></div></div></body></html>', { url: 'http://127.0.0.1/', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole })   // 보이는 화면(document.hidden=false). rAF는 아래에서 가짜로 바꾼다
   const win = dom.window, doc = win.document
   const clock = { now: 1000 }, size = { w: 1600, h: 960 }

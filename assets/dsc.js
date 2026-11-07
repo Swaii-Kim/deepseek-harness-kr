@@ -1060,14 +1060,17 @@
           app.ticker.lastTime = performance.now();
           wakeRaf();
         };
-        const place = () => {
+        const hideCharacter = () => {
+          canvas.style.display = bubble.style.display = "none";
+        };
+        const placeBlocked = () => {
           if (hidden) {
-            canvas.style.display = bubble.style.display = "none";
-            return;
+            hideCharacter();
+            return true;
           }
           if (pageHiddenNow()) {
             hideForPage();
-            return;
+            return true;
           }
           if (pageHiddenApplied) {
             pageHiddenApplied = false;
@@ -1076,33 +1079,24 @@
             lastPlaceKey = "";
             wakeRaf();
           }
-          const now = performance.now();
-          if (mobileHidden()) {
+          if (mobileHidden() || typingActive()) {
             skipIntro();
             setRender(false);
-            canvas.style.display = bubble.style.display = "none";
+            hideCharacter();
             veil.style.opacity = 0;
             veil.style.pointerEvents = "none";
             lastPlaceKey = "";
-            return;
-          }
-          if (typingActive()) {
-            skipIntro();
-            setRender(false);
-            canvas.style.display = bubble.style.display = "none";
-            veil.style.opacity = 0;
-            veil.style.pointerEvents = "none";
-            lastPlaceKey = "";
-            return;
+            return true;
           }
           if (link.open || link.follow?.shown) {
             setRender(false);
-            canvas.style.display = bubble.style.display = "none";
+            hideCharacter();
             lastPlaceKey = "";
-            return;
+            return true;
           }
-          const home = homePose();
-          const dock = dockPose(home, now);
+          return false;
+        };
+        const introPose = (home, dock, now) => {
           let { k, x, y } = dock;
           let introOn = intro.phase !== "done", vo = 0;
           if (introOn && !intro.begun) {
@@ -1110,7 +1104,7 @@
             if (!(intro.cardAt && now - intro.cardAt > 300) && now - intro.start < 8e3) {
               veil.style.opacity = 1;
               veil.style.pointerEvents = "none";
-              return;
+              return null;
             }
             intro.begun = true;
             intro.start = now;
@@ -1147,41 +1141,33 @@
             veil.style.pointerEvents = intro.phase === "center" ? "auto" : "none";
             canvas.style.opacity = intro.phase === "center" ? ease((now - intro.start) / 300) : "";
           }
-          const show = introOn || k >= SHOW_K || home.above && k >= MIN_SHOW_K;
-          canvas.style.display = bubble.style.display = show ? "block" : "none";
-          setRender(show && (!PET || petPower));
-          if (!show) return;
-          if (curK !== k) {
-            curK = k;
-            setRes(k);
+          return { k, x, y, introOn };
+        };
+        const placePetWindow = (dock, k) => {
+          const { x, y } = movePet(dock);
+          const needW = Math.ceil(W * k) + 24, needH = Math.ceil(H * k) + PET_BUBBLE;
+          const panelW = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetWidth) + 24 : 0;
+          const panelH = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetHeight) + 24 : 0;
+          const fitW = Math.max(needW, panelW), fitH = Math.max(needH, panelH);
+          if (fitW !== petWinSize.w || fitH !== petWinSize.h) {
+            petWinSize.w = fitW;
+            petWinSize.h = fitH;
+            PET.send({ type: "fit", w: fitW, h: fitH });
           }
-          shown.k = k;
-          shown.x = x;
-          shown.y = y;
-          const loose = PET || free.on && free.applied || !!free.anim;
-          if (PET) {
-            ({ x, y } = movePet(dock));
-            const needW = Math.ceil(W * k) + 24, needH = Math.ceil(H * k) + PET_BUBBLE;
-            const panelW = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetWidth) + 24 : 0;
-            const panelH = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetHeight) + 24 : 0;
-            const fitW = Math.max(needW, panelW), fitH = Math.max(needH, panelH);
-            if (fitW !== petWinSize.w || fitH !== petWinSize.h) {
-              petWinSize.w = fitW;
-              petWinSize.h = fitH;
-              PET.send({ type: "fit", w: fitW, h: fitH });
-            }
-            if (petPanelOpen && (innerWidth !== petPanelWin.w || innerHeight !== petPanelWin.h)) {
-              petPanelWin = { w: innerWidth, h: innerHeight };
-              fitPetPanel();
-            }
-            const r = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
-            const b = petPanelBox(body);
-            const sig = JSON.stringify(b);
-            if (sig !== petBox) {
-              petBox = sig;
-              PET.send({ type: "hitbox", box: b });
-            }
+          if (petPanelOpen && (innerWidth !== petPanelWin.w || innerHeight !== petPanelWin.h)) {
+            petPanelWin = { w: innerWidth, h: innerHeight };
+            fitPetPanel();
           }
+          const r = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
+          const b = petPanelBox(body);
+          const sig = JSON.stringify(b);
+          if (sig !== petBox) {
+            petBox = sig;
+            PET.send({ type: "hitbox", box: b });
+          }
+          return { x, y };
+        };
+        const updateCardClip = (home, introOn, k, x, y) => {
           const seat = !introOn && home.card && home.card.closest('[class*="composerSeat"]');
           const popup = seat && seat.querySelector('[class*="_card"]:not(.dsc-composer)');
           let clip = "";
@@ -1190,22 +1176,94 @@
             const l = pr.left - x, t = pr.top - y, rr = pr.right - x, bb = pr.bottom - y;
             if (rr > 0 && bb > 0 && l < cw && t < ch) {
               const rad = (v) => Math.min(parseFloat(v) || 0, pr.width / 2, pr.height / 2), f = (n) => +n.toFixed(2);
-              const tl = rad(cs.borderTopLeftRadius), tr = rad(cs.borderTopRightRadius), br = rad(cs.borderBottomRightRadius), bl2 = rad(cs.borderBottomLeftRadius);
-              clip = `path(evenodd, "M0 0H${f(cw)}V${f(ch)}H0Z M${f(l + tl)} ${f(t)}H${f(rr - tr)}A${f(tr)} ${f(tr)} 0 0 1 ${f(rr)} ${f(t + tr)}V${f(bb - br)}A${f(br)} ${f(br)} 0 0 1 ${f(rr - br)} ${f(bb)}H${f(l + bl2)}A${f(bl2)} ${f(bl2)} 0 0 1 ${f(l)} ${f(bb - bl2)}V${f(t + tl)}A${f(tl)} ${f(tl)} 0 0 1 ${f(l + tl)} ${f(t)}Z")`;
+              const tl = rad(cs.borderTopLeftRadius), tr = rad(cs.borderTopRightRadius), br = rad(cs.borderBottomRightRadius), bl = rad(cs.borderBottomLeftRadius);
+              clip = `path(evenodd, "M0 0H${f(cw)}V${f(ch)}H0Z M${f(l + tl)} ${f(t)}H${f(rr - tr)}A${f(tr)} ${f(tr)} 0 0 1 ${f(rr)} ${f(t + tr)}V${f(bb - br)}A${f(br)} ${f(br)} 0 0 1 ${f(rr - br)} ${f(bb)}H${f(l + bl)}A${f(bl)} ${f(bl)} 0 0 1 ${f(l)} ${f(bb - bl)}V${f(t + tl)}A${f(tl)} ${f(tl)} 0 0 1 ${f(l + tl)} ${f(t)}Z")`;
             }
           }
           if (clip !== lastClip) {
             canvas.style.clipPath = clip;
             lastClip = clip;
           }
-          const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
-          const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
-          const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapP)) : 0;
-          const winBox = PET && petDock && petDock.win ? petDock.win : null;
-          const noseX = x + (model.x + noseModelX * model.scale.x) * k;
-          const vp = home.vp || viewport();
+        };
+        const canvasMask = ({ winBox, petFade, fade, x, y }) => {
+          if (winBox && petFade > 1e-3) {
+            const o = screenOf(0, 0), A = (1 - petFade).toFixed(3);
+            const l = (winBox.l - o.x - x).toFixed(1), r = (winBox.r - o.x - x).toFixed(1);
+            const t = (winBox.t - o.y - y).toFixed(1), b = (winBox.b - o.y - y).toFixed(1);
+            return {
+              mask: `linear-gradient(to right, rgba(0,0,0,${A}) 0 ${l}px, #000 ${l}px ${r}px, rgba(0,0,0,${A}) ${r}px 100%), linear-gradient(to bottom, rgba(0,0,0,${A}) 0 ${t}px, #000 ${t}px ${b}px, rgba(0,0,0,${A}) ${b}px 100%)`,
+              maskComposite: "intersect"
+            };
+          }
+          if (petFade > 1e-3) {
+            const alpha = (1 - petFade).toFixed(3), b0 = Math.max(0, WAIST_PCT - 2.5).toFixed(2), b1 = Math.min(100, WAIST_PCT + 2.5).toFixed(2);
+            return { mask: `linear-gradient(to bottom, #000 0 ${b0}%, rgba(0,0,0,${alpha}) ${b1}% 100%)`, maskComposite: "" };
+          }
+          return { mask: fade > 0 ? `linear-gradient(to bottom, #000 calc(100% - ${fade}px), transparent)` : "", maskComposite: "" };
+        };
+        const applyCanvasMask = (spec) => {
+          const { mask, maskComposite } = canvasMask(spec);
+          if (mask !== lastMask || maskComposite !== lastMaskComposite) {
+            canvas.style.maskImage = canvas.style.webkitMaskImage = mask;
+            canvas.style.maskComposite = maskComposite || "add";
+            canvas.style.webkitMaskComposite = maskComposite === "intersect" ? "source-in" : "source-over";
+            lastMask = mask;
+            lastMaskComposite = maskComposite;
+          }
+        };
+        const fitTail = () => {
+          const t = bubbleTail(bubble.offsetWidth);
+          bubble.style.setProperty("--dsc-tail-c", t - 2 + "px");
+          return t;
+        };
+        const placeIntroBubble = ({ noseX, headTop, vp }) => {
+          bubble.style.right = "auto";
+          bubble.style.fontSize = "22px";
+          bubble.style.padding = "14px 24px";
+          bubble.style.maxWidth = "560px";
+          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
+          if (!coarsePointer()) {
+            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
+            bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
+            return;
+          }
+          const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
+          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
+          bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
+        };
+        const placeDesktopBubble = ({ k, x, noseX, headTop, home, loose }) => {
+          const card = home.card;
+          bubble.style.left = "auto";
+          bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
+          const tail = fitTail();
+          bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";
+          bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
+          if (!(card && home.r)) return;
+          const r = home.r, bl = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl, top: bt, right: bl + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };
+          if (!(b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top)) return;
+          bubble.classList.add("side");
+          bubble.style.maxWidth = "220px";
+          bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
+          const sideTop = Math.max(r.bottom + 8, headTop + 4);
+          if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
+          else {
+            bubble.classList.remove("side");
+            bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), innerWidth - 16) + "px";
+            bubble.style.top = Math.max(8, Math.min(innerHeight - bubble.offsetHeight - HOME_GAP, headTop - bubble.offsetHeight - 10)) + "px";
+          }
+        };
+        const placeMobileBubble = ({ k, noseX, headTop, vp, home }) => {
+          const card = home.card;
+          bubble.style.right = "auto";
+          bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
+          const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
+          bubble.style.left = bl.left + "px";
+          bubble.style.top = bl.top + "px";
+          if (bl.side && !home.above) bubble.classList.add("side");
+        };
+        const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox }) => {
           const r0 = home.r;
-          const placeKey = introOn ? "" : [
+          return [
             k,
             x,
             y,
@@ -1228,27 +1286,44 @@
             loose,
             winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""
           ].join("|");
+        };
+        const fadeAmounts = (k, y) => {
+          const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
+          const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
+          const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapP)) : 0;
+          return { fade, petFade };
+        };
+        const place = () => {
+          if (placeBlocked()) return;
+          const now = performance.now();
+          const home = homePose();
+          const dock = dockPose(home, now);
+          const pose2 = introPose(home, dock, now);
+          if (!pose2) return;
+          let { k, x, y } = pose2;
+          const { introOn } = pose2;
+          const show = introOn || k >= SHOW_K || home.above && k >= MIN_SHOW_K;
+          canvas.style.display = bubble.style.display = show ? "block" : "none";
+          setRender(show && (!PET || petPower));
+          if (!show) return;
+          if (curK !== k) {
+            curK = k;
+            setRes(k);
+          }
+          shown.k = k;
+          shown.x = x;
+          shown.y = y;
+          const loose = PET || free.on && free.applied || !!free.anim;
+          if (PET) ({ x, y } = placePetWindow(dock, k));
+          updateCardClip(home, introOn, k, x, y);
+          const { fade, petFade } = fadeAmounts(k, y);
+          const winBox = PET && petDock && petDock.win ? petDock.win : null;
+          const noseX = x + (model.x + noseModelX * model.scale.x) * k;
+          const vp = home.vp || viewport();
+          const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox });
           if (placeKey && placeKey === lastPlaceKey) return;
           lastPlaceKey = placeKey;
-          let mask = "";
-          let maskComposite = "";
-          if (winBox && petFade > 1e-3) {
-            const o = screenOf(0, 0), A = (1 - petFade).toFixed(3);
-            const l = (winBox.l - o.x - x).toFixed(1), r = (winBox.r - o.x - x).toFixed(1);
-            const t = (winBox.t - o.y - y).toFixed(1), b = (winBox.b - o.y - y).toFixed(1);
-            mask = `linear-gradient(to right, rgba(0,0,0,${A}) 0 ${l}px, #000 ${l}px ${r}px, rgba(0,0,0,${A}) ${r}px 100%), linear-gradient(to bottom, rgba(0,0,0,${A}) 0 ${t}px, #000 ${t}px ${b}px, rgba(0,0,0,${A}) ${b}px 100%)`;
-            maskComposite = "intersect";
-          } else if (petFade > 1e-3) {
-            const alpha = (1 - petFade).toFixed(3), b0 = Math.max(0, WAIST_PCT - 2.5).toFixed(2), b1 = Math.min(100, WAIST_PCT + 2.5).toFixed(2);
-            mask = `linear-gradient(to bottom, #000 0 ${b0}%, rgba(0,0,0,${alpha}) ${b1}% 100%)`;
-          } else if (fade > 0) mask = `linear-gradient(to bottom, #000 calc(100% - ${fade}px), transparent)`;
-          if (mask !== lastMask || maskComposite !== lastMaskComposite) {
-            canvas.style.maskImage = canvas.style.webkitMaskImage = mask;
-            canvas.style.maskComposite = maskComposite || "add";
-            canvas.style.webkitMaskComposite = maskComposite === "intersect" ? "source-in" : "source-over";
-            lastMask = mask;
-            lastMaskComposite = maskComposite;
-          }
+          applyCanvasMask({ winBox, petFade, fade, x, y });
           canvas.style.width = W * k + "px";
           canvas.style.height = H * k + "px";
           if (fleeX !== 0) bubble.style.display = "none";
@@ -1256,57 +1331,10 @@
           canvas.style.top = y + "px";
           const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;
           bubble.classList.remove("side");
-          const fitTail = () => {
-            const t = bubbleTail(bubble.offsetWidth);
-            bubble.style.setProperty("--dsc-tail-c", t - 2 + "px");
-            return t;
-          };
-          if (introOn) {
-            bubble.style.right = "auto";
-            bubble.style.fontSize = "22px";
-            bubble.style.padding = "14px 24px";
-            bubble.style.maxWidth = "560px";
-            const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
-            if (!coarsePointer()) {
-              bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
-              bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
-              return;
-            }
-            const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
-            bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
-            bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
-            return;
-          }
-          const card = home.card;
-          if (!coarsePointer() && !home.above) {
-            bubble.style.left = "auto";
-            bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
-            const tail = fitTail();
-            bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";
-            bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
-            if (card && home.r) {
-              const r = home.r, bl2 = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl2, top: bt, right: bl2 + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };
-              if (b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top) {
-                bubble.classList.add("side");
-                bubble.style.maxWidth = "220px";
-                bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
-                const sideTop = Math.max(r.bottom + 8, headTop + 4);
-                if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
-                else {
-                  bubble.classList.remove("side");
-                  bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), innerWidth - 16) + "px";
-                  bubble.style.top = Math.max(8, Math.min(innerHeight - bubble.offsetHeight - HOME_GAP, headTop - bubble.offsetHeight - 10)) + "px";
-                }
-              }
-            }
-            return;
-          }
-          bubble.style.right = "auto";
-          bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
-          const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
-          bubble.style.left = bl.left + "px";
-          bubble.style.top = bl.top + "px";
-          if (bl.side && !home.above) bubble.classList.add("side");
+          const spot = { k, x, noseX, headTop, vp, home, loose };
+          if (introOn) placeIntroBubble(spot);
+          else if (!coarsePointer() && !home.above) placeDesktopBubble(spot);
+          else placeMobileBubble(spot);
         };
         const hideChipVisible = ({ pet: pet2 = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet2 && isHidden && !mobileHiddenNow && !pageHiddenNow();
         let placeErrorWarned = false;

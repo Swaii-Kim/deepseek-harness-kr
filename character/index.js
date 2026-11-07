@@ -545,34 +545,36 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         app.ticker.lastTime = performance.now();   // 멈춰 있던 시간만큼 모델이 한꺼번에 움직이지 않게
         wakeRaf();   // 쉬고 있던 배치 루프가 있으면 깨워야 그려진다
       };
-      const place = () => {
-        if (hidden) { canvas.style.display = bubble.style.display = "none"; return; }
-        if (pageHiddenNow()) { hideForPage(); return; }
+      // ---------- 배치: 한 프레임에 캐릭터 캔버스와 말풍선을 어디에 얼마나 크게 둘지 ----------
+      // place()가 아래 단계를 순서대로 부른다. 단계 순서와 DOM을 읽고 쓰는 순서가 곧 동작이므로 바꾸지 않는다
+      // (plugin/test/character-trace.test.js가 데스크톱 경로를 프레임마다 확인).
+      const hideCharacter = () => { canvas.style.display = bubble.style.display = "none"; };
+      // 그릴 수 없는 상태면 숨기고 true. 패널 숨김에서 돌아왔으면 표시를 되돌린다
+      const placeBlocked = () => {
+        if (hidden) { hideCharacter(); return true; }
+        if (pageHiddenNow()) { hideForPage(); return true; }
         if (pageHiddenApplied) {   // 이벤트를 놓쳤더라도 정상 배치로 돌아오면 페이지 숨김 표시를 푼다
           pageHiddenApplied = false;
           veil.style.opacity = ""; veil.style.pointerEvents = "";
           lastPlaceKey = "";
           wakeRaf();
         }
-        const now = performance.now();
-        if (mobileHidden()) {   // 설정에서 모바일 표시를 껐을 때
-          skipIntro();   // 숨긴 상태에서 인트로를 대기시키지 않는다. 다시 켜도 가운데 인트로가 재생되지 않게 한다
+        // 설정에서 모바일 표시를 껐을 때, 입력 중(키보드 열림)에는 입력창·대화를 가리지 않게 잠시 숨김
+        if (mobileHidden() || typingActive()) {
+          skipIntro();   // 숨긴 상태에서 인트로가 멈춰 렌더러가 계속 돌거나, 다시 켰을 때 가운데 인트로가 재생되지 않게 한다
           setRender(false);
-          canvas.style.display = bubble.style.display = "none"; veil.style.opacity = 0; veil.style.pointerEvents = "none"; lastPlaceKey = ""; return;
+          hideCharacter(); veil.style.opacity = 0; veil.style.pointerEvents = "none"; lastPlaceKey = ""; return true;
         }
-        if (typingActive()) {   // 입력 중(키보드 열림)에는 입력창·대화를 가리지 않게 잠시 숨김
-          skipIntro();   // 포커스가 잡힌 채 인트로가 멈춰 렌더러가 계속 돌지 않게 한다
-          setRender(false);
-          canvas.style.display = bubble.style.display = "none"; veil.style.opacity = 0; veil.style.pointerEvents = "none"; lastPlaceKey = ""; return;
-        }
-        if (link.open || link.follow?.shown) { setRender(false); canvas.style.display = bubble.style.display = "none"; lastPlaceKey = ""; return; }   // 펫 창이 대신 보여 줌 (붙을 자리는 150ms 틱이 계산)
-        const home = homePose();
-        const dock = dockPose(home, now);
+        if (link.open || link.follow?.shown) { setRender(false); hideCharacter(); lastPlaceKey = ""; return true; }   // 펫 창이 대신 보여 줌 (붙을 자리는 150ms 틱이 계산)
+        return false;
+      };
+      // 시작 연출: 가운데에서 인사하다가 베일을 누르면 제자리로 옮겨 간다. 대기 중이면 null (흐린 배경만)
+      const introPose = (home, dock, now) => {
         let { k, x, y } = dock;
         let introOn = intro.phase !== "done", vo = 0;
         if (introOn && !intro.begun) {   // 호스트 화면(입력 카드)이 뜨고 잠잠해진 뒤에 등장: 창이 막 떠서 메인 스레드가 바쁜 구간의 끊김을 안 보이게 (최대 8초 대기)
           if (home.card && !intro.cardAt) intro.cardAt = now;
-          if (!(intro.cardAt && now - intro.cardAt > 300) && now - intro.start < 8000) { veil.style.opacity = 1; veil.style.pointerEvents = "none"; return; }   // 대기 중에는 아바타 없이 흐린 배경만
+          if (!(intro.cardAt && now - intro.cardAt > 300) && now - intro.start < 8000) { veil.style.opacity = 1; veil.style.pointerEvents = "none"; return null; }   // 대기 중에는 아바타 없이 흐린 배경만
           intro.begun = true; intro.start = now;
         }
         if (introOn) {
@@ -590,43 +592,37 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           veil.style.opacity = vo; veil.style.pointerEvents = intro.phase === "center" ? "auto" : "none";
           canvas.style.opacity = intro.phase === "center" ? ease((now - intro.start) / 300) : "";   // 아바타는 흐린 배경 위에서 서서히 등장
         }
-        const show = introOn || k >= SHOW_K || (home.above && k >= MIN_SHOW_K);   // 컴포저 위 자리는 최소 크기로도 보여 준다
-        canvas.style.display = bubble.style.display = show ? "block" : "none";
-        setRender(show && (!PET || petPower));   // 펫 창은 창이 보이는 동안에만 그린다
-        if (!show) return;
-        // 배율이 바뀌면 그만큼 렌더 해상도를 올린다 (펫 창처럼 크게 그릴 때 버퍼가 모자라 뿌옇게 보이던 문제)
-        if (curK !== k) { curK = k; setRes(k); }
-        shown.k = k; shown.x = x; shown.y = y;
-        // 자유 위치·펫 창일 때만 꼬리를 머리 위에 맞춘다. 제자리 크기를 SHOW_K로 올린 경우
-        // dockTarget이 새 포즈 객체를 반환하므로, dock !== home만으로 판정하면 제자리인데도
-        // 말풍선이 화면 오른쪽 10px가 아니라 캐릭터 쪽으로 당겨진다.
-        const loose = PET || (free.on && free.applied) || !!free.anim;
-        if (PET) {
-          ({ x, y } = movePet(dock));
-          // 창 크기를 캐릭터에 맞춘다 (배율 상한이 없으므로 화면에 들어가는 만큼 창도 커진다)
-          const needW = Math.ceil(W * k) + 24, needH = Math.ceil(H * k) + PET_BUBBLE;
-          // 설정 패널이 열려 있으면 패널이 들어갈 만큼은 창을 키운다 (캐릭터는 아래 가운데 그대로)
-          const panelW = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetWidth) + 24 : 0;
-          const panelH = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetHeight) + 24 : 0;
-          const fitW = Math.max(needW, panelW), fitH = Math.max(needH, panelH);
-          if (fitW !== petWinSize.w || fitH !== petWinSize.h) {
-            petWinSize.w = fitW; petWinSize.h = fitH;
-            PET.send({ type: "fit", w: fitW, h: fitH });
-          }
-          // 창 크기가 바뀌면(패널을 열거나 크기를 바꿀 때) 패널을 보이는 화면 안에 다시 놓는다
-          if (petPanelOpen && (innerWidth !== petPanelWin.w || innerHeight !== petPanelWin.h)) {
-            petPanelWin = { w: innerWidth, h: innerHeight };
-            fitPetPanel();
-          }
-          // 클릭을 받을 몸 영역(창 안 좌표)을 펫 프로세스에 알려 줌. 커서가 이 안에 있는지는 펫 프로세스가 직접 확인 (산책·도망 중엔 없음)
-          const r = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
-          const b = petPanelBox(body);   // 설정 패널이 열려 있으면 패널 영역도 클릭을 받는다
-          const sig = JSON.stringify(b);
-          if (sig !== petBox) { petBox = sig; PET.send({ type: "hitbox", box: b }); }
+        return { k, x, y, introOn };
+      };
+      // 펫 창: 창을 캐릭터에 맞추고 클릭 영역을 알린다. 돌려주는 값은 창 안 좌표 { x, y }
+      const placePetWindow = (dock, k) => {
+        const { x, y } = movePet(dock);
+        // 창 크기를 캐릭터에 맞춘다 (배율 상한이 없으므로 화면에 들어가는 만큼 창도 커진다)
+        const needW = Math.ceil(W * k) + 24, needH = Math.ceil(H * k) + PET_BUBBLE;
+        // 설정 패널이 열려 있으면 패널이 들어갈 만큼은 창을 키운다 (캐릭터는 아래 가운데 그대로)
+        const panelW = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetWidth) + 24 : 0;
+        const panelH = petPanelOpen && petPanel ? Math.ceil(petPanel.offsetHeight) + 24 : 0;
+        const fitW = Math.max(needW, panelW), fitH = Math.max(needH, panelH);
+        if (fitW !== petWinSize.w || fitH !== petWinSize.h) {
+          petWinSize.w = fitW; petWinSize.h = fitH;
+          PET.send({ type: "fit", w: fitW, h: fitH });
         }
-        // 승인·질문 카드가 입력 영역에 떠 있으면 캐릭터에서 카드 모양(둥근 모서리 포함)만 잘라 낸다.
-        // 캐릭터는 계속 위(z=30)에 두므로 테마를 끈 상태의 불투명한 입력 영역 배경에도 몸이 가려지지 않는다.
-        // (placeKey 비교보다 먼저: 입력창 위치가 그대로여도 카드가 뜨고 사라지거나 테마 전환으로 반지름이 바뀌면 갱신)
+        // 창 크기가 바뀌면(패널을 열거나 크기를 바꿀 때) 패널을 보이는 화면 안에 다시 놓는다
+        if (petPanelOpen && (innerWidth !== petPanelWin.w || innerHeight !== petPanelWin.h)) {
+          petPanelWin = { w: innerWidth, h: innerHeight };
+          fitPetPanel();
+        }
+        // 클릭을 받을 몸 영역(창 안 좌표)을 펫 프로세스에 알려 줌. 커서가 이 안에 있는지는 펫 프로세스가 직접 확인 (산책·도망 중엔 없음)
+        const r = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
+        const b = petPanelBox(body);   // 설정 패널이 열려 있으면 패널 영역도 클릭을 받는다
+        const sig = JSON.stringify(b);
+        if (sig !== petBox) { petBox = sig; PET.send({ type: "hitbox", box: b }); }
+        return { x, y };
+      };
+      // 승인·질문 카드가 입력 영역에 떠 있으면 캐릭터에서 카드 모양(둥근 모서리 포함)만 잘라 낸다.
+      // 캐릭터는 계속 위(z=30)에 두므로 테마를 끈 상태의 불투명한 입력 영역 배경에도 몸이 가려지지 않는다.
+      // (placeKey 비교보다 먼저: 입력창 위치가 그대로여도 카드가 뜨고 사라지거나 테마 전환으로 반지름이 바뀌면 갱신)
+      const updateCardClip = (home, introOn, k, x, y) => {
         const seat = !introOn && home.card && home.card.closest('[class*="composerSeat"]');
         const popup = seat && seat.querySelector('[class*="_card"]:not(.dsc-composer)');
         let clip = "";
@@ -641,24 +637,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           }
         }
         if (clip !== lastClip) { canvas.style.clipPath = clip; lastClip = clip; }
-        // 배치에 쓰는 값이 그대로면 건너뜀: 매 프레임 side 클래스를 뗐다 붙이며 레이아웃을 3번씩 강제하던 것 방지
-        // 허리 아래가 잘린 창 안 그림은 화면 아래에서 띄우면 띄운 만큼 아래쪽을 흐리게 (꼬마 모습은 발까지 그려져 안 흐림)
-        // 펫 창은 전신을 그리지만, 제자리로 붙는 동안에는 하반신을 서서히 지워 도착할 때 창 안 상반신 그림과 이어지게 한다
-        const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
-        const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
-        const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapP)) : 0;   // 붙는 진행도 (0 = 전신 그대로, 1 = 하반신 완전히 사라짐)
-        // 펫 창: DSH 창 안쪽은 또렷하게, 창 밖으로 나간 부분은 흐리게(반투명) — 창 영역을 기준으로 자른다
-        const winBox = PET && petDock && petDock.win ? petDock.win : null;
-        const noseX = x + (model.x + noseModelX * model.scale.x) * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
-        const vp = home.vp || viewport();
-        const r0 = home.r;
-        const placeKey = introOn ? "" : [k, x, y, vp.left, vp.top, vp.w, vp.h, fleeX, Math.round(bodyW * 40), r0 && r0.left, r0 && r0.right, r0 && r0.top, r0 && r0.bottom,
-          Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60), loose,
-          winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""].join("|");
-        if (placeKey && placeKey === lastPlaceKey) return;
-        lastPlaceKey = placeKey;
-        let mask = "";
-        let maskComposite = "";
+      };
+      // 캔버스 마스크: 펫 창이 제자리로 붙는 동안 창 밖 부분을 흐리게, 창 안 그림을 화면 아래에서 띄우면 잘린 허리를 흐리게
+      const canvasMask = ({ winBox, petFade, fade, x, y }) => {
         if (winBox && petFade > 0.001) {
           // 복귀 중에만: DSH 창 안쪽은 또렷(불투명), 바깥으로 나간 부분은 진행도에 따라 흐려져 도착하면 완전히 사라진다.
           //  · 허리 기준 정렬 덕분에 도착 시 하반신이 창 아래 = 바깥에 놓이므로, 하반신이 자연스럽게 지워진다
@@ -666,73 +647,137 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           const o = screenOf(0, 0), A = (1 - petFade).toFixed(3);
           const l = (winBox.l - o.x - x).toFixed(1), r = (winBox.r - o.x - x).toFixed(1);
           const t = (winBox.t - o.y - y).toFixed(1), b = (winBox.b - o.y - y).toFixed(1);
-          mask = `linear-gradient(to right, rgba(0,0,0,${A}) 0 ${l}px, #000 ${l}px ${r}px, rgba(0,0,0,${A}) ${r}px 100%), `
-            + `linear-gradient(to bottom, rgba(0,0,0,${A}) 0 ${t}px, #000 ${t}px ${b}px, rgba(0,0,0,${A}) ${b}px 100%)`;
-          maskComposite = "intersect";
-        } else if (petFade > 0.001) {
+          return {
+            mask: `linear-gradient(to right, rgba(0,0,0,${A}) 0 ${l}px, #000 ${l}px ${r}px, rgba(0,0,0,${A}) ${r}px 100%), `
+              + `linear-gradient(to bottom, rgba(0,0,0,${A}) 0 ${t}px, #000 ${t}px ${b}px, rgba(0,0,0,${A}) ${b}px 100%)`,
+            maskComposite: "intersect",
+          };
+        }
+        if (petFade > 0.001) {
           // 펫 창 영역을 아직 받지 못했을 때의 대비: 허리 기준으로 페이드
           const alpha = (1 - petFade).toFixed(3), b0 = Math.max(0, WAIST_PCT - 2.5).toFixed(2), b1 = Math.min(100, WAIST_PCT + 2.5).toFixed(2);
-          mask = `linear-gradient(to bottom, #000 0 ${b0}%, rgba(0,0,0,${alpha}) ${b1}% 100%)`;
-        } else if (fade > 0) mask = `linear-gradient(to bottom, #000 calc(100% - ${fade}px), transparent)`;
+          return { mask: `linear-gradient(to bottom, #000 0 ${b0}%, rgba(0,0,0,${alpha}) ${b1}% 100%)`, maskComposite: "" };
+        }
+        return { mask: fade > 0 ? `linear-gradient(to bottom, #000 calc(100% - ${fade}px), transparent)` : "", maskComposite: "" };
+      };
+      const applyCanvasMask = (spec) => {
+        const { mask, maskComposite } = canvasMask(spec);
         if (mask !== lastMask || maskComposite !== lastMaskComposite) {
           canvas.style.maskImage = canvas.style.webkitMaskImage = mask;
           canvas.style.maskComposite = maskComposite || "add";
           canvas.style.webkitMaskComposite = maskComposite === "intersect" ? "source-in" : "source-over";
           lastMask = mask; lastMaskComposite = maskComposite;
         }
+      };
+      // 지금 폭에 맞춘 꼬리 자리 (최대폭을 정한 뒤 부름)
+      const fitTail = () => { const t = bubbleTail(bubble.offsetWidth); bubble.style.setProperty("--dsc-tail-c", t - 2 + "px"); return t; };
+      // 시작 연출 말풍선: 가운데에선 머리 위에 큰 말풍선. 꼬리는 코에 맞추고 화면 밖으로 넘치지 않게 자른다
+      const placeIntroBubble = ({ noseX, headTop, vp }) => {
+        bubble.style.right = "auto"; bubble.style.fontSize = "22px"; bubble.style.padding = "14px 24px"; bubble.style.maxWidth = "560px";
+        const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
+        if (!coarsePointer()) {   // 데스크톱: 창 오른쪽 경계만 남기고 자른다
+          bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
+          bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
+          return;
+        }
+        const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
+        bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
+        bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
+      };
+      // 데스크톱 말풍선: 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다. 입력창과 겹치면 옆으로 피한다
+      const placeDesktopBubble = ({ k, x, noseX, headTop, home, loose }) => {
+        const card = home.card;
+        bubble.style.left = "auto";
+        bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
+        const tail = fitTail();
+        bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";   // 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다
+        bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
+        if (!(card && home.r)) return;
+        const r = home.r, bl = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl, top: bt, right: bl + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };   // 등장 애니메이션(transform) 영향 없는 레이아웃 크기
+        if (!(b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top)) return;
+        bubble.classList.add("side");
+        bubble.style.maxWidth = "220px";
+        // 제자리(snap)에서는 화면 오른쪽 10px를 유지한다. 자유 위치에서만 꼬리를 캐릭터에 맞춘다.
+        bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
+        const sideTop = Math.max(r.bottom + 8, headTop + 4);
+        if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
+        else {
+          // 컴포저가 화면 아래 끝까지 차지해 아래로 피할 자리가 없으면, 화면 밖으로 내리지 않고
+          // 캐릭터에 붙인 right 기준을 유지한 채 위쪽으로만 clamp한다.
+          bubble.classList.remove("side");
+          bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), innerWidth - 16) + "px";
+          bubble.style.top = Math.max(8, Math.min(innerHeight - bubble.offsetHeight - HOME_GAP, headTop - bubble.offsetHeight - 10)) + "px";
+        }
+      };
+      // 모바일·컴포저 위 말풍선: 머리 위가 기본. 카드와 겹치면 옆/아래로 피하고, 뷰포트(주소창·키보드) 밖으로는 나가지 않게 자른다
+      const placeMobileBubble = ({ k, noseX, headTop, vp, home }) => {
+        const card = home.card;
+        bubble.style.right = "auto";
+        bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
+        const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
+        bubble.style.left = bl.left + "px";
+        bubble.style.top = bl.top + "px";
+        if (bl.side && !home.above) bubble.classList.add("side");
+      };
+      // 배치에 쓰는 값을 한 줄로 묶은 비교용 키 (같으면 이번 프레임 배치를 건너뜀)
+      const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox }) => {
+        const r0 = home.r;
+        return [k, x, y, vp.left, vp.top, vp.w, vp.h, fleeX, Math.round(bodyW * 40), r0 && r0.left, r0 && r0.right, r0 && r0.top, r0 && r0.bottom,
+          Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60), loose,
+          winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""].join("|");
+      };
+      // 화면 아래에서 띄운 만큼 잘린 허리를 흐리게 할 높이(px), 펫 창이 붙는 진행도
+      const fadeAmounts = (k, y) => {
+        // 허리 아래가 잘린 창 안 그림은 화면 아래에서 띄우면 띄운 만큼 아래쪽을 흐리게 (꼬마 모습은 발까지 그려져 안 흐림)
+        // 펫 창은 전신을 그리지만, 제자리로 붙는 동안에는 하반신을 서서히 지워 도착할 때 창 안 상반신 그림과 이어지게 한다
+        const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
+        const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
+        const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapP)) : 0;   // 붙는 진행도 (0 = 전신 그대로, 1 = 하반신 완전히 사라짐)
+        return { fade, petFade };
+      };
+
+      const place = () => {
+        if (placeBlocked()) return;
+        const now = performance.now();
+        const home = homePose();
+        const dock = dockPose(home, now);
+        const pose = introPose(home, dock, now);
+        if (!pose) return;
+        let { k, x, y } = pose;
+        const { introOn } = pose;
+        const show = introOn || k >= SHOW_K || (home.above && k >= MIN_SHOW_K);   // 컴포저 위 자리는 최소 크기로도 보여 준다
+        canvas.style.display = bubble.style.display = show ? "block" : "none";
+        setRender(show && (!PET || petPower));   // 펫 창은 창이 보이는 동안에만 그린다
+        if (!show) return;
+        // 배율이 바뀌면 그만큼 렌더 해상도를 올린다 (펫 창처럼 크게 그릴 때 버퍼가 모자라 뿌옇게 보이던 문제)
+        if (curK !== k) { curK = k; setRes(k); }
+        shown.k = k; shown.x = x; shown.y = y;
+        // 자유 위치·펫 창일 때만 꼬리를 머리 위에 맞춘다. 제자리 크기를 SHOW_K로 올린 경우
+        // dockTarget이 새 포즈 객체를 반환하므로, dock !== home만으로 판정하면 제자리인데도
+        // 말풍선이 화면 오른쪽 10px가 아니라 캐릭터 쪽으로 당겨진다.
+        const loose = PET || (free.on && free.applied) || !!free.anim;
+        if (PET) ({ x, y } = placePetWindow(dock, k));
+        updateCardClip(home, introOn, k, x, y);
+        // 배치에 쓰는 값이 그대로면 건너뜀: 매 프레임 side 클래스를 뗐다 붙이며 레이아웃을 3번씩 강제하던 것 방지
+        const { fade, petFade } = fadeAmounts(k, y);
+
+        // 펫 창: DSH 창 안쪽은 또렷하게, 창 밖으로 나간 부분은 흐리게(반투명) — 창 영역을 기준으로 자른다
+        const winBox = PET && petDock && petDock.win ? petDock.win : null;
+        const noseX = x + (model.x + noseModelX * model.scale.x) * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
+        const vp = home.vp || viewport();
+        const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox });
+        if (placeKey && placeKey === lastPlaceKey) return;
+        lastPlaceKey = placeKey;
+        applyCanvasMask({ winBox, petFade, fade, x, y });
         canvas.style.width = W * k + "px"; canvas.style.height = H * k + "px";
         if (fleeX !== 0) bubble.style.display = "none";
         canvas.style.left = x + "px"; canvas.style.top = y + "px";
         const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
-        const fitTail = () => { const t = bubbleTail(bubble.offsetWidth); bubble.style.setProperty("--dsc-tail-c", t - 2 + "px"); return t; };   // 지금 폭에 맞춘 꼬리 자리 (최대폭을 정한 뒤 부름)
-        if (introOn) {   // 가운데에선 머리 위에 큰 말풍선. 꼬리는 코에 맞추고 화면 밖으로 넘치지 않게 자른다
-          bubble.style.right = "auto"; bubble.style.fontSize = "22px"; bubble.style.padding = "14px 24px"; bubble.style.maxWidth = "560px";
-          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
-          if (!coarsePointer()) {   // 데스크톱: 창 오른쪽 경계만 남기고 자른다
-            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
-            bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
-            return;
-          }
-          const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
-          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
-          bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
-          return;
-        }
-        const card = home.card;
-        if (!coarsePointer() && !home.above) {   // 데스크톱 말풍선은 기존 배치 그대로
-          bubble.style.left = "auto";
-          bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
-          const tail = fitTail();
-          bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";   // 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다
-          bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
-          if (card && home.r) {
-            const r = home.r, bl = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl, top: bt, right: bl + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };   // 등장 애니메이션(transform) 영향 없는 레이아웃 크기
-            if (b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top) {
-              bubble.classList.add("side");
-              bubble.style.maxWidth = "220px";
-              // 제자리(snap)에서는 화면 오른쪽 10px를 유지한다. 자유 위치에서만 꼬리를 캐릭터에 맞춘다.
-              bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
-              const sideTop = Math.max(r.bottom + 8, headTop + 4);
-              if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
-              else {
-                // 컴포저가 화면 아래 끝까지 차지해 아래로 피할 자리가 없으면, 화면 밖으로 내리지 않고
-                // 캐릭터에 붙인 right 기준을 유지한 채 위쪽으로만 clamp한다.
-                bubble.classList.remove("side");
-                bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), innerWidth - 16) + "px";
-                bubble.style.top = Math.max(8, Math.min(innerHeight - bubble.offsetHeight - HOME_GAP, headTop - bubble.offsetHeight - 10)) + "px";
-              }
-            }
-          }
-          return;
-        }
-        bubble.style.right = "auto";
-        bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
-        // 머리 위가 기본. 카드와 겹치면 옆/아래로 피하고, 뷰포트(주소창·키보드) 밖으로는 나가지 않게 자른다
-        const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
-        bubble.style.left = bl.left + "px";
-        bubble.style.top = bl.top + "px";
-        if (bl.side && !home.above) bubble.classList.add("side");
+        const spot = { k, x, noseX, headTop, vp, home, loose };
+        if (introOn) placeIntroBubble(spot);
+        else if (!coarsePointer() && !home.above) placeDesktopBubble(spot);   // 데스크톱 말풍선은 기존 배치 그대로
+        else placeMobileBubble(spot);
       };
       // 캔버스 숨김 칩: 캐릭터를 다시 부를 수 있는 상태에서만 보여 준다.
       // 모바일 숨김 설정(mobileCharacter=false)이면 칩도 남기지 않고, 설정을 되돌리면 다음 프레임에 다시 보인다.

@@ -338,7 +338,8 @@ test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프�
   const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   // 매 프레임 homePose(레이아웃 읽기)를 하던 저장 경로 제거: 링크 검사가 homePose 보다 먼저
   assert.ok(!dsc.includes('link.home'), '매 프레임 저장하던 link.home 이 남아 있으면 안 된다')
-  assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*const home = homePose\(\);/)
+  assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*return false;/)   // placeBlocked()의 마지막 검사
+  assert.match(dsc, /if \(placeBlocked\(\)\) return;\n\s*const now = performance\.now\(\);\n\s*const home = homePose\(\);/)
   assert.match(dsc, /const h = dockTarget\(homePose\(\)\)/)
   // link.open 을 끄는 두 곳(연결의 leave, 캔버스 다시 표시)에서 루프를 깨운다
   const petLink = await readFile(new URL('../../character/pet-link.js', import.meta.url), 'utf8')

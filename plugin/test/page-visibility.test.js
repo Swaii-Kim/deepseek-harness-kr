@@ -290,7 +290,7 @@ test('패널 숨김은 캐릭터 API로만 전달하고, 캐릭터는 setPrefs�
   assert.match(source, /if \(!PET\) hooks\.syncPageHidden = syncPageHidden;/)
   assert.match(source, /if \(pageChanged\) hooks\.syncPageHidden\?\.\(\);/)
   assert.match(source, /const addEventListener = \(\.\.\.args\) => life\.listen\(window, \.\.\.args\)/)
-  assert.match(source, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return; \}/)
+  assert.match(source, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return true; \}/)
   assert.doesNotMatch(source, /window\.__dsc(?!\b)[A-Za-z]/, '캐릭터는 window.__dsc(디버그·TTS용) 말고는 전역을 쓰지 않는다')
   const h = runClientApply()
   const client = await loadClient(h.window)
@@ -335,7 +335,7 @@ test('place() 자체도 패널 숨김을 지켜 창 밖 펫 분기보다 먼저 
   assert.equal(h.rendering(), false)
   assert.equal(h.pageHiddenApplied(), true)
 
-  const pageBranch = source.indexOf('if (pageHiddenNow()) { hideForPage(); return; }')
+  const pageBranch = source.indexOf('if (pageHiddenNow()) { hideForPage(); return true; }')
   const petBranch = source.indexOf('if (link.open || link.follow?.shown)', pageBranch)
   assert.ok(pageBranch >= 0 && petBranch > pageBranch, '패널 숨김 검사가 외부 펫 분기보다 앞서야 한다')
 })
