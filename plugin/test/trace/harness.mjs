@@ -32,13 +32,20 @@ function installFakeModel(win, clock, sink) {
   class CoreModel {
     constructor() {
       this.values = new Map(); this.saved = null
-      // 모델 그림 영역 1000×2000 안에 몸 부위 drawable 8개 (외곽·허리 계산과 귀·가슴 파트 판정용)
+      // 모델 그림 영역 1000×2000 안에 몸 부위 drawable 8개. 부위 파트(머리·허리·아래·다리·귀·가슴·팔)를 달아 터치 판정이 동작하게 한다
+      // (텍스처가 없으므로 알파 판정은 늘 '그림 있음', 겹치면 그리기 순서가 큰 쪽)
       const rects = [[300, 0, 700, 500], [250, 400, 750, 900], [200, 800, 800, 1300], [250, 1200, 750, 2000], [150, 0, 300, 300], [700, 0, 850, 300], [350, 700, 650, 950], [380, 150, 620, 450]]
       const quad = ([x0, y0, x1, y1]) => Float32Array.from([x0, y0, x1, y0, x1, y1, x0, y1])
       this.verts = rects.map(quad)
       this.model = {
-        drawables: { count: rects.length, opacities: new Float32Array(rects.length).fill(1), dynamicFlags: new Uint8Array(rects.length).fill(1), parentPartIndices: Int32Array.from([0, 1, 2, 3, 4, 4, 5, 0]), vertexPositions: this.verts },
-        parts: { count: 6, ids: ['Part1', 'Part81', 'Part2', 'Part3', 'Part159', 'Part88'], opacities: new Float32Array(6).fill(1), parentIndices: Int32Array.from([-1, -1, -1, -1, -1, -1]) },
+        drawables: {
+          count: rects.length, opacities: new Float32Array(rects.length).fill(1), dynamicFlags: new Uint8Array(rects.length).fill(1),
+          parentPartIndices: Int32Array.from([0, 1, 2, 3, 4, 4, 5, 6]), vertexPositions: this.verts,
+          renderOrders: Int32Array.from(rects.keys()), textureIndices: new Int32Array(rects.length),
+          indices: rects.map(() => Uint16Array.from([0, 1, 2, 0, 2, 3])), vertexUvs: rects.map(() => new Float32Array(8)),
+        },
+        // 머리(Part99)·허리(Part89)·아래(Part97)·다리(Part114)·귀(Part159)·가슴(Part88)·팔(Part127)
+        parts: { count: 7, ids: ['Part99', 'Part89', 'Part97', 'Part114', 'Part159', 'Part88', 'Part127'], opacities: new Float32Array(7).fill(1), parentIndices: Int32Array.from([-1, -1, -1, -1, -1, -1, -1]) },
         parameters: { count: 0, values: new Float32Array(0) },
         update() {},
       }
@@ -161,6 +168,7 @@ function installLayout(win, size) {
   Object.defineProperty(win, 'innerWidth', { configurable: true, get: () => size.w })
   Object.defineProperty(win, 'innerHeight', { configurable: true, get: () => size.h })
   win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
+  win.document.elementFromPoint = () => null   // 캐릭터 위에 버튼·입력창이 없음
   win.devicePixelRatio = 1
 }
 
@@ -206,6 +214,37 @@ export async function runTrace(code) {
   const run = async (n, ms = 1000 / 60) => { for (let i = 0; i < n; i++) await step(ms) }
   const pointer = (type, x, y, target = doc) => target.dispatchEvent(new win.PointerEvent(type, { clientX: x, clientY: y, bubbles: true, pointerId: 1, buttons: 0 }))
   // 시선은 window의 mousemove를, 터치·끌기는 pointer 이벤트를 듣는다
+  // 캐릭터 위 지점을 터치 부위 이름으로 찾는다 (캔버스 안을 4px 간격으로 훑음)
+  const spot = (name) => {
+    const s = doc.getElementById('dsc-stage').getBoundingClientRect()
+    for (let y = s.top + 2; y < s.bottom; y += 4) for (let x = s.left + 2; x < s.right; x += 4) if (win.__dsc.regionAt(x, y) === name) return [x, y]
+    throw new Error('부위를 찾지 못함: ' + name)
+  }
+  const press = (type, x, y, o = {}) => doc.getElementById('dsc-stage').dispatchEvent(new win.PointerEvent(type, {
+    clientX: x, clientY: y, bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: type === 'pointerup' ? 0 : 1, ...o,
+  }))
+  // 같은 지점에서 누르고 dx·dy만큼 steps번에 나눠 움직인 뒤 뗀다 (한 걸음마다 frames프레임)
+  const gesture = async ([x, y], dx, dy, { steps = 6, frames = 2, ...o } = {}) => {
+    press('pointerdown', x, y, o); await run(frames)
+    for (let i = 1; i <= steps; i++) { press('pointermove', x + dx * i / steps, y + dy * i / steps, o); await run(frames) }
+    press('pointerup', x + dx, y + dy, o)
+  }
+  const touchScenarios = async () => {
+    character.setPrefs({ outfit: {} })             // 꼬마 체형은 가슴 반응이 없어 기본 체형으로
+    await run(120)
+    await gesture(spot('head'), 0, 0, { steps: 0 }); await run(150)                  // 머리 터치
+    await gesture(spot('head'), 0, 70, { steps: 10, frames: 4 }); await run(240)     // 천천히 쓸어내리기 (세숫대야)
+    await gesture(spot('chest'), 0, 0, { steps: 0 }); await run(200)                 // 가슴 터치
+    const chest = spot('chest')
+    press('pointerdown', ...chest); await run(2)                                     // 가슴 끌어올리기 + 좌우로 흔들기
+    for (let i = 1; i <= 8; i++) { press('pointermove', chest[0], chest[1] - 8 * i); await run(2) }
+    for (let i = 0; i < 12; i++) { press('pointermove', chest[0] + (i % 2 ? 20 : -20), chest[1] - 64); await run(3) }
+    press('pointerup', chest[0], chest[1] - 64); await run(260)
+    await gesture(spot('lower'), -220, -60, { steps: 12, frames: 1, altKey: true }); await run(180)   // Alt 누른 채 집어 옮기기 → 자유 위치
+    const body = spot('lower')
+    for (let i = 0; i < 6; i++) { doc.getElementById('dsc-stage').dispatchEvent(new win.WheelEvent('wheel', { clientX: body[0], clientY: body[1], deltaY: -120, bubbles: true, cancelable: true })); await run(3) }
+    await run(150)                                                                   // 휠로 키우기
+  }
   const mouse = (x, y) => { win.dispatchEvent(new win.MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true })); pointer('pointermove', x, y) }
 
   await run(150)                                   // 인트로 대기 → 가운데 등장
@@ -225,6 +264,7 @@ export async function runTrace(code) {
   await run(150)                                   // 소품·옷·체형
   size.w = 1200; size.h = 700; win.dispatchEvent(new win.Event('resize'))
   await run(120)                                   // 창 크기 변경
+  await touchScenarios()
   await run(780, 100)                              // 입력 없이 78초 → 절전으로 나감
   mouse(600, 300); pointer('pointerdown', 600, 300)
   await run(240)                                   // 깨어나 돌아옴
