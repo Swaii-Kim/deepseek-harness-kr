@@ -18,6 +18,8 @@ import { PET_PATH } from '../pet-host.js'
 
 const packageName = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).name
 const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
+// 한국어 사전 네임스페이스 수 (plugin/locales.ko.json)
+const KO_NAMESPACES = Object.keys(JSON.parse(await readFile(new URL('../locales.ko.json', import.meta.url), 'utf8'))).length
 // 캐릭터와 플러그인 화면은 createCharacter API로만 통신한다. window에 남은 캐릭터 통신용 전역(__dsc 디버그 핸들 제외)을 모은다
 const dscGlobals = (window) => Object.keys(window).filter((key) => key.startsWith('__dsc'))
 
@@ -601,7 +603,7 @@ test('client registers Korean independently, mounts once, and rolls back on disa
     h.client.apply(first)
     assert(h.languages.has('ko'))
     assert.equal(h.selected, 'en', 'installation must not overwrite the user language')
-    assert.equal(h.dictionaries.size, 54)
+    assert.equal(h.dictionaries.size, KO_NAMESPACES)
     assert.equal(h.dictionaries.get('settings.theme/ko')['appearance.title'], '모양')
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 1)
     assert.equal(h.dom.window.document.querySelectorAll('link').length, 2)
@@ -689,7 +691,7 @@ test('reinjection takes over without duplicate dictionaries or stale disposer re
     h.client.apply(second)
     first.dispose()
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 1)
-    assert.equal(h.dictionaries.size, 54)
+    assert.equal(h.dictionaries.size, KO_NAMESPACES)
     second.dispose()
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 0)
     assert.equal(h.dictionaries.size, 0)
@@ -756,7 +758,7 @@ test('all eight combinations mount only the selected features', () => {
       assert.equal(!!doc.querySelector('link[href$="character.css"]'), character)
       assert.equal(!!doc.querySelector('link[href$="theme.css"]'), theme)
       assert.equal(h.languages.has('ko'), translation)
-      assert.equal(h.dictionaries.size, translation ? 54 : 0)
+      assert.equal(h.dictionaries.size, translation ? KO_NAMESPACES : 0)
       assert.equal(doc.body.hasAttribute('data-ds-dark-theme'), true, 'theme and character keep the app dark mode')
       assert.equal(h.pages.size, 1, 'settings remain available even when every feature is off')
       ctx.dispose()
