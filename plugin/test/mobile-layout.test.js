@@ -176,7 +176,7 @@ test('모드가 다른 자유 위치는 현재 화면에 적용하지 않는다'
 })
 
 test('데스크톱 말풍선 꼬리는 코를 따르고(오른쪽 10px 고정 아님), 아래 공간이 없으면 위로 clamp한다', () => {
-  assert.match(source, /if \(!coarsePointer\(\) && !home\.above\)/)
+  assert.match(source, /else if \(!coarsePointer\(\) && !spot\.home\.above\) placeDesktopBubble\(spot\);/)
   assert.match(source, /bubble\.style\.right = tailRight\(\{ noseX, width: innerWidth, tail \}\)/)
   assert.doesNotMatch(source, /bubble\.style\.right = loose \? Math\.max\(10, innerWidth - \(x \+ W \* k \/ 2 \+ 55\)\)/)
   assert.match(source, /sideTop \+ bubble\.offsetHeight <= innerHeight - HOME_GAP/)
@@ -184,8 +184,9 @@ test('데스크톱 말풍선 꼬리는 코를 따르고(오른쪽 10px 고정 �
 })
 
 test('제자리 최소 크기 보정에서도 말풍선은 화면 오른쪽 기준을 유지한다', () => {
-  const loose = source.slice(source.indexOf('const loose ='), source.indexOf('if (!coarsePointer() && !home.above)'))
-  assert.match(loose, /const loose = PET \|\| \(free\.on && free\.applied\) \|\| !!free\.anim/)
+  const loose = source.slice(source.indexOf('const looseBubble ='), source.indexOf('const petWinBox ='))
+  assert.match(loose, /const looseBubble = \(\) => PET \|\| \(free\.on && free\.applied\) \|\| !!free\.anim/)
+  assert.match(source, /const loose = looseBubble\(\);/)
   assert.doesNotMatch(loose, /dock !== home/)
   assert.match(source, /bubble\.style\.right = loose \? innerWidth - \(x \+ \(W - visW\) \/ 2 \* k\) \+ 8 \+ "px" : "10px"/)
 })

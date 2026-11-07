@@ -124,7 +124,8 @@ test('sleep preserves free placement, blocks dragging and never sleeps while the
     run('let fleeX = 0, hidden = false, running = false, waitingKind = null, snapP = 0;')
     run(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')))
     run(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')))
-    run(code.slice(code.indexOf('      const dockPose ='), code.indexOf('      const GLIDE =')))
+    // 자유 위치 계산 단계(애니메이션 끝·미끄러짐·창 비율 자리)와 dockPose를 함께 실행한다
+    run(code.slice(code.indexOf('      const finishFreeAnim ='), code.indexOf('      const GLIDE =')))
     assert.equal(listeners, petPage ? 0 : 6)
     if (petPage) { run('sleepGo()'); assert.equal(run('SLEEP.state'), 'active'); assert.equal(stopped, false); continue }
     for (const guard of ['drag.on', 'drag.pending', 'free.anim']) {

@@ -454,24 +454,37 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const side = (W - visW) / 2 * q.k, edge = visW * q.k * 0.02;
         return q.x + side >= w.l + edge && q.x + W * q.k - side <= w.r - edge && q.y >= w.t + edge && q.y + H * q.k * 0.8 <= w.b;
       };
+      // 놓은 뒤 미끄러짐·제자리로 붙기 애니메이션이 끝났을 때: 자유 위치를 확정하거나(붙었으면) 풀고, 펫 창은 붙었다고 알림
+      const finishFreeAnim = (a, to) => {
+        free.anim = null;
+        if (a.snap && !PET) { free.on = false; saveFree(); }
+        else { Object.assign(free, { on: true, x: to.x, y: to.y, k: to.k }); saveFree(); }
+        if (a.snap && PET) { petDocked = true; PET.send({ type: "attach" }); }
+        if (PET) { petSyncMenu(); renderPetPanel(); }   // 크기 애니메이션이 끝난 뒤 메뉴·슬라이더를 새 값으로
+      };
+      // 미끄러짐·붙기 애니메이션의 지금 자리 (붙기는 끝에서 살짝 넘쳤다 돌아옴)
+      const freeAnimPose = (a, home, now) => {
+        const p = Math.min(1, (now - a.t0) / a.ms), to = a.snap ? (PET ? petDock : dockTarget(home)) || a.from : a.to;
+        const e = a.snap ? easeBack(p) : easeOut(p), ek = easeOut(p);
+        const pose = { k: a.from.k + (to.k - a.from.k) * ek, x: a.from.x + (to.x - a.from.x) * e, y: a.from.y + (to.y - a.from.y) * e };
+        if (a.snap) snapP = ek;
+        if (p >= 1) finishFreeAnim(a, to);
+        return pose;
+      };
+      // 창 안 자유 위치: 창 크기 비율 자리, 크기는 지금 창에 들어가는 최대치까지만
+      const freeWindowPose = (home) => {
+        if (!isFinite(free.fx) || !isFinite(free.fy)) freeToRatio();
+        // 모바일에서는 카드가 있을 때 자동 배치 크기(컴포저 위 = 자동 크기의 30%)를 따르고,
+        // 카드가 잠깐 사라진 프레임에는 마지막 자유 크기를 써서 캐릭터가 갑자기 커지지 않게 한다.
+        const floor = coarsePointer() ? MIN_SHOW_K : SHOW_K;
+        const baseK = coarsePointer() && home.r ? home.k : free.k;
+        const k = Math.max(floor, Math.min(baseK, Math.min(1.25, (innerHeight * 0.45) / visH)));
+        return { k, x: free.fx * innerWidth - W * k / 2, y: free.fy * innerHeight - H * k };
+      };
       const dockPose = (home, now) => {
         snapP = 0;
         if (drag.on) return { k: free.k, x: drag.x, y: drag.y };
-        const a = free.anim;
-        if (a) {
-          const p = Math.min(1, (now - a.t0) / a.ms), to = a.snap ? (PET ? petDock : dockTarget(home)) || a.from : a.to;
-          const e = a.snap ? easeBack(p) : easeOut(p), ek = easeOut(p);
-          const pose = { k: a.from.k + (to.k - a.from.k) * ek, x: a.from.x + (to.x - a.from.x) * e, y: a.from.y + (to.y - a.from.y) * e };
-          if (a.snap) snapP = ek;
-          if (p >= 1) {
-            free.anim = null;
-            if (a.snap && !PET) { free.on = false; saveFree(); }
-            else { Object.assign(free, { on: true, x: to.x, y: to.y, k: to.k }); saveFree(); }
-            if (a.snap && PET) { petDocked = true; PET.send({ type: "attach" }); }
-            if (PET) { petSyncMenu(); renderPetPanel(); }   // 크기 애니메이션이 끝난 뒤 메뉴·슬라이더를 새 값으로
-          }
-          return pose;
-        }
+        if (free.anim) return freeAnimPose(free.anim, home, now);
         const currentMode = freeMode();
         if (!PET && free.on && free.mode && free.mode !== currentMode) {
           // 다른 입력 모드에서 저장된 자리(예: 모바일 터치 드래그)는 이 화면에 적용하지 않는다.
@@ -481,17 +494,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
         free.applied = true;
         if (!free.on) return dockTarget(home);
-        let q: { k: number; x: number; y: number } = free;
-        if (!PET) {   // 창 크기 비율 자리, 크기는 지금 창에 들어가는 최대치까지만
-          if (!isFinite(free.fx) || !isFinite(free.fy)) freeToRatio();
-          // 모바일에서는 카드가 있을 때 자동 배치 크기(컴포저 위 = 자동 크기의 30%)를 따르고,
-          // 카드가 잠깐 사라진 프레임에는 마지막 자유 크기를 써서 캐릭터가 갑자기 커지지 않게 한다.
-          const floor = coarsePointer() ? MIN_SHOW_K : SHOW_K;
-          const baseK = coarsePointer() && home.r ? home.k : free.k;
-          const k = Math.max(floor, Math.min(baseK, Math.min(1.25, (innerHeight * 0.45) / visH)));
-          q = { k, x: free.fx * innerWidth - W * k / 2, y: free.fy * innerHeight - H * k };
-        }
-        const p = keepIn(q);
+        const p = keepIn(PET ? free : freeWindowPose(home));
         return { k: p.k, x: p.x + fleeX, y: p.y };
       };
       // 손을 놓을 때: 속도만큼 조금만 미끄러짐(GLIDE). 멈출 자리가 제자리(펫 창이면 DSH 창의 제자리) 근처면 자석으로 붙고, 창 밖이면 펫 창으로.
@@ -743,6 +746,24 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return { fade, petFade };
       };
 
+      // 보일 크기인지 정해 캔버스·말풍선 표시와 그리기를 맞춘다 (컴포저 위 자리는 최소 크기로도 보여 준다, 펫 창은 창이 보이는 동안에만 그린다)
+      const showAt = (introOn, k, home) => {
+        const show = introOn || k >= SHOW_K || (home.above && k >= MIN_SHOW_K);
+        canvas.style.display = bubble.style.display = show ? "block" : "none";
+        setRender(show && (!PET || petPower));
+        return show;
+      };
+      // 자유 위치·펫 창일 때만 꼬리를 머리 위에 맞춘다. 제자리 크기를 SHOW_K로 올린 경우
+      // dockTarget이 새 포즈 객체를 반환하므로, dock !== home만으로 판정하면 제자리인데도
+      // 말풍선이 화면 오른쪽 10px가 아니라 캐릭터 쪽으로 당겨진다.
+      const looseBubble = () => PET || (free.on && free.applied) || !!free.anim;
+      // 펫 창: DSH 창 안쪽은 또렷하게, 창 밖으로 나간 부분은 흐리게(반투명) — 창 영역을 기준으로 자른다
+      const petWinBox = () => (PET && petDock && petDock.win ? petDock.win : null);
+      const placeBubble = (introOn, spot) => {
+        if (introOn) placeIntroBubble(spot);
+        else if (!coarsePointer() && !spot.home.above) placeDesktopBubble(spot);   // 데스크톱 말풍선은 기존 배치 그대로
+        else placeMobileBubble(spot);
+      };
       const place = () => {
         if (placeBlocked()) return;
         const now = performance.now();
@@ -752,24 +773,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!pose) return;
         let { k, x, y } = pose;
         const { introOn } = pose;
-        const show = introOn || k >= SHOW_K || (home.above && k >= MIN_SHOW_K);   // 컴포저 위 자리는 최소 크기로도 보여 준다
-        canvas.style.display = bubble.style.display = show ? "block" : "none";
-        setRender(show && (!PET || petPower));   // 펫 창은 창이 보이는 동안에만 그린다
-        if (!show) return;
+        if (!showAt(introOn, k, home)) return;
         // 배율이 바뀌면 그만큼 렌더 해상도를 올린다 (펫 창처럼 크게 그릴 때 버퍼가 모자라 뿌옇게 보이던 문제)
         if (curK !== k) { curK = k; setRes(k); }
         shown.k = k; shown.x = x; shown.y = y;
-        // 자유 위치·펫 창일 때만 꼬리를 머리 위에 맞춘다. 제자리 크기를 SHOW_K로 올린 경우
-        // dockTarget이 새 포즈 객체를 반환하므로, dock !== home만으로 판정하면 제자리인데도
-        // 말풍선이 화면 오른쪽 10px가 아니라 캐릭터 쪽으로 당겨진다.
-        const loose = PET || (free.on && free.applied) || !!free.anim;
+        const loose = looseBubble();
         if (PET) ({ x, y } = placePetWindow(dock, k));
         updateCardClip(home, introOn, k, x, y);
         // 배치에 쓰는 값이 그대로면 건너뜀: 매 프레임 side 클래스를 뗐다 붙이며 레이아웃을 3번씩 강제하던 것 방지
         const { fade, petFade } = fadeAmounts(k, y);
 
-        // 펫 창: DSH 창 안쪽은 또렷하게, 창 밖으로 나간 부분은 흐리게(반투명) — 창 영역을 기준으로 자른다
-        const winBox = PET && petDock && petDock.win ? petDock.win : null;
+        const winBox = petWinBox();
         const noseX = x + (model.x + noseModelX * model.scale.x) * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
         const vp = home.vp || viewport();
         const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox });
@@ -782,9 +796,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
         const spot = { k, x, noseX, headTop, vp, home, loose };
-        if (introOn) placeIntroBubble(spot);
-        else if (!coarsePointer() && !home.above) placeDesktopBubble(spot);   // 데스크톱 말풍선은 기존 배치 그대로
-        else placeMobileBubble(spot);
+        placeBubble(introOn, spot);
       };
       // 캔버스 숨김 칩: 캐릭터를 다시 부를 수 있는 상태에서만 보여 준다.
       // 모바일 숨김 설정(mobileCharacter=false)이면 칩도 남기지 않고, 설정을 되돌리면 다음 프레임에 다시 보인다.
@@ -1047,26 +1059,32 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         look.x = hx.x; look.y = hy.x;
       };
       // ---- 말하기 (입 모양 · 고개 끄덕 · 눈썹) ----
+      // 낱말 첫소리: 눈썹 살짝(귀 쫑긋) + 가끔 끄덕 (시작 화면에서는 눈썹을 덜, 가끔만)
+      const stressKick = (introCalm) => {
+        if (!introCalm) browKick = Math.max(browKick, 0.35 + Math.random() * 0.35);
+        else if (Math.random() < 0.35) browKick = Math.max(browKick, 0.2 + Math.random() * 0.15);
+        if (Math.random() < 0.45) nodKick = Math.max(nodKick, 0.6 + Math.random() * 0.5);
+      };
+      // 말풍선 글자를 따라 지금 음절의 입 벌림을 돌려준다 (다 읽었으면 talk를 비움)
+      const talkOpen = (now, introCalm) => {
+        let t = (now - talk.t0) / 1000;
+        if (t >= talk.total) { talk = null; return 0; }
+        let i = 0; while (i < talk.syl.length && t > talk.syl[i].d) { t -= talk.syl[i].d; i++; }
+        const s = talk.syl[i];
+        if (!(s && s.v)) return 0;
+        const p = t / s.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
+        const open = env * s.amp * (talk.quiet ? 0.3 : 1);
+        vowel[s.v] = Math.max(vowel[s.v], open);
+        if (s.stress && i !== lastStressIdx) {
+          lastStressIdx = i;
+          if (!talk.quiet) stressKick(introCalm);
+        }
+        return open;
+      };
       const updateSpeech = ({ now, dt, introCalm }) => {
         let open = 0;
         for (const k of VOW) vowel[k] *= Math.max(0, 1 - dt * 14);
-        if (talk) {
-          let t = (now - talk.t0) / 1000;
-          if (t >= talk.total) talk = null;
-          else {
-            let i = 0; while (i < talk.syl.length && t > talk.syl[i].d) { t -= talk.syl[i].d; i++; }
-            const s = talk.syl[i];
-            if (s && s.v) {
-              const p = t / s.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
-              open = env * s.amp * (talk.quiet ? 0.3 : 1);
-              vowel[s.v] = Math.max(vowel[s.v], open);
-              if (s.stress && i !== lastStressIdx) {               // 낱말 첫소리: 눈썹 살짝(귀 쫑긋) + 가끔 끄덕
-                lastStressIdx = i;
-                if (!talk.quiet) { if (!introCalm) browKick = Math.max(browKick, 0.35 + Math.random() * 0.35); else if (Math.random() < 0.35) browKick = Math.max(browKick, 0.2 + Math.random() * 0.15); if (Math.random() < 0.45) nodKick = Math.max(nodKick, 0.6 + Math.random() * 0.5); }
-              }
-            }
-          }
-        }
+        if (talk) open = talkOpen(now, introCalm);
         if (voiceState?.speaking) {   // 실제 재생 중이면 오디오 레벨·모음이 입 모양을 덮어쓴다
           open = clamp(voiceState.level, 0, 1) * 0.9;
           if (voiceState.vowels) for (const k of VOW) vowel[k] = Math.max(vowel[k] * 0.4, clamp(voiceState.vowels[k] || 0, 0, 1));
@@ -2470,16 +2488,19 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!PET) followPet(now);
         e.preventDefault();
       };
+      // 왼쪽·오른쪽을 함께 누르거나, 보조 키(기본 Alt)를 누른 채 움직이면 곧바로 집어 옮긴다 (머리 쓰다듬기·가슴 끌기 판정과 6px 기준을 거치지 않음).
+      // 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급한다
+      const carryHeld = (e) => {
+        const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
+        const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
+        return both;
+      };
       life.listen(document, "pointermove", (e) => {
         if (hidden) return;
         if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;   // 패널 안 조작은 캐릭터 끌기로 이어지지 않음
         if (e.pointerType !== "touch") chordButtonsMoved(e, performance.now());   // 두 번째 마우스 버튼 합류 (pointerdown preventDefault와 무관)
         classifyTouchMove(e);
-        // 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급한다
-        const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
-        // 왼쪽·오른쪽을 함께 누르거나, 보조 키(기본 Alt)를 누른 채 움직이면 곧바로 집어 옮긴다.
-        // 머리 쓰다듬기·가슴 끌기 판정과 6px 기준을 거치지 않는다
-        const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
+        const both = carryHeld(e);
         if (chestFrom && !both && e.pointerId === chestFrom.id && chestMove(e)) return;
         if (strokeFrom && !both && strokeMove(e)) return;
         const p = drag.pending;
