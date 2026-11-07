@@ -5,7 +5,7 @@ import vm from 'node:vm'
 
 // dsc.js의 패널 숨김 구간을 그대로 잘라 실행한다. 실제 모델/PIXI 없이도
 // DOM 표시·렌더 정지·복구 칩·외부 펫 명령 여부를 확인할 수 있게 필요한 값만 둔다.
-const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
 
 const sliceBetween = (startText, endText) => {
   const start = source.indexOf(startText)
@@ -36,6 +36,8 @@ function contextBase(pageHidden = false) {
     chipAppended: 0,
     chipRemoved: 0,
     rafCalls: 0,
+    // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
+    life: { listen: (target, type, fn, options) => target.addEventListener(type, fn, options), own: (value) => value, add() {}, stopped: false },
     app: {
       // 배치 루프가 배치 뒤에 직접 돌리는 티커 (스스로 rAF를 돌지 않는다)
       ticker: {
@@ -235,11 +237,17 @@ function runClientApply() {
   }
 }
 
+// plugin/client.js는 ES 모듈 소스라, 실행 확인은 빌드된 lib/client.js를 DSH 모듈 로더처럼 불러서 한다
+async function loadClient(window) {
+  const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
+  let client
+  window.__ModuleLoader__ = { load({ factory }) { client = factory(() => ({})) } }
+  vm.runInNewContext(bundle, { window, console })
+  return client
+}
+
 test('플러그인 클라이언트는 URL이 아니라 패널 id로만 창 안 숨김을 켠다', async () => {
-  const client = await readFile(new URL('../../plugin/client.js', import.meta.url), 'utf8')
-  const context = { require: () => ({}), exports: {}, module: { exports: {} }, window: {}, console }
-  vm.runInNewContext(client, context)
-  const { panelHidesInWindowCharacter } = context.exports.internals
+  const { panelHidesInWindowCharacter } = (await loadClient({})).internals
   assert.equal(panelHidesInWindowCharacter('plugins'), true)
   assert.equal(panelHidesInWindowCharacter('schedules'), true)
   for (const id of [null, undefined, 'conversation', 'settings', 'plugins-settings']) {
@@ -248,14 +256,12 @@ test('플러그인 클라이언트는 URL이 아니라 패널 id로만 창 안 �
 })
 
 test('layout의 activePanelId 구독으로 plugins/schedules에서만 숨기고 정리한다', async () => {
-  const client = await readFile(new URL('../../plugin/client.js', import.meta.url), 'utf8')
   const h = runClientApply()
-  const context = { require: () => ({}), exports: {}, module: { exports: {} }, window: h.window, console, PLUGIN_ID: 'deepseek-harness-kr', KOREAN_DICTIONARIES: {} }
-  vm.runInNewContext(client, context)
+  const client = await loadClient(h.window)
   const events = []
   h.window.addEventListener('dsc:page-hidden', () => events.push(h.window.__dscPageHidden))
 
-  context.exports.apply(h.ctx)
+  client.apply(h.ctx)
   assert.equal(h.window.__dscPageHidden, false)
   assert.equal(h.panelListenerCount(), 1)
 
@@ -276,17 +282,12 @@ test('layout의 activePanelId 구독으로 plugins/schedules에서만 숨기고 
 })
 
 test('빌드된 lib/client.js도 layout 패널 상태를 캐릭터 코드에 전달한다', async () => {
-  const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
-  // 생성 번들에도 캐릭터 쪽 수신부와 lifecycle 래퍼가 그대로 들어가야 한다
-  assert.match(bundle, /if \(!PET\) addEventListener\("dsc:page-hidden", syncPageHidden\);/)
-  assert.match(bundle, /const addEventListener = \(\.\.\.args\) => life\.listen\(window, \.\.\.args\)/)
-  assert.match(bundle, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return; \}/)
+  // 캐릭터 쪽 수신부와 수명 래퍼는 소스에서 확인하고(번들은 esbuild가 다시 찍는다), 전달 경로는 번들을 실제로 실행해 확인한다
+  assert.match(source, /if \(!PET\) addEventListener\("dsc:page-hidden", syncPageHidden\);/)
+  assert.match(source, /const addEventListener = \(\.\.\.args\) => life\.listen\(window, \.\.\.args\)/)
+  assert.match(source, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return; \}/)
   const h = runClientApply()
-  let client
-  h.window.__ModuleLoader__ = {
-    load({ factory }) { client = factory(() => ({})) },
-  }
-  vm.runInNewContext(bundle, { window: h.window, console })
+  const client = await loadClient(h.window)
   const events = []
   h.window.addEventListener('dsc:page-hidden', () => events.push(h.window.__dscPageHidden))
   client.apply(h.ctx)

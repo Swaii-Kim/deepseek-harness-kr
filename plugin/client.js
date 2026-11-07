@@ -1,4 +1,12 @@
-// The original animation stays in assets/dsc.js; each feature owns its lifecycle here.
+// DSH 페이지 쪽 플러그인 진입점. 캐릭터·테마·번역·설정 화면을 기능별 수명으로 붙이고 뗀다.
+// plugin/build.mjs가 이 파일을 묶어 lib/client.js(DSH 모듈 로더 형식)로 만든다.
+import React from 'react'
+import { name as PLUGIN_ID } from '../package.json'
+import { createCharacter } from '../character/index.js'
+import { createLifetime } from '../character/lifetime.js'
+import * as ttsClient from '../plugins/dsh-tts/src/client/index.js'
+import KOREAN_DICTIONARIES from './locales.ko.json'
+
 const ROOT = '/deepseek-harness-kr/assets/'
 const PET_ROOT = '/deepseek-harness-kr/pet/'
 const SLOT = '__deepseekHarnessKrDispose'
@@ -14,7 +22,6 @@ const OUTFIT_FIELDS = [
   ['earHide', '동물귀 숨기기', 'Hide animal ears'],
 ]
 const BODY_TYPES = [['default', '기본 체형', 'Default'], ['type1', '체형 1', 'Body type 1'], ['type2', '체형 2 (꼬마)', 'Body type 2 (chibi)']]
-const React = require('react')
 // 이 두 화면에서는 창 안 캐릭터만 숨긴다 (대화 화면과 바깥 펫 창은 그대로).
 // 패널 id는 URL이 아니라 layout 서비스의 activePanelId로 판정한다.
 const HIDDEN_IN_WINDOW_PANELS = new Set(['plugins', 'schedules'])
@@ -109,58 +116,8 @@ function dragKeyDown(event) {
   return { action: 'save', key: label }
 }
 
-function createLifetime() {
-  let stopped = false
-  const cleanups = []
-  const timers = new Set(), intervals = new Set(), frames = new Set()
-  const add = (cleanup) => { if (stopped) cleanup(); else cleanups.push(cleanup) }
-  const timeout = (fn, ms, ...args) => {
-    if (stopped) return 0
-    const id = window.setTimeout(() => { timers.delete(id); if (!stopped) fn(...args) }, ms)
-    timers.add(id); return id
-  }
-  const interval = (fn, ms, ...args) => {
-    if (stopped) return 0
-    const id = window.setInterval(() => { if (!stopped) fn(...args) }, ms)
-    intervals.add(id); return id
-  }
-  const frame = (fn) => {
-    if (stopped) return 0
-    const id = window.requestAnimationFrame((time) => { frames.delete(id); if (!stopped) fn(time) })
-    frames.add(id); return id
-  }
-  const listen = (target, type, fn, options) => {
-    if (stopped) return
-    target.addEventListener(type, fn, options)
-    add(() => target.removeEventListener(type, fn, options))
-  }
-  const observe = (fn) => {
-    const observer = new window.MutationObserver((...args) => { if (!stopped) fn(...args) })
-    add(() => observer.disconnect())
-    return observer
-  }
-  const own = (value, cleanup) => { add(() => cleanup(value)); return value }
-  return {
-    add, timeout, interval, frame, listen, observe, own,
-    get stopped() { return stopped },
-    dispose() {
-      if (stopped) return
-      stopped = true
-      for (const id of timers) window.clearTimeout(id)
-      for (const id of intervals) window.clearInterval(id)
-      for (const id of frames) window.cancelAnimationFrame(id)
-      for (const cleanup of cleanups.reverse()) {
-        try { cleanup() } catch (error) { console.warn('DeepSeek짱 cleanup:', error) }
-      }
-    },
-  }
-}
-
 function mountCharacter(life) {
-  const setTimeout = life.timeout, setInterval = life.interval, requestAnimationFrame = life.frame
-  const addEventListener = (...args) => life.listen(window, ...args)
-  function MutationObserver(fn) { return life.observe(fn) }
-  /* ORIGINAL_CHARACTER */
+  createCharacter({ base: ROOT, life })
 }
 
 function stylesheet(life, file) {
@@ -374,14 +331,13 @@ function createUpdater({ fetch: fetchImpl = (...args) => window.fetch(...args), 
 }
 
 // ---------- 말풍선 음성 (TTS) ----------
-// 재생·입 모양 코드는 plugins/dsh-tts/src/client 원본을 빌드 때 그대로 넣는다.
-/* TTS_CLIENT */
+// 재생·입 모양 코드는 plugins/dsh-tts/src/client 원본을 그대로 가져다 쓴다(모듈 수준 상태 없음).
 
 const DEFAULT_KEY_REF = 'DSH_TTS_API_KEY'
 
 // 이 기능이 붙어 있는 동안만 dsc:say를 듣는다. 늦게 끝난 초기화는 feature.add가 바로 정리한다.
 function mountTts(feature) {
-  createTtsClient().apply({ effect: (fn) => feature.add(fn()) })
+  ttsClient.apply({ effect: (fn) => feature.add(fn()) })
     .catch((error) => console.warn('DeepSeek짱 음성:', error))
 }
 
@@ -1005,7 +961,7 @@ function apply(ctx) {
   } catch (error) { dispose(); throw error }
 }
 
-exports.inject = ['locale', 'theme', 'configForms', 'slots']
-exports.apply = apply
+export const inject = ['locale', 'theme', 'configForms', 'slots']
+export { apply }
 // 테스트용
-exports.internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter }
+export const internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter }

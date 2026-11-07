@@ -315,14 +315,14 @@ test('펫 페이지와 assets는 한 출처(dscpet://assets)라 Core 계산 Work
 
 test('펫 창이 숨으면 페이지에 그리기 중지를 알리고, 페이지는 그리기를 멈춘 채 대기한다', async () => {
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   assert.match(main, /toPage\(\{ type: 'power', on: false \}\)/)
   assert.match(dsc, /m\.type === "power"/)
   assert.match(dsc, /처음엔 숨은 채 대기/)
 })
 
 test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마다 깨우지 않고, open 이 오면 다시 돈다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   // 상호작용 매니저의 Ticker.system 구독은 루프가 쉬는 동안만 끄고, 깨울 때 되돌린다 (autoInteract: false 라 쓰지 않음)
   assert.match(dsc, /const systemTicker = \(on\) => \{ try \{ app\.renderer\.plugins\.interaction\.useSystemTicker = on; \} catch \{\} \};/)
   assert.match(dsc, /const wakeRaf = \(\) => \{ if \(rafIdle\) \{ rafIdle = false; systemTicker\(true\); requestAnimationFrame\(raf\); \} \};/)
@@ -335,7 +335,7 @@ test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마�
 })
 
 test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프를 쉬고, 붙을 자리는 150ms 틱이 직접 계산한다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   // 매 프레임 homePose(레이아웃 읽기)를 하던 저장 경로 제거: 링크 검사가 homePose 보다 먼저
   assert.ok(!dsc.includes('link.home'), '매 프레임 저장하던 link.home 이 남아 있으면 안 된다')
   assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*const home = homePose\(\);/)
@@ -357,7 +357,7 @@ test('펫 프로세스의 커서 확인 타이머는 창이 보이는 동안만 
 
 test('펫 창 따라오기: 커서는 펫 프로세스가 직접 읽어 페이지로 보내고, 창 안 캐릭터는 위치를 HTTP로 보내지 않는다', async () => {
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   assert.match(main, /case 'track': track\(!!message\.on, message\.grab, message\.off\)/)
   assert.match(main, /placer\.place\(p\.x - g\.x - o\.x, p\.y - g\.y - o\.y\)[\s\S]*toPage\(\{ type: 'cursor'/)   // 창은 커서를 읽는 즉시 여기서 옮김 (페이지 왕복 없음)
   assert.ok(!/win\.setPosition\(/.test(main), '창 이동은 모두 placer로: setPosition 한 번으로 끝내면 배율이 다른 모니터에서 어긋난 채 남는다')
@@ -386,7 +386,7 @@ test('restorePriority: 주 프로세스와 자식의 백그라운드를 풀고, 
 })
 
 test('웜업: 시작 인사·작업 중에는 미루고 한가할 때 숨긴 펫을 미리 띄운다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   assert.match(dsc, /const warmUp = \(tries = 0\) => \{[\s\S]*intro\.phase !== "done" \|\| running \|\| document\.hidden[\s\S]*linkPost\("warm"\)/)
   assert.match(dsc, /setTimeout\(warmUp, 5000\)/)
 })
@@ -421,7 +421,7 @@ test('펫 창 우클릭 메뉴: 설정·크기 프리셋·돌아가기·숨기�
 })
 
 test('펫 창 크기: 기본(머리 맞춤) 대비 배율로 기억하고, 패널·휠·메뉴가 같은 값을 쓴다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   assert.match(dsc, /const PET_SIZE_KEY = "dsc-pet-size"/)
   assert.match(dsc, /function petClampK\(k\)/)
   assert.match(dsc, /Math\.min\(petKFit\(\), Math\.max\(PET_K_MIN, n\)\)/)

@@ -5,7 +5,7 @@ import vm from 'node:vm'
 import { Config, readLive } from '../host.js'
 
 const root = new URL('../../', import.meta.url)
-const source = await readFile(new URL('assets/dsc.js', root), 'utf8')
+const source = await readFile(new URL('character/index.js', root), 'utf8')
 
 // 배치 계산은 캔버스·DOM과 분리된 순수 함수라, 소스에서 그 구간만 떼어 내 검증한다.
 const slice = source.slice(source.indexOf('const HOME_GAP = 8'), source.indexOf('      let curK = 1, fleeX = 0;'))
@@ -204,7 +204,7 @@ test('모바일에서는 컴포저 포커스만으로 숨기지 않고 키보드
 })
 
 test('캐릭터 바깥에서 시작한 터치 스크롤을 캐릭터 위에서 막지 않는다', () => {
-  const touchMove = source.slice(source.indexOf('document.addEventListener("touchmove"'), source.indexOf('document.addEventListener("wheel"'))
+  const touchMove = source.slice(source.indexOf('life.listen(document, "touchmove"'), source.indexOf('life.listen(document, "wheel"'))
   assert.match(touchMove, /drag\.on \|\| drag\.pending/)
   assert.doesNotMatch(touchMove, /hitAt/)
 })

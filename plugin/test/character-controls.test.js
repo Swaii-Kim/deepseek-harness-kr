@@ -5,7 +5,7 @@ import vm from 'node:vm'
 
 // dsc.js의 순수 계산/상태 조각을 그대로 실행해 확인한다. DOM·캔버스 없이 돌 수 있게
 // 필요한 값만 vm 컨텍스트에 넣고, 실제 소스 구간(문자열 경계)을 잘라 쓴다.
-const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
 
 const sliceBetween = (startText, endText) => {
   const start = source.indexOf(startText)
@@ -58,7 +58,7 @@ test('짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁힌다'
 })
 
 test('터치 제스처: 가로 끌기는 집기, 세로 움직임은 쓰다듬기, 가만히 길게 누르면 집기', () => {
-  const slice = sliceBetween('const TOUCH = {', 'document.addEventListener("pointermove"')
+  const slice = sliceBetween('const TOUCH = {', 'life.listen(document, "pointermove"')
   const { touchGesture, TOUCH } = runScript(slice, {}, '({ touchGesture, TOUCH })')
   assert.equal(TOUCH.grabMs, 320)
   assert.equal(TOUCH.verticalPx, 8)
@@ -377,7 +377,7 @@ test('worker는 전달받은 parts opacities(귀 포함)를 Core 모델에 그�
 })
 
 test('좌우 버튼 코드: 첫 버튼 누른 채 150ms 이내 두 번째 버튼이면 grab, 떨어진 클릭/단일 버튼은 제외', () => {
-  const slice = sliceBetween('const CHORD_GRACE_MS = 150;', 'document.addEventListener("pointerdown"')
+  const slice = sliceBetween('const CHORD_GRACE_MS = 150;', 'life.listen(document, "pointerdown"')
   const { chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS } = runScript(slice, {}, '({ chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS })')
   assert.equal(CHORD_GRACE_MS, 150)
   const empty = { at: null, button: null, valid: false }
@@ -414,7 +414,7 @@ test('좌우 버튼 코드: 첫 버튼 누른 채 150ms 이내 두 번째 버튼
 })
 
 test('코드 그레이스는 기존 양쪽 hold(임의 간격) 판정을 150ms로 제한하지 않는다', async () => {
-  const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   assert.match(source, /if \(\(e\.buttons & 1\) && chordWithinGrace\(chord, e\.button, e\.buttons, nowDown\)\)/)
   assert.match(source, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
   assert.match(source, /chord = chordUp\(chord, e\.buttons\)/)
@@ -432,6 +432,8 @@ function runChipContext() {
     window: { __dscPageHidden: false },
     addEventListener() {},
     systemTickerCalls: [],
+    // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
+    life: { listen: (target, type, fn, options) => target.addEventListener(type, fn, options), own: (value) => value, add() {}, stopped: false },
     document: {
       createElement() {
         return {

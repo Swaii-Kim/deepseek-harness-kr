@@ -6,10 +6,10 @@ import vm from 'node:vm'
 // Pointer Events는 첫 버튼에만 pointerdown을 주므로, 두 번째 버튼은 mousedown으로 들어온다.
 // 이 테스트는 dsc.js에서 실제 등록된 mousedown/mouseup handler 코드와 chord helper를 그대로 잘라
 // 이벤트 시퀀스를 주입해 pending 생성/차단을 검증한다. (pointermove grab 자체는 소스 배선으로 확인)
-const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
-const chordBlock = source.slice(source.indexOf('const CHORD_GRACE_MS = 150;'), source.indexOf('document.addEventListener("pointerdown"'))
+const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+const chordBlock = source.slice(source.indexOf('const CHORD_GRACE_MS = 150;'), source.indexOf('life.listen(document, "pointerdown"'))
 const mouseStart = source.indexOf('// 마우스 좌우 버튼 코드 보완')
-const mouseEnd = source.indexOf('\n', source.indexOf('document.addEventListener("mouseup"', mouseStart))
+const mouseEnd = source.indexOf('\n', source.indexOf('life.listen(document, "mouseup"', mouseStart))
 const mouseBlock = source.slice(mouseStart, mouseEnd)
 
 function harness() {
@@ -28,6 +28,8 @@ function harness() {
     overBody: () => false,
     pt: (event) => [event.clientX, event.clientY],
     clearInterval: () => {},
+    // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
+    life: { listen: (target, type, fn, options) => target.addEventListener(type, fn, options), own: (value) => value, add() {}, stopped: false },
     document: {
       addEventListener(type, fn, options) { listeners.set(type, { fn, options }) },
     },

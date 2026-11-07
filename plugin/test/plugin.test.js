@@ -20,19 +20,22 @@ const packageName = JSON.parse(await readFile(new URL('../../package.json', impo
 const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
 
 test('source build preserves sleep code and matches the committed bundle', async () => {
+  const character = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
   execFileSync(process.execPath, ['plugin/build.mjs'], { cwd: fileURLToPath(new URL('../../', import.meta.url)) })
   assert.equal(await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8'), bundle)
+  assert.equal(await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8'), character, '커밋된 assets/dsc.js도 소스에서 다시 만든 결과와 같아야 한다')
   assert.match(bundle, /sleep_out:/)
   assert.match(bundle, /sleep_back:/)
-  assert.match(bundle, /'절전' : 'Power saving'/)
+  assert.match(bundle, /["']절전["'] : ["']Power saving["']/)
   assert.match(bundle, /sharedTicker: false/)
   assert.match(bundle, /autoUpdate: false/)
   assert.match(bundle, /model.update\(Math.min\(app.ticker.deltaMS, 100\)\)/)
 })
 
 test('sleep cancels departures, protects intro and wakes for waiting cards', async () => {
-  const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
-  for (const code of [source, bundle]) {
+  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  // 번들은 esbuild가 다시 찍어 들여쓰기·이름이 달라지므로 소스 구간을 실행한다 (번들이 소스와 같은지는 위 빌드 재현 테스트가 확인)
+  for (const code of [source]) {
     let now = 100000, timerId = 0, poll, stopped = false, card = null, working = false
     const timers = new Map(), frames = [], events = new Map(), lines = []
     const context = vm.createContext({
@@ -94,7 +97,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
 })
 
 test('sleep preserves free placement, blocks dragging and never sleeps while the pet is outside', async () => {
-  const code = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const code = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   for (const petPage of [false, true]) {
     let now = 0, stopped = false, listeners = 0
     const frames = [], timers = [], lines = []
@@ -534,7 +537,7 @@ test('pet window settings panel is tall enough to avoid a needless scrollbar', a
 })
 
 test('character source supports modifier drag and a pet window toggle', async () => {
-  const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
   for (const code of [source, bundle]) {
     assert.match(code, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
     assert.match(code, /window\.__dscPetToggle = petToggle/)
@@ -815,8 +818,10 @@ test('settings page offers accessories, outfit and body type, and shares them wi
   } finally { h.dom.window.close() }
 })
 
-test('core worker is registered for termination when the plugin unloads', () => {
-  assert.match(bundle, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\) \} catch \{\} \}\)/)
+test('core worker is registered for termination when the plugin unloads', async () => {
+  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  assert.match(source, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\);? \} catch \{\} \}\)/)
+  assert.match(bundle, /w\.terminate\(\)/)
 })
 
 test('update source parsing and version comparison', () => {
