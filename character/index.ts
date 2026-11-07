@@ -51,7 +51,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
     // ---------- 상태 감시 ----------
     let running = false, lastError = -1e9, lastToolSay = 0, waitingKind = null;
     const listeners = { tool: null };
-    const scanAdded = (node) => {
+    const scanAdded = (node: Node) => {
       const found = scanAddedNode(node, { running: running && !!listeners.tool });
       if (found.error) lastError = performance.now();
       if (found.tool) listeners.tool(found.tool);
@@ -80,7 +80,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // PIXI 상호작용(InteractionManager)은 쓰지 않는다(autoInteract: false, 터치 판정은 hitAt). 이 매니저의 Ticker.system 구독은
       // app.ticker를 멈춰도 프레임마다 화면을 깨우므로, 배치 루프가 쉬는 동안만 끈다.
       // (늘 꺼 두면 캐릭터가 보이는 동안 renderer 문맥 전환이 약 7% 늘어서 보이는 동안은 원래대로 둔다, 실측)
-      const systemTicker = (on) => { try { app.renderer.plugins.interaction.useSystemTicker = on; } catch {} };
+      const systemTicker = (on: boolean) => { try { app.renderer.plugins.interaction.useSystemTicker = on; } catch {} };
       life.add(() => app.destroy(true, { children: true }));   // 플러그인을 끄면 PIXI 앱·WebGL 자원 해제
       const model = await PIXI.live2d.Live2DModel.from(BASE + "model/model.model3.json", { autoUpdate: false, autoInteract: false, idleMotionGroup: "Idle" });
       if (life.stopped) { model.destroy(); return; }
@@ -128,10 +128,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           for (let k = 0; k < v.length; k += 2) fn(v[k], v[k + 1]);
         }
       };
-      each((x, y) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); });
+      each((x: number, y: number) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); });
       const cutY = minY + (maxY - minY) * 0.47;
       let ux0 = Infinity, ux1 = -Infinity;
-      each((x, y) => { if (y < cutY) { ux0 = Math.min(ux0, x); ux1 = Math.max(ux1, x); } });
+      each((x: number, y: number) => { if (y < cutY) { ux0 = Math.min(ux0, x); ux1 = Math.max(ux1, x); } });
       // 창 안(상반신 크롭) 배율. 펫 창은 전신을 담아 이보다 작게 그려지므로, 이 값과의 비율만큼 배율을 올려 머리 크기를 맞춘다
       const sBust = Math.min((W * 0.98) / (ux1 - ux0), (H * 0.95) / (cutY - minY));
       // 펫 창(전신) 배율과, 창 안↔펫 창의 머리 크기 비율 (붙을 때·넘길 때 같은 비율을 쓴다)
@@ -157,7 +157,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 꼬마 모습(체형 2)은 몸 전체가 작아져 공중에 뜨므로, 그만큼 내려서 발이 화면 바닥에 닿게 한다 (데스크톱 펫과 같음)
       core.setParameterValueById("Clothes2", 1); core.update();
       let chibiMinY = Infinity, chibiMaxY = -Infinity;
-      each((x, y) => { chibiMinY = Math.min(chibiMinY, y); chibiMaxY = Math.max(chibiMaxY, y); });
+      each((x, y: number) => { chibiMinY = Math.min(chibiMinY, y); chibiMaxY = Math.max(chibiMaxY, y); });
       core.setParameterValueById("Clothes2", 0); core.update();
       const baseY = model.y;
       const chibiDrop = Math.max(0, H * 0.99 - chibiMaxY * s - baseY);   // 꼬마일 때 내리는 거리 (캔버스 px)
@@ -236,11 +236,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const earDrawables = [];
       if (earPartIndex >= 0) for (let i = 0; i < cm.drawables.count; i++) if (cm.drawables.parentPartIndices[i] === earPartIndex) earDrawables.push(i);
       const earSet = new Set(earDrawables);
-      const earVisible = (opacity, flags) => opacity >= 0.05 && (flags & 1) !== 0;
+      const earVisible = (opacity: number, flags: number) => opacity >= 0.05 && (flags & 1) !== 0;
       const earBaseVisible = new Map(earDrawables.map((i) => [i, earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i])]));
-      const earOpacityValue = (w) => Math.max(0, Math.min(1, 1 - w));
-      const earOpacityStep = (w, on, dt) => Math.min(1, Math.max(0, w + ((on ? 1 : 0) - w) * Math.min(1, dt * 6)));
-      const applyEarOpacity = (parts, index, w) => {
+      const earOpacityValue = (w: number) => Math.max(0, Math.min(1, 1 - w));
+      const earOpacityStep = (w: number, on: boolean, dt: number) => Math.min(1, Math.max(0, w + ((on ? 1 : 0) - w) * Math.min(1, dt * 6)));
+      const applyEarOpacity = (parts, index: number, w: number) => {
         if (!parts || !parts.opacities || index < 0) return false;
         parts.opacities[index] = earOpacityValue(w);
         return true;
@@ -248,7 +248,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       let earW = (prefs.outfit || {}).earHide ? 1 : 0;   // 처음엔 저장된 상태 그대로 (로드 직후 깜빡이지 않게)
       // 귀 drawable은 earHide로 감쇠되기 전의 가시성을 hit 판정에만 유지한다(이슈 #22: 터치 영역 불변).
       // earHide가 꺼져 있으면 평소처럼 현재 opacity/플래그로 판정하므로, 다른 원인으로 숨겨진 메시는 클릭되지 않는다.
-      const earHitVisible = (i) => earW > 0.005
+      const earHitVisible = (i: number) => earW > 0.005
         ? earBaseVisible.get(i) === true
         : earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i]);
       let basinUntil = 0, basinW = 0;   // 세숫대야 (머리를 천천히 쓸어내리면)
@@ -272,7 +272,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       });
       const relay = link.relay;   // 펫 창이 보이는 동안(따라오는 중 포함)만 반응을 모아 보냄
       const EYE_EXP = ["heart", "squint", "smug", "dizzy"];
-      const clearOtherEyes = (name) => { if (EYE_EXP.includes(name)) for (const e of EYE_EXP) if (e !== name) { until[e] = 0; hold[e] = false; } };
+      const clearOtherEyes = (name: string) => { if (EYE_EXP.includes(name)) for (const e of EYE_EXP) if (e !== name) { until[e] = 0; hold[e] = false; } };
       const setExp = (name, on) => { relay("setExp", [name, on]); if (on) clearOtherEyes(name); hold[name] = on; };
       const flashExp = (name, ms) => { relay("flashExp", [name, ms]); clearOtherEyes(name); until[name] = performance.now() + ms; };
 
@@ -280,7 +280,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const gest = { name: null, start: 0, dur: 0, dir: 1 };
       // 왼손으로 가슴 가리기 (데스크톱 펫의 "가슴에 손" 값): Param59 위팔 원근, Param60 아래팔, Param61 손목, Param62 위팔, Movement2 = 몸 앞용 팔 그림
       const cover = { until: 0, start: -1e9, q: 0 };   // q: 0 = 팔 내림, 1 = 가슴을 가림
-      const coverChest = (ms) => { const now = performance.now(); if (now >= cover.until) cover.start = now; cover.until = Math.max(cover.until, now + ms); };
+      const coverChest = (ms: number) => { const now = performance.now(); if (now >= cover.until) cover.start = now; cover.until = Math.max(cover.until, now + ms); };
       const play = (name, dur) => { relay("play", [name, dur]); gest.name = name; gest.start = performance.now(); gest.dur = dur; gest.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
       const BOB_KICK = { bounce: 60, laugh: 50, nod: -45 };   // 몸짓 시작 때 몸 튕김 세기
       let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6000, talkUntil = 0;
@@ -344,7 +344,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const FREE_KEY = "dsc-free-pos";
       const FREE_KEY_MOBILE = "dsc-free-pos-mobile";
       const freeMode = () => coarsePointer() ? "mobile" : "desktop";
-      const freeStorageKey = (mode) => mode === "mobile" ? FREE_KEY_MOBILE : FREE_KEY;
+      const freeStorageKey = (mode: string) => mode === "mobile" ? FREE_KEY_MOBILE : FREE_KEY;
       // 창 안 자유 위치는 창 크기 비율로 기억: 몸 가운데의 가로 비율(fx)·그림 아래 끝의 세로 비율(fy).
       // 창 크기가 바뀌면 같은 비율 자리로 옮겨 가서, 최대화를 풀어도 옛 픽셀 자리에 남아 화면 밖으로 밀리지 않음
       const freeToRatio = () => { free.fx = (free.x + W * free.k / 2) / innerWidth; free.fy = (free.y + H * free.k) / innerHeight; };
@@ -377,15 +377,15 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       document.body.append(veil);
       veil.addEventListener("pointerdown", () => { if (intro.phase === "center") intro.skip = true; });
       // 크기를 다시 정하면 WebGL 버퍼가 지워지므로 해상도가 실제로 바뀔 때만 다시 정한다. 지워진 버퍼는 같은 프레임의 그리기가 채운다(raf)
-      const setRes = (k) => { const res = DPR * Math.max(1, k); if (app.renderer.resolution === res) return; app.renderer.resolution = res; app.renderer.resize(W, H); };
-      const ease = (p) => (p < 0 ? 0 : p > 1 ? 1 : p * p * (3 - 2 * p));
+      const setRes = (k: number) => { const res = DPR * Math.max(1, k); if (app.renderer.resolution === res) return; app.renderer.resolution = res; app.renderer.resize(W, H); };
+      const ease = (p: number) => (p < 0 ? 0 : p > 1 ? 1 : p * p * (3 - 2 * p));
       // 오른쪽 아래 제자리 (원래 배치)
       // 입력 카드 표시(dsc-composer)는 다음 프레임에 붙으므로, 세션 전환으로 카드가 새로 생긴 프레임에는 같은 조건으로 직접 찾는다
       // (못 찾으면 최대 크기로 한 프레임 커졌다가 돌아옴)
       const findCard = () => document.querySelector(".dsc-composer") ||
         [...document.querySelectorAll('[class*="_card"]')].find((e) => e.closest('[class*="_root"]') && e.querySelector('[class*="_input"]'));
       // 질문·승인 카드가 입력창 자리를 대신하면 입력 카드는 숨겨져 크기가 0이 되므로, 같은 자리에 뜬 카드로 잰다
-      const cardRect = (card) => {
+      const cardRect = (card: Element) => {
         const r = card.getBoundingClientRect();
         if (r.width) return r;
         const seat = card.closest('[class*="composerSeat"]');
@@ -426,9 +426,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
 
       // ---------- 자유 위치 계산 ----------
       // 캔버스 왼쪽 위(x, y)·배율 k일 때 보이는 몸 영역 (양옆 빈 곳·머리 위 여백 제외). 커서가 몸 위인지 판정할 때 씀
-      const bodyRect = (x, y, k) => { const side = (W - visW) / 2 * k; return { l: x + side, t: y + H * 0.05 * k, r: x + W * k - side, b: y + H * k }; };
-      const easeOut = (p) => 1 - Math.pow(1 - p, 3);
-      const easeBack = (p) => { const c = 1.25, q = p - 1; return 1 + (c + 1) * q * q * q + c * q * q; };   // 끝에서 살짝 넘쳤다 돌아옴 (자석에 붙는 느낌)
+      const bodyRect = (x: number, y: number, k: number) => { const side = (W - visW) / 2 * k; return { l: x + side, t: y + H * 0.05 * k, r: x + W * k - side, b: y + H * k }; };
+      const easeOut = (p: number) => 1 - Math.pow(1 - p, 3);
+      const easeBack = (p: number) => { const c = 1.25, q = p - 1; return 1 + (c + 1) * q * q * q + c * q * q; };   // 끝에서 살짝 넘쳤다 돌아옴 (자석에 붙는 느낌)
       const area = () => PET ? { l: screen.availLeft, t: screen.availTop, r: screen.availLeft + screen.availWidth, b: screen.availTop + screen.availHeight }
         : { l: 0, t: 0, r: innerWidth, b: innerHeight };
       const keepIn = (p) => {   // 보이는 몸이 영역 밖으로 다 나가지 않게
@@ -436,7 +436,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return { k: p.k, x: Math.min(Math.max(p.x, a.l - side), a.r - W * p.k + side), y: Math.min(Math.max(p.y, a.t - H * p.k * 0.05), a.b - H * p.k * 0.3) };
       };
       // 창 좌표 → 화면 좌표 (창 테두리·제목 표시줄 두께를 뺌)
-      const screenOf = (x, y) => { const bx = (outerWidth - innerWidth) / 2; return { x: screenX + bx + x, y: screenY + Math.max(0, outerHeight - innerHeight - bx) + y }; };
+      const screenOf = (x: number, y: number) => { const bx = (outerWidth - innerWidth) / 2; return { x: screenX + bx + x, y: screenY + Math.max(0, outerHeight - innerHeight - bx) + y }; };
       // 제자리 크기가 SHOW_K보다 작으면 입력창을 피할 자리가 없음 (SHOW_K는 위 HOME_GAP 줄에서 정의)
       // 붙을 자리 = 제자리. 창이 좁아 제자리 크기가 SHOW_K보다 작으면(예전엔 숨김) 보일 수 있는 가장 작은 크기로 오른쪽 아래 구석.
       // 컴포저 위로 올린 자리(above)는 그 자리를 그대로 쓴다 — 아래 구석으로 되돌리면 입력창을 다시 가린다.
@@ -463,7 +463,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (PET) { petSyncMenu(); renderPetPanel(); }   // 크기 애니메이션이 끝난 뒤 메뉴·슬라이더를 새 값으로
       };
       // 미끄러짐·붙기 애니메이션의 지금 자리 (붙기는 끝에서 살짝 넘쳤다 돌아옴)
-      const freeAnimPose = (a, home, now) => {
+      const freeAnimPose = (a, home, now: number) => {
         const p = Math.min(1, (now - a.t0) / a.ms), to = a.snap ? (PET ? petDock : dockTarget(home)) || a.from : a.to;
         const e = a.snap ? easeBack(p) : easeOut(p), ek = easeOut(p);
         const pose = { k: a.from.k + (to.k - a.from.k) * ek, x: a.from.x + (to.x - a.from.x) * e, y: a.from.y + (to.y - a.from.y) * e };
@@ -481,7 +481,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const k = Math.max(floor, Math.min(baseK, Math.min(1.25, (innerHeight * 0.45) / visH)));
         return { k, x: free.fx * innerWidth - W * k / 2, y: free.fy * innerHeight - H * k };
       };
-      const dockPose = (home, now) => {
+      const dockPose = (home, now: number) => {
         snapP = 0;
         if (drag.on) return { k: free.k, x: drag.x, y: drag.y };
         if (free.anim) return freeAnimPose(free.anim, home, now);
@@ -502,7 +502,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const release = (vx: number, vy: number, touch = false) => {
         const k = free.k, from = { k, x: drag.x, y: drag.y }, p = { k, x: from.x + vx * GLIDE, y: from.y + vy * GLIDE };
         const home = PET ? petDock : dockTarget(homePose());
-        const mid = (q, kk) => [q.x + W * kk / 2, q.y + H * kk * 0.5];
+        const mid = (q, kk: number) => [q.x + W * kk / 2, q.y + H * kk * 0.5];
         const [px, py] = mid(p, k);
         // 창 밖이 자석보다 먼저: 제자리는 창 구석에 붙어 있어 자석 범위가 창 밖까지 걸치므로, 순서가 반대면 구석에서 밖으로 던져도 다시 붙음
         const outside = !PET && bodyOut(p);
@@ -548,7 +548,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // 그리기 여부. 처음엔 켜 둔다(창이 보이기 전에 첫 그리기·셰이더 준비를 끝내 두려고). 실제 그리기는 raf가 배치 다음에 한다.
       let renderOn = true;
-      const setRender = (on) => {
+      const setRender = (on: boolean) => {
         if (renderOn === on) return;
         renderOn = on;
         if (!on) return;
@@ -605,7 +605,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return { k, x, y, introOn };
       };
       // 펫 창: 창을 캐릭터에 맞추고 클릭 영역을 알린다. 돌려주는 값은 창 안 좌표 { x, y }
-      const placePetWindow = (dock, k) => {
+      const placePetWindow = (dock, k: number) => {
         const { x, y } = movePet(dock);
         // 창 크기를 캐릭터에 맞춘다 (배율 상한이 없으므로 화면에 들어가는 만큼 창도 커진다)
         const needW = Math.ceil(W * k) + 24, needH = Math.ceil(H * k) + PET_BUBBLE;
@@ -632,7 +632,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 승인·질문 카드가 입력 영역에 떠 있으면 캐릭터에서 카드 모양(둥근 모서리 포함)만 잘라 낸다.
       // 캐릭터는 계속 위(z=30)에 두므로 테마를 끈 상태의 불투명한 입력 영역 배경에도 몸이 가려지지 않는다.
       // (placeKey 비교보다 먼저: 입력창 위치가 그대로여도 카드가 뜨고 사라지거나 테마 전환으로 반지름이 바뀌면 갱신)
-      const updateCardClip = (home, introOn, k, x, y) => {
+      const updateCardClip = (home, introOn: boolean, k: number, x: number, y: number) => {
         const seat = !introOn && home.card && home.card.closest('[class*="composerSeat"]');
         const popup = seat && seat.querySelector('[class*="_card"]:not(.dsc-composer)');
         let clip = "";
@@ -640,7 +640,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           const pr = popup.getBoundingClientRect(), cs = getComputedStyle(popup), cw = W * k, ch = H * k;
           const l = pr.left - x, t = pr.top - y, rr = pr.right - x, bb = pr.bottom - y;
           if (rr > 0 && bb > 0 && l < cw && t < ch) {
-            const rad = (v) => Math.min(parseFloat(v) || 0, pr.width / 2, pr.height / 2), f = (n) => +n.toFixed(2);
+            const rad = (v: string) => Math.min(parseFloat(v) || 0, pr.width / 2, pr.height / 2), f = (n: number) => +n.toFixed(2);
             const tl = rad(cs.borderTopLeftRadius), tr = rad(cs.borderTopRightRadius), br = rad(cs.borderBottomRightRadius), bl = rad(cs.borderBottomLeftRadius);
             clip = `path(evenodd, "M0 0H${f(cw)}V${f(ch)}H0Z M${f(l + tl)} ${f(t)}H${f(rr - tr)}A${f(tr)} ${f(tr)} 0 0 1 ${f(rr)} ${f(t + tr)}V${f(bb - br)}` +
               `A${f(br)} ${f(br)} 0 0 1 ${f(rr - br)} ${f(bb)}H${f(l + bl)}A${f(bl)} ${f(bl)} 0 0 1 ${f(l)} ${f(bb - bl)}V${f(t + tl)}A${f(tl)} ${f(tl)} 0 0 1 ${f(l + tl)} ${f(t)}Z")`;
@@ -690,7 +690,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
           return;
         }
-        const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
+        const clampY = (top: number) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
         bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
         bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
       };
@@ -737,7 +737,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""].join("|");
       };
       // 화면 아래에서 띄운 만큼 잘린 허리를 흐리게 할 높이(px), 펫 창이 붙는 진행도
-      const fadeAmounts = (k, y) => {
+      const fadeAmounts = (k: number, y: number) => {
         // 허리 아래가 잘린 창 안 그림은 화면 아래에서 띄우면 띄운 만큼 아래쪽을 흐리게 (꼬마 모습은 발까지 그려져 안 흐림)
         // 펫 창은 전신을 그리지만, 제자리로 붙는 동안에는 하반신을 서서히 지워 도착할 때 창 안 상반신 그림과 이어지게 한다
         const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
@@ -747,7 +747,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
 
       // 보일 크기인지 정해 캔버스·말풍선 표시와 그리기를 맞춘다 (컴포저 위 자리는 최소 크기로도 보여 준다, 펫 창은 창이 보이는 동안에만 그린다)
-      const showAt = (introOn, k, home) => {
+      const showAt = (introOn: boolean, k: number, home) => {
         const show = introOn || k >= SHOW_K || (home.above && k >= MIN_SHOW_K);
         canvas.style.display = bubble.style.display = show ? "block" : "none";
         setRender(show && (!PET || petPower));
@@ -759,7 +759,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const looseBubble = () => PET || (free.on && free.applied) || !!free.anim;
       // 펫 창: DSH 창 안쪽은 또렷하게, 창 밖으로 나간 부분은 흐리게(반투명) — 창 영역을 기준으로 자른다
       const petWinBox = () => (PET && petDock && petDock.win ? petDock.win : null);
-      const placeBubble = (introOn, spot) => {
+      const placeBubble = (introOn: boolean, spot) => {
         if (introOn) placeIntroBubble(spot);
         else if (!coarsePointer() && !spot.home.above) placeDesktopBubble(spot);   // 데스크톱 말풍선은 기존 배치 그대로
         else placeMobileBubble(spot);
@@ -909,7 +909,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       if (!PET) hooks.syncPageHidden = syncPageHidden;
       if (pageHiddenNow()) hideForPage();
-      const setHidden = (next) => {
+      const setHidden = (next: boolean) => {
         if (PET || hidden === next) return hidden;
         hidden = next;
         if (hidden) {
@@ -960,12 +960,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 몸 위아래 튕김: 통통·웃음·끄덕임 몸짓을 시작할 때 살짝 차 주면 스프링이 출렁이며 돌아오고, 물리 엔진이 가슴을 한 박자 늦게 흔든다
       // (말할 때는 차지 않음: 몸 위아래 값은 머리도 함께 움직여 글자마다 얼굴이 떨려 보임)
       const bob = S();
-      const bobKick = (v) => { bob.v += v; };
+      const bobKick = (v: number) => { bob.v += v; };
       let energy = 0.6;                                   // 움직임 크기 (상태마다 다름)
       const attn = { x: 0, y: 0.05, next: 0 };            // 지금 바라보는 곳 (-1~1, 캔버스 기준)
 
       // 바라볼 곳 고르기: 말할 땐 정면(시청자), 작업 중엔 대화창을 읽듯 왼쪽, 가끔 입력창·딴 곳
-      const pickAttention = (now, talking) => {
+      const pickAttention = (now: number, talking) => {
         let p;
         const r = Math.random();
         if (talking) p = r < 0.85 ? [0, 0.05] : [-0.5, 0.1];
@@ -982,7 +982,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // ---- 말하기: 말풍선 글자의 모음으로 입 모양 ----
       // 글자 → 입 모양 음절은 character/speech.ts
       let talk = null;   // { syl: [{v, d, amp, stress}], t0, total, quiet }
-      const startTalk = (text, ms, quiet) => {
+      const startTalk = (text: string, ms: number, quiet: boolean) => {
         const { syl, total } = parseSyllables(text, ms);
         talk = { syl, t0: performance.now(), total, quiet };
       };
@@ -1012,7 +1012,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 고개·몸 값은 m(yaw·pitch·roll·bodyX/Y/Z·lean·smile·eyeSmileAdd·eyeClose·mouthAdd)에 모았다가 한 번에 쓴다.
 
       // 가슴 끌기: 끄는 동안 민첩하게 따라가고, 놓으면 출렁이며 잦아듦
-      const updateChestDrag = (now, dt) => {
+      const updateChestDrag = (now: number, dt: number) => {
         spring(dragLift, chestDragging ? chestTarget : 0, dt, chestDragging ? 820 : 200, chestDragging ? 40 : 6);   // 끄는 동안 민첩하게, 놓으면 출렁이며 잦아듦
         spring(dragShift, chestDragging ? chestShiftTarget : 0, dt, chestDragging ? 700 : 220, chestDragging ? 42 : 7);   // 좌우로 끌면 그 방향으로 따라가고, 놓으면 제자리로 출렁
         if (!chestDragging && Math.abs(dragShift.x) < 0.0001 && Math.abs(dragShift.v) < 0.001) dragShift.x = dragShift.v = 0;
@@ -1023,7 +1023,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
       };
       // 이 프레임에 여러 단계가 같이 쓰는 값
-      const frameContext = (now, dt) => {
+      const frameContext = (now: number, dt: number) => {
         const introCalm = intro.phase !== "done";   // 시작 화면(가운데에 크게): 눈·눈썹·귀를 차분하게
         const T = now / 1000;
         if (voiceState && voiceState.until && now > voiceState.until) voiceState = null;   // 만료된 음성 상태 비우기
@@ -1066,7 +1066,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (Math.random() < 0.45) nodKick = Math.max(nodKick, 0.6 + Math.random() * 0.5);
       };
       // 말풍선 글자를 따라 지금 음절의 입 벌림을 돌려준다 (다 읽었으면 talk를 비움)
-      const talkOpen = (now, introCalm) => {
+      const talkOpen = (now: number, introCalm) => {
         let t = (now - talk.t0) / 1000;
         if (t >= talk.total) { talk = null; return 0; }
         let i = 0; while (i < talk.syl.length && t > talk.syl[i].d) { t -= talk.syl[i].d; i++; }
@@ -1095,7 +1095,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         nodKick *= Math.max(0, 1 - dt * 5);
       };
       // ---- 상태별 자세 (작업 중 = 살짝 앞으로, 대기 = 숙이고 갸웃, 실패 = 고개 숙임) ----
-      const updateMoodPose = (dt) => {
+      const updateMoodPose = (dt: number) => {
         const goal = { lean: 0, headZ: 0, headY: 0, bodyY: 0 };
         if (mood === "work") { goal.lean = -7; goal.headY = -5; }          // 작업 중: 상체를 조금 내밀고 화면을 내려다봄
         if (mood === "wait") { goal.lean = -9; goal.headZ = 8; goal.headY = 3; }   // 대기: 다가와 갸웃하며 사용자를 올려다봄
@@ -1290,13 +1290,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
       // 소품·옷 파라미터를 켠 정도(outfitW)만큼 서서히 더한다
-      const writeOutfitParams = (of, dt) => {
+      const writeOutfitParams = (of, dt: number) => {
         for (const [key, id, v] of OUTFIT_PARAMS) {
           const w = outfitW[key] = (outfitW[key] || 0) + ((of[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
           if (w > 0.005) core.addParameterValueById(id, v * w);
         }
       };
-      const writeEarHide = (of, dt) => {
+      const writeEarHide = (of, dt: number) => {
         // 동물귀 숨김: 파라미터가 아니라 귀 파트(Part159)의 opacity를 보간한다. 파트가 없으면 no-op.
         // (bbox·크기·다른 파트는 건드리지 않는다. 완전히 복구된 프레임에서만 opacity를 1로 되돌린다.)
         const earWas = earW;
@@ -1307,7 +1307,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
       };
       // 세숫대야와 체형(산책·절전으로 나갈 때는 꼬마 모습)
-      const writeBodyShape = (of, now, dt) => {
+      const writeBodyShape = (of, now: number, dt: number) => {
         const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
         basinW += ((now < basinUntil ? 1 : 0) - basinW) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
         if (basinW > 0.005) core.addParameterValueById("key10", basinW);
@@ -1765,7 +1765,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       const EXP_NAME = { "홍조": "blush", "><": "squint", "하트": "heart", "얄미운": "smug", "식은땀": "sweat", "어두운": "dark", "눈물": "tears", "어지럼": "dizzy" };
       const lastLine = {};
-      const speak = (key, ms = 3500) => {
+      const speak = (key: string, ms = 3500) => {
         const list = LINES[key]; if (!list) return;
         // 연속 터치에서 같은 대사가 또 나오지 않게: 화면에 떠 있던 직전 문장과 같은 후보는 뺀다
         const candidates = [];
@@ -1783,7 +1783,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const text = pick.text;
         say(text, ms);
       };
-      outfitTalk = (key) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };   // 도망·산책·삐진 중에는 말 안 함
+      outfitTalk = (key: string) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };   // 도망·산책·삐진 중에는 말 안 함
 
       const PART_REGION = {
         Part99: "head", Part47: "head", Part155: "head", Part156: "head", Part161: "head", Part64: "head", Part66: "head", Part10: "head", Part8: "head",
@@ -1796,7 +1796,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         for (let p = DR.parentPartIndices[i]; p >= 0; p = PT.parentIndices[p]) if (PART_REGION[PT.ids[p]]) return PART_REGION[PT.ids[p]];
         return null;
       });
-      const chestDraw = [];
+      const chestDraw: number[] = [];
       for (let i = 0; i < DR.count; i++) for (let p = DR.parentPartIndices[i]; p >= 0; p = PT.parentIndices[p]) if (PT.ids[p] === "Part88" || PT.ids[p] === "Part86") { chestDraw.push(i); break; }
       const chestCenter = () => {
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -1823,13 +1823,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           } catch { return null; }
         });
       };
-      const alphaAt = (tex, u, v) => {
+      const alphaAt = (tex, u: number, v: number) => {
         const a = alphaMaps[tex]; if (!a) return 255;
         return a[Math.min(AN - 1, Math.max(0, Math.floor((1 - v) * AN))) * AN + Math.min(AN - 1, Math.max(0, Math.floor(u * AN)))];
       };
       // 터치를 받을 수 있는 drawable인지 (귀는 earHide 감쇠 전 가시성으로 터치 판정 유지)
-      const touchable = (i) => earSet.has(i) ? earHitVisible(i) : !(DR.opacities[i] < 0.05 || !(DR.dynamicFlags[i] & 1));
-      const pickDrawable = (x, y) => {   // x, y: 캔버스(배율 1) 좌표
+      const touchable = (i: number) => earSet.has(i) ? earHitVisible(i) : !(DR.opacities[i] < 0.05 || !(DR.dynamicFlags[i] & 1));
+      const pickDrawable = (x: number, y: number) => {   // x, y: 캔버스(배율 1) 좌표
         if (!alphaMaps) buildAlpha();
         const px = (x - model.x) / model.scale.x, py = (y - model.y) / model.scale.y;
         let best = -1, bestOrder = -Infinity;
@@ -1845,7 +1845,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return best;
       };
       // 꼬마 모습(체형 2): 가슴 반응 없이 머리(보이는 그림 위쪽 45%)·몸만 구분 (데스크톱 펫과 같음)
-      const chibiRegion = (y) => {
+      const chibiRegion = (y: number) => {
         let y0 = Infinity, y1 = -Infinity;
         for (let i = 0; i < DR.count; i++) {
           if (DR.opacities[i] < 0.05) continue;
@@ -1855,7 +1855,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < 0.45 ? "head" : "body";
       };
       // 부위 그림(drawRegion)과 가슴 타원·높이(ry)로 부위를 정한다
-      const regionByShape = (r, ry, inChest) => {
+      const regionByShape = (r, ry: number, inChest: boolean) => {
         if (r === "head" && ry > 0.3) r = null;
         if (r === "arm" && cover.q > 0.3 && ry < 0.45) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
         if (r === "arm" || r === "leg" || r === "head") return r;
@@ -1865,7 +1865,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (r === null && ry < 0.3) return "head";
         return ry < 0.4 ? "chest" : "body";
       };
-      const touchRegion = (x, y, d) => {
+      const touchRegion = (x: number, y: number, d: number) => {
         if (bodyW > 0.5) return chibiRegion(y);
         const sc = model.scale.x, cc = chestCenter();
         const shiftX = cc && chestBase ? cc.x - chestBase.x : 0, shiftY = cc && chestBase ? cc.y - chestBase.y : 0;
@@ -1877,7 +1877,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 화면 좌표 → 캔버스 좌표, 캐릭터 위면 [x, y, 메시 번호]
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
       const UI_HIT = 'button, a[href], input, textarea, select, summary, [contenteditable="true"], [class*="composerSeat"] [class*="_card"]';
-      const hitAt = (cx, cy) => {
+      const hitAt = (cx: number, cy: number) => {
         if (canvas.style.display === "none" || fleeX !== 0) return null;
         const r = canvas.getBoundingClientRect();
         if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return null;
@@ -1889,7 +1889,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
 
       let clicks = [], headClicks = [], spamAt = -1e9, inputLockedUntil = 0;
       const shy = { count: 0, last: -1e9, cooldownUntil: 0 }, low = { count: 0, last: -1e9, cooldownUntil: 0 };
-      const onChest = (now) => {
+      const onChest = (now: number) => {
         if (now < shy.cooldownUntil || now - shy.last < 180) return;
         if (now - shy.last > 8000) shy.count = 0;
         shy.last = now; shy.count++;
@@ -1910,13 +1910,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // 가까운 쪽 화면 끝(-1 = 왼쪽, 1 = 오른쪽)과 그쪽으로 완전히 나가는 거리. 높이는 그대로 두고 좌우로만 움직임.
       const nearSide = () => { const a = area(), c = shown.x - fleeX + W * curK / 2; return c - a.l < a.r - c ? -1 : 1; };
-      const outDistance = (dir) => { const a = area(), x = shown.x - fleeX; return dir < 0 ? -(x + W * curK - a.l + 20) : a.r - x + 20; };
+      const outDistance = (dir: number) => { const a = area(), x = shown.x - fleeX; return dir < 0 ? -(x + W * curK - a.l + 20) : a.r - x + 20; };
       // 도망
       //  · 창 안: 창 경계 밖으로 걸어 나가 사라졌다가 10초 뒤 같은 쪽에서 돌아옴 (원래 동작)
       //  · 펫 창: 멀티 모니터에서는 '화면 끝'이 다른 모니터라 지워지지 않으므로, 일정 거리 이동 + 페이드로 확실히 사라지게 한다
       const FLEE_DIST = 300, FLEE_OUT_MS = 700, FLEE_IN_MS = 900, FLEE_HIDE_MS = 10000;
       let fleeFade = 1;   // 도망 중 캔버스 불투명도 (1 = 평소)
-      const fleeSlide = (from, to, ms, done) => {
+      const fleeSlide = (from: number, to: number, ms: number, done) => {
         const t0 = performance.now();
         const step = () => {
           const p = Math.min(1, (performance.now() - t0) / ms), e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
@@ -1963,10 +1963,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // ---------- 산책 ----------
       const WALK_SPEED = 320;   // 걷는 속도 (px/초)
-      const walkEase = (p) => { const a = 0.12, m = 2 * a * (1 - a); return p < a ? p * p / m : p > 1 - a ? 1 - (1 - p) * (1 - p) / m : (p - a / 2) / (1 - a); };   // 출발·도착만 부드럽게, 중간은 일정한 속도
+      const walkEase = (p: number) => { const a = 0.12, m = 2 * a * (1 - a); return p < a ? p * p / m : p > 1 - a ? 1 - (1 - p) * (1 - p) / m : (p - a / 2) / (1 - a); };   // 출발·도착만 부드럽게, 중간은 일정한 속도
       // 산책의 예약 타이머와 걷기 애니메이션은 walk.timers·walk.slideId로 묶어, 집어 들면 한 번에 멈춘다
       const walkLater = (fn, ms) => { const id = setTimeout(() => { walk.timers = walk.timers.filter((t) => t !== id); fn(); }, ms); walk.timers.push(id); return id; };
-      const slide = (from, to, done) => {
+      const slide = (from: number, to: number, done) => {
         const t0 = performance.now(), ms = Math.abs(to - from) / WALK_SPEED * 1000, id = ++walk.slideId;
         let cancelled = false;
         const step = () => {
@@ -2005,12 +2005,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }, 2300);
       };
       // 산책을 떠나면 안 되는 때: 시작 연출·작업·대기·삐짐·도망 중
-      const walkMoodBusy = (now) => intro.phase !== "done" || mood !== "idle" || running || !!waitingKind || now < sulkUntil || now < inputLockedUntil || fleeX !== 0;
+      const walkMoodBusy = (now: number) => intro.phase !== "done" || mood !== "idle" || running || !!waitingKind || now < sulkUntil || now < inputLockedUntil || fleeX !== 0;
       // 누르거나 들고 있을 때·움직이는 중·펫 창으로 넘긴 동안은 산책 안 함 (펫 창이 대신 산책)
       const walkInputBusy = () => !!(drag.pending || drag.on || free.anim || link.open || link.opening || link.follow);
       // 말하는 중, 최근 1분 안에 만졌거나 15초 안에 말했을 때, 화면이 안 보일 때
-      const walkRecentlyActive = (now) => bubble.classList.contains("show") || now - walk.lastTouch < 60000 || now - lastSayAt < 15000 || document.hidden;
-      walkCheck = (now) => {
+      const walkRecentlyActive = (now: number) => bubble.classList.contains("show") || now - walk.lastTouch < 60000 || now - lastSayAt < 15000 || document.hidden;
+      walkCheck = (now: number) => {
         if (SLEEP.state !== "active") return;   // 절전 중에는 산책하지 않음
         if (walk.phase === "away" && running) return walkBack();   // 나가 있는 동안 작업이 시작되면 바로 돌아옴
         if (walk.phase || now < walk.next) return;
@@ -2060,7 +2060,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           });
         }, 2500);
       };
-      const onLower = (now) => {
+      const onLower = (now: number) => {
         if (fleeX !== 0 || now < low.cooldownUntil || now - low.last < 180) return;
         if (now - low.last > 8000) low.count = 0;
         low.last = now; low.count++;
@@ -2082,7 +2082,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         '<ellipse cx="70" cy="30" rx="50" ry="10" fill="#d7dde4" stroke="#4b525b" stroke-width="3"/>' +
         '<ellipse cx="70" cy="30" rx="40" ry="6" fill="#59616b"/><path d="M38 48 Q44 70 40 86" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".55" fill="none"/></svg>';
       // 충격 그림: 별 모양 터짐 + 바깥 충격선 (막았을 땐 은색 반짝임)
-      const impactSvg = (guarded) => {
+      const impactSvg = (guarded: boolean) => {
         const pts = [];
         for (let i = 0; i < 20; i++) { const r = i % 2 ? 22 : 46, a = (i / 20) * Math.PI * 2 - Math.PI / 2; pts.push((50 + Math.cos(a) * r).toFixed(1) + "," + (50 + Math.sin(a) * r).toFixed(1)); }
         const fill = guarded ? "#f1f5f9" : "#ffe14d", stroke = guarded ? "#64748b" : "#ea580c", core = guarded ? "#ffffff" : "#fff7c2";
@@ -2092,18 +2092,18 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // 효과음 (파일 없이 합성): 맞으면 둔탁한 "통", 세숫대야로 막으면 금속이 울리는 "깡~"
       let audioCtx = null;
-      const impactSound = (guarded) => {
+      const impactSound = (guarded: boolean) => {
         try {
           audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
           const ac = audioCtx, t = ac.currentTime, out = ac.createGain();
           out.gain.value = 0.22; out.connect(ac.destination);
-          const tone = (f, dur, vol, type = "sine", drop = 1) => {
+          const tone = (f: number, dur: number, vol: number, type = "sine", drop = 1) => {
             const o = ac.createOscillator(), g = ac.createGain();
             o.type = type; o.frequency.setValueAtTime(f, t); if (drop !== 1) o.frequency.exponentialRampToValueAtTime(f * drop, t + dur);
             g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
             o.connect(g); g.connect(out); o.start(t); o.stop(t + dur + 0.02);
           };
-          const noise = (dur, vol, hp) => {   // 부딪히는 순간의 "탁"
+          const noise = (dur: number, vol: number, hp: number) => {   // 부딪히는 순간의 "탁"
             const b = ac.createBuffer(1, Math.ceil(ac.sampleRate * dur), ac.sampleRate), d = b.getChannelData(0);
             for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
             const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
@@ -2114,7 +2114,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           else { noise(0.07, 0.8, 900); tone(190, 0.28, 0.9, "triangle", 0.45); tone(470, 0.35, 0.35, "sine", 0.9); tone(1130, 0.22, 0.18, "sine", 0.95); }
         } catch {}
       };
-      const potHit = (x, y) => {
+      const potHit = (x: number, y: number) => {
         const now = performance.now();
         walk.lastTouch = now; clicks = []; headClicks = [];
         const guarded = now < basinUntil;   // 세숫대야를 쓰고 있으면 막아 냄
@@ -2154,7 +2154,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         speak("basin_on", 3800);
       };
       const HEAD_SULK_AT = 3, SULK_MS = 15000;   // 머리 1~2번째 = 정색, 3번째 = 삐져서 15초 동안 터치 안 받음
-      const sulk = (now) => {
+      const sulk = (now: number) => {
         clicks = []; headClicks = [];
         until.dark = until.smug = 0;   // 정색 표정을 지우고 삐진 얼굴로
         gest.name = null;
@@ -2166,7 +2166,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         flashExp("blush", SULK_MS);
         setTimeout(() => { stareUntil = performance.now() + 4300; speak("head_after", 4000); }, SULK_MS);   // 풀리며 한마디 할 땐 정면을 똑바로 봄
       };
-      const onTouch = (x, y, d) => {
+      const onTouch = (x: number, y: number, d: number) => {
         const now = performance.now();
         if (now < inputLockedUntil) return;
         walk.lastTouch = now;
@@ -2196,14 +2196,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const pt = (e) => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];   // 창 안 = 창 좌표, 펫 창 = 화면 좌표
       // 몸 전체 영역(캔버스 양옆 빈 곳·머리 위 여백 제외). 펫 창은 클릭을 통과시키다 이 안에 커서가 오면 받기 시작하므로,
       // 반투명한 머리카락 끝처럼 그림 판정이 빗나가는 곳도 집을 수 있게 이 영역으로 판단한다
-      const overBody = (cx, cy) => {
+      const overBody = (cx: number, cy: number) => {
         if (canvas.style.display === "none" || fleeX !== 0) return false;
         const c = canvas.getBoundingClientRect(), r = bodyRect(c.left, c.top, curK);
         return cx >= r.l && cx <= r.r && cy >= r.t && cy <= r.b;
       };
       const walking = () => walk.phase === "out" || walk.phase === "away" || walk.phase === "in";   // 출발한 뒤 ~ 제자리 도착 전
       // 가슴 끌기는 놓은 직후 부끄러워 떠는 동안에도 바로 다시 잡을 수 있다 (inputLockedUntil은 머리 터치에만 적용)
-      const canPullChest = (now) => bodyW <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
+      const canPullChest = (now: number) => bodyW <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
       // 3초 넘게 잡은 채로 '흔들어야' 더 자극적인 대사가 나온다 (잡고만 있으면 나오지 않음)
       // 4초를 넘겨 계속 흔들면 어지러워하는 대사로 바뀐다
       const armChestLong = () => {
@@ -2235,7 +2235,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 그대로 처리하므로 150ms로 제한하지 않는다.
       // 두 번째 버튼이 합류할 때: 그 사이 예약된 쓰다듬기·가슴 끌기를 버리고 집기 예약을 되살린다.
       // (pointerdown은 첫 버튼에만 오므로, 두 번째 버튼은 mousedown/pointermove에서 이 함수를 부른다.)
-      const armChordGrab = (e, now, pointerId = e.pointerId) => {
+      const armChordGrab = (e, now: number, pointerId = e.pointerId) => {
         if (chestDragging) { clearInterval(chestLongTimer); chestDragging = false; chestTarget = 0; chestShiftTarget = 0; }
         strokeFrom = null; chestFrom = null;
         if (!drag.pending) {
@@ -2258,7 +2258,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // pointermove의 buttons 변화로 두 번째 버튼 합류를 감지한다. pointerdown은 첫 버튼만 오고,
       // 왼쪽 pointerdown의 preventDefault가 compatibility mousedown을 막을 수 있어 이 경로가 기준이다.
-      const chordButtonsMoved = (e, now) => {
+      const chordButtonsMoved = (e, now: number) => {
         const mask = e.buttons & 3, prev = mouseButtons;
         mouseButtons = mask;
         if (mask !== 3 || prev === 3) return false;
@@ -2276,7 +2276,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // ---- 포인터 누르기: 오른쪽 버튼 → 캐릭터 위인지 → 머리·가슴 제스처 예약 → 집기 예약 순서 ----
       // 오른쪽 버튼 (단독으로는 다른 동작 없음)
-      const rightButtonDown = (e, nowDown) => {
+      const rightButtonDown = (e, nowDown: number) => {
         if (e.button === 2) {
           rightPress = rightStart(e);
           if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, nowDown, e.pointerId);
@@ -2377,12 +2377,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 펫 창은 별도 창이라 키 입력을 직접 못 받을 수 있다(창에 포커스가 없음). 창 안 캐릭터가 키 상태를 대신 전달한다.
       // 수식 키는 포인터 이벤트의 상태로 알 수 있어, 일반 키만 전달하면 된다.
       const DRAG_MODIFIER_TOKENS = new Set(["alt", "ctrl", "shift", "meta"]);
-      const relayDragKey = (token, on) => {
+      const relayDragKey = (token: string, on: boolean) => {
         if (PET || !link.open || !token || DRAG_MODIFIER_TOKENS.has(token)) return;
         if (dragKeyToken() !== token) return;
         try { link.post("send", { list: [["dragheld", [token, on]]] }); } catch {}
       };
-      const rememberKey = (e, on) => {
+      const rememberKey = (e, on: boolean) => {
         const token = String((e && e.key) || "").toLowerCase();
         if (!token) return;
         if (on) pressedKeys.add(token); else pressedKeys.delete(token);
@@ -2461,7 +2461,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return false;
       };
       // 집어 옮기기를 시작한다 (들고 있는 동안 식은땀, 펫 창이면 창 이동을 펫 프로세스에 맡김)
-      const beginCarry = (e, p, px, py, now) => {
+      const beginCarry = (e, p, px: number, py: number, now: number) => {
         cancelWalk();   // 산책 가려고 말하던 중이면 취소
         drag.on = true; drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false;
         try { document.documentElement.setPointerCapture(e.pointerId); } catch {}
@@ -2513,7 +2513,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       }, true);
       // 끄는 도중 몸이 창 밖으로 나가면 같은 자리에 펫 창을 띄워 커서를 따라오게 함 (창 안 그림은 창 경계에서 잘리므로)
       // 펫 창이 준비된 뒤에만 따라붙고, 위치는 한 번에 하나만 보냄 (여러 요청이 겹치면 도착 순서가 뒤섞여 예전 자리로 튐)
-      const followPet = (now) => {
+      const followPet = (now: number) => {
         if (!link.supported || link.open) return;
         const k = free.k;
         // 몸의 15% 넘게 창 밖으로 나가야 넘김 (제자리는 창 오른쪽 끝에서 4px 안쪽이라 살짝만 끌어도 넘어가던 것 방지)
@@ -2531,7 +2531,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         // 열린 뒤 위치는 보내지 않음: 펫 프로세스가 커서를 직접 읽어 따라옴 (HTTP 왕복은 수십~수백 ms 걸려 끌 때 끊김)
       };
       // 손을 놓을 때 펫 창이 따라오던 중이면: 창 밖이면 펫 창이 이어받고, 창 안으로 돌아왔으면 펫 창을 숨기고 창 안에서 이어 감
-      const finishFollow = (vx, vy) => {
+      const finishFollow = (vx: number, vy: number) => {
         const f = link.follow;
         link.follow = null; link.queue = []; lastPlaceKey = "";   // 숨김으로 끝날 수도 있으니 이번 회차 반응은 버림 (이어받으면 link.enter가 표정·자세를 다시 맞춤)
         // 놓을 때도 끌어낼 때와 같은 기준 (몸 가운데로 보면 일부만 밖으로 끌고 놓았을 때 창 안으로 처리돼 다시 붙었음)
@@ -2541,7 +2541,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!outside) link.post("hide");
         return false;   // 아직 안 떴으면 평소처럼 놓기 (창 밖이면 펫 창을 다시 열어 미끄러짐)
       };
-      const endDrag = (e, cancel) => {
+      const endDrag = (e, cancel: boolean) => {
         const p = drag.pending;
         if (!p || e.pointerId !== p.id) return;   // 다른 손가락의 이벤트가 첫 손가락의 길게 누르기를 취소하지 않게 함
         clearTimeout(touchHold);
@@ -2642,7 +2642,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       function petKFit() {   // 펫 창이 화면에 들어가며 그릴 수 있는 최대 배율
         return Math.min(PET_K_MAX, (screen.availHeight - PET_BUBBLE) / H, (screen.availWidth - 40) / W);
       }
-      function petClampK(k) {
+      function petClampK(k: number) {
         const n = Number(k);
         return Number.isFinite(n) ? Math.min(petKFit(), Math.max(PET_K_MIN, n)) : null;
       }
@@ -2663,7 +2663,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         clearTimeout(petSizeTimer);
         petSizeTimer = setTimeout(() => { try { localStorage.setItem(PET_SIZE_KEY, String(+r.toFixed(3))); } catch {} }, 250);
       }
-      function petSizedPose(pose, fromK, ratio) {   // 아래 가운데를 기준으로 크기만 바꾼 자리
+      function petSizedPose(pose, fromK: number, ratio) {   // 아래 가운데를 기준으로 크기만 바꾼 자리
         if (ratio == null) return pose;
         const k = petClampK(petBaseK * ratio);
         if (k == null || Math.abs(k - fromK) < 1e-3) return pose;
@@ -2683,7 +2683,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const box = { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) };
         return body ? { l: Math.min(body.l, box.l), t: Math.min(body.t, box.t), r: Math.max(body.r, box.r), b: Math.max(body.b, box.b) } : box;
       }
-      function petSetRatio(ratio, ms) {   // 메뉴·슬라이더에서 크기 변경 (아래 가운데 기준)
+      function petSetRatio(ratio: number, ms: number) {   // 메뉴·슬라이더에서 크기 변경 (아래 가운데 기준)
         const k = petClampK(petBaseK * ratio);
         if (k == null || drag.on) return;
         const from = free.on && shown.k ? { k: shown.k, x: shown.x, y: shown.y } : { k: free.k, x: free.x, y: free.y };
@@ -2755,7 +2755,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         petPanel.style.top = Math.round(y) + "px";
         petPanel.style.transform = "none";
       }
-      function openPetPanel(focus) {
+      function openPetPanel(focus: string) {
         if (!PET) return;
         if (!petPanel) petPanel = createPetPanel();
         renderPetPanel();
@@ -2778,7 +2778,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       }
 
       // ---------- Harness 상태 → 반응 ----------
-      listeners.tool = (text) => {
+      listeners.tool = (text: string) => {
         const now = performance.now();
         if (waitingKind || now - lastToolSay < 1500) return;
         lastToolSay = now; say(text, 0, false, "status");
@@ -2801,7 +2801,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 시작 인사 (가운데 연출 중): 0.7초 뒤 5.8초 동안
       if (!PET) setTimeout(() => { if (!link.open) { say(TEXT.hello, 5800, false, "reaction"); play("sway", 2300); } }, 700);
       if (life.stopped) return;
-      window.__dsc = { say, play, setMood, flashExp, sulking: () => performance.now() < sulkUntil, sulkPeeks: () => sulkPeeks.map((p) => ({ at: Math.round(p.at), flip: p.flip })), walk: () => { if (!walk.phase && fleeX === 0) startWalk(); return walk.phase; }, walking: () => walk.phase, sleep: () => SLEEP.state, regionAt: (cx, cy) => { const h = hitAt(cx, cy); return h && touchRegion(h[0], h[1], h[2]); }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s) => { voiceState = s && s.speaking !== false ? s : null; } };   // 확인용
+      window.__dsc = { say, play, setMood, flashExp, sulking: () => performance.now() < sulkUntil, sulkPeeks: () => sulkPeeks.map((p) => ({ at: Math.round(p.at), flip: p.flip })), walk: () => { if (!walk.phase && fleeX === 0) startWalk(); return walk.phase; }, walking: () => walk.phase, sleep: () => SLEEP.state, regionAt: (cx: number, cy: number) => { const h = hitAt(cx, cy); return h && touchRegion(h[0], h[1], h[2]); }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s) => { voiceState = s && s.speaking !== false ? s : null; } };   // 확인용
 
       // ---------- 바깥 펫 창 연결 (창 안 캐릭터 쪽) ----------
       // 연결 상태·송수신·알림 처리·동기화 주기·미리 띄우기·토글은 character/pet-link.js. 여기는 연결이 부르는 캐릭터 동작만 둔다.
@@ -2915,7 +2915,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           else PET.send({ type: "attach" });
         };
         // 창 밖에서 놓음 → 여기서 이어서 미끄러지거나 붙음
-        const releaseFromHost = (vx, vy) => {
+        const releaseFromHost = (vx: number, vy: number) => {
           petGrab = null; petTracking = false; PET.send({ type: "track", on: false });
           drag.on = false; until.sweat = performance.now() + 400; release(vx, vy);
         };
@@ -2926,7 +2926,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           voice: (a) => { voiceState = a[0]; },
           drag: (a) => { prefs.drag = { key: a[0] }; },   // 창 안 캐릭터와 같은 이동 키
           dragheld: (a) => { if (a[1]) pressedKeys.add(a[0]); else pressedKeys.delete(a[0]); },   // 포커스 없는 펫 창에 키 상태 전달
-          release: (a) => { if (drag.on) releaseFromHost(a[0], a[1]); },
+          release: (a: number[]) => { if (drag.on) releaseFromHost(a[0], a[1]); },
         };
         const onPetCommands = (m) => {
           for (const [fn, a] of m.list || []) {
@@ -2972,7 +2972,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         else { flashExp("heart", 4000); flashExp("blush", 4000); say(TEXT.done, 4000, false, "reaction"); setMood("idle"); play("laugh", 1700); }
       };
       // 작업이 시작되거나 끝날 때
-      const reactToRunning = (nowRunning) => {
+      const reactToRunning = (nowRunning: boolean) => {
         if (nowRunning && !running) {
           running = true; lastError = -1e9;
           setExp("loading", true);

@@ -17,8 +17,8 @@ const BODY_TYPES = BODY_TYPE_ITEMS.map(({ key, ko, en }) => [key, ko, en])
 // 이 두 화면에서는 창 안 캐릭터만 숨긴다 (대화 화면과 바깥 펫 창은 그대로).
 // 패널 id는 URL이 아니라 layout 서비스의 activePanelId로 판정한다.
 const HIDDEN_IN_WINDOW_PANELS = new Set(['plugins', 'schedules'])
-const panelHidesInWindowCharacter = (activePanelId) => HIDDEN_IN_WINDOW_PANELS.has(activePanelId)
-const sleepMinutes = (value) => {
+const panelHidesInWindowCharacter = (activePanelId: string) => HIDDEN_IN_WINDOW_PANELS.has(activePanelId)
+const sleepMinutes = (value: string) => {
   const n = Number(value ?? 1)
   return Number.isFinite(n) ? Math.min(60, Math.max(0.5, n)) : 1
 }
@@ -37,7 +37,7 @@ const MODIFIER_ALIASES = new Map([
 ])
 const isMacPlatform = () => /Mac|iPhone|iPad|iPod/i.test(typeof navigator === 'object' && navigator ? String(navigator.platform || navigator.userAgent || '') : '')
 // 문자열 키를 저장·비교용 토큰으로: Space·+는 이름으로 바꿔 '+' 구분자와 겹치지 않게 한다.
-const shortcutKeyToken = (key) => {
+const shortcutKeyToken = (key: string) => {
   const text = String(key ?? '')
   if (text === ' ') return 'space'
   if (text === '+') return 'plus'
@@ -108,7 +108,7 @@ function dragKeyDown(event) {
   return { action: 'save', key: label }
 }
 
-function stylesheet(life, file) {
+function stylesheet(life, file: string) {
   const link = document.createElement('link')
   link.rel = 'stylesheet'; link.href = ROOT + file
   document.head.appendChild(link)
@@ -117,7 +117,7 @@ function stylesheet(life, file) {
 
 function mountLayout(life) {
   const owned = new Map()
-  const mark = (node, name) => {
+  const mark = (node: Element, name: string) => {
     if (node.classList.contains(name)) return
     node.classList.add(name)
     if (!owned.has(node)) owned.set(node, new Set())
@@ -168,7 +168,7 @@ function createCharacterLink() {
     // 캐릭터 API를 붙인다. 돌려준 함수로 떼며, 그사이 다른 캐릭터가 붙었으면 건드리지 않는다
     attach(next) { character = next; return () => { if (character === next) character = null } },
     setPrefs(next) { prefs = next; character?.setPrefs(next) },
-    setPageHidden(next) {
+    setPageHidden(next: boolean) {
       if (pageHidden === next) return
       pageHidden = next
       character?.setPrefs({ pageHidden })
@@ -203,7 +203,7 @@ function startCharacter(life, link, onSetting) {
 // installBundle(설치할 때와 같은 기능)을 같은 설치 주소로 다시 불러 최신 커밋을 받는다.
 
 // GitHub 설치 주소 → { owner, repo, ref }. GitHub이 아니면 null.
-function githubSource(spec) {
+function githubSource(spec: string) {
   if (typeof spec !== 'string') return null
   const text = spec.trim()
   const short = text.match(/^github:([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:#(.+))?$/i)
@@ -213,8 +213,8 @@ function githubSource(spec) {
 }
 
 // "1.2.3" 형식 비교. 앞이 크면 양수. 뒤에 붙은 -rc 등은 같은 번호의 정식 버전보다 낮게 본다.
-function compareVersions(a, b) {
-  const parse = (v) => {
+function compareVersions(a: string, b: string) {
+  const parse = (v: string) => {
     const [core, pre] = String(v ?? '').trim().replace(/^v/i, '').split('-', 2)
     return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre: pre ?? null }
   }
@@ -244,7 +244,7 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
   const message = (error) => (error && (error.message || error.code || String(error))) || ''
   const failure = (value) => [value?.error?.code, value?.error?.diagnostic].filter(Boolean).join(': ') || 'failed'
   // 이전 화면이 시작한 업데이트(자기 자신을 지웠다 다시 설치)가 끝나 새 버전이 뜬 경우 결과를 이어받는다.
-  const resume = async (mine) => {
+  const resume = async (mine: number) => {
     const pending = storage.read()
     if (!pending || typeof pending.requestId !== 'string') return false
     if (now() - (pending.at || 0) > 15 * 60 * 1000) { storage.clear(); return false }
@@ -377,7 +377,7 @@ function createKeyStore() {
     setRef(next) { const name = typeof next === 'string' ? next : DEFAULT_KEY_REF; if (name !== ref) { ref = name; refresh() } },
     attach(next) { remote = next; refresh() },
     detach() { remote = null; generation++; set({ available: false, configured: false, source: null }) },
-    changed(name) { if (name === ref) refresh() },
+    changed(name: string) { if (name === ref) refresh() },
     async save(value) {
       if (!remote || !ref) return false
       const response = await remote.set(ref, value)
@@ -415,7 +415,7 @@ function TtsField({ label, hint, value, placeholder, disabled, multiline, type, 
 }
 
 // JSON 칸: 객체만 받는다. 빈 칸은 {}.
-function parseJsonObject(text, ko) {
+function parseJsonObject(text: string, ko) {
   const trimmed = text.trim()
   if (trimmed === '') return { value: {} }
   try {
@@ -429,7 +429,7 @@ function TtsKeyField({ keys, ko, disabled }) {
   const key = React.useSyncExternalStore((fn) => keys.subscribe(fn), () => keys.getSnapshot(), () => keys.getSnapshot())
   const [draft, setDraft] = React.useState('')
   const [message, setMessage] = React.useState('')
-  const t = (k, e) => (ko ? k : e)
+  const t = (k: string, e: string) => (ko ? k : e)
   const status = !key.available ? t('Harness 자격 증명 저장소에 연결되지 않았습니다.', 'The Harness credential store is unavailable.')
     : key.configured ? t('저장됨', 'Saved') + (key.source ? ' (' + key.source + ')' : '')
       : t('저장된 키 없음 · 키가 필요 없는 로컬 서버는 비워 두기', 'No key saved · leave empty for local servers that need none')
@@ -467,10 +467,10 @@ function ttsGroup(title, ...children) {
 
 function TtsSection({ form, keys, ko, writable, tts }) {
   const [error, setError] = React.useState('')
-  const t = (k, e) => (ko ? k : e)
+  const t = (k: string, e: string) => (ko ? k : e)
   const v = tts ?? {}, openai = v.openai ?? {}
   const off = !writable || typeof form.mutate !== 'function'
-  const write = async (path, value) => {
+  const write = async (path: string[], value: unknown) => {
     setError('')
     try {
       if (await form.mutate([{ op: 'set', path: ['tts', ...path], value }])) return ''
@@ -479,21 +479,21 @@ function TtsSection({ form, keys, ko, writable, tts }) {
     setError(failed)
     return failed
   }
-  const text = (path: string[], label: string, extra: Record<string, any> = {}) => React.createElement(TtsField, { key: path.join('.'), label, disabled: off, commit: (draft) => write(path, draft.trim()), ...extra })
+  const text = (path: string[], label: string, extra: Record<string, any> = {}) => React.createElement(TtsField, { key: path.join('.'), label, disabled: off, commit: (draft: string) => write(path, draft.trim()), ...extra })
   const json = (path: string[], label: string, value: unknown, placeholder: string, hint?: string) => text(path, label, {
     multiline: true, placeholder, hint, value: value && Object.keys(value).length ? JSON.stringify(value, null, 2) : '',
-    commit: (draft) => { const parsed = parseJsonObject(draft, ko); return parsed.error ? parsed.error : write(path, parsed.value) },
+    commit: (draft: string) => { const parsed = parseJsonObject(draft, ko); return parsed.error ? parsed.error : write(path, parsed.value) },
   })
   const number = (path: string[], label: string, value: unknown, min: number, extra: { max?: number; [key: string]: unknown } = {}) => text(path, label, {
     type: 'number', min, max: extra.max, step: 1, value: value === undefined ? '' : String(value), ...extra,
     commit: (draft) => { const n = Number(draft); return Number.isInteger(n) && n >= min && n <= (extra.max ?? Infinity) ? write(path, n) : t(min + '~' + extra.max + ' 범위의 정수를 넣어 주세요.', 'Enter a whole number from ' + min + ' to ' + extra.max + '.') },
   })
   // 화면에서는 초, 저장은 ms.
-  const seconds = (path, label, ms) => text(path, label, {
+  const seconds = (path: string[], label: string, ms) => text(path, label, {
     type: 'number', min: 1, max: 600, step: 0.001, value: ms === undefined ? '' : String(ms / 1000),
     commit: (draft) => { const n = Number(draft); return Number.isFinite(n) && n >= 1 && n <= 600 ? write(path, Math.round(n * 1000)) : t('1~600초로 넣어 주세요.', 'Enter 1 to 600 seconds.') },
   })
-  const check = (path, label, checked) => React.createElement('label', { key: path.join('.'), style: toggleRow },
+  const check = (path, label, checked: boolean) => React.createElement('label', { key: path.join('.'), style: toggleRow },
     React.createElement('span', null, label),
     React.createElement('input', { type: 'checkbox', checked, disabled: off, onChange: (event) => write(path, event.target.checked) }))
   const serverDefault = t('비우면 서버 기본값', 'Empty = server default')
@@ -527,7 +527,7 @@ function TtsSection({ form, keys, ko, writable, tts }) {
 
 function updateSection(updater, ko) {
   const s = updater.getSnapshot()
-  const t = (k, e) => (ko ? k : e)
+  const t = (k: string, e: string) => (ko ? k : e)
   const versions = [s.current && t('현재 ' + s.current, 'Installed ' + s.current), s.latest && t('최신 ' + s.latest, 'Latest ' + s.latest)].filter(Boolean).join(' · ')
   const text = {
     unavailable: t('Harness 플러그인 관리자에 연결되지 않아 업데이트를 확인할 수 없습니다.', 'Plugin manager is unavailable, so updates cannot be checked.'),
@@ -545,7 +545,7 @@ function updateSection(updater, ko) {
     'update-failed': t('업데이트하지 못했습니다.', 'Update failed.'),
   }[s.phase] ?? ''
   const busy = s.phase === 'checking' || s.phase === 'updating'
-  const button = (label, onClick, disabled) => React.createElement('button', { type: 'button', onClick, disabled }, label)
+  const button = (label, onClick, disabled: boolean) => React.createElement('button', { type: 'button', onClick, disabled }, label)
   return React.createElement('section', { 'aria-label': t('업데이트', 'Updates'), style: { display: 'grid', gap: 8, paddingTop: 12, borderTop: '1px solid #8881' } },
     React.createElement('strong', null, t('업데이트', 'Updates')),
     versions ? React.createElement('span', { style: { opacity: 0.7 } }, versions) : null,
@@ -669,7 +669,7 @@ function settingsPage(ctx, form, updater, keys, link) {
       ['theme', ko ? '파스텔 테마' : 'Pastel theme'],
       ['translation', ko ? '한국어 언어팩' : 'Korean language pack'],
     ]
-    const change = async (field, checked) => {
+    const change = async (field: string, checked) => {
       const current = form.getSnapshot()
       if (current.status !== 'ready' || !current.writable) return
       setError(''); setPending(true)
@@ -807,7 +807,7 @@ function apply(ctx) {
     links.set(ctx, link)
     // 바깥 펫 창의 우클릭 메뉴·설정 패널이 보내는 값을 설정에 반영한다. 이 플러그인이 아는 키만 받는다.
     const PET_CONFIG_KEYS = new Set([...OUTFIT_FIELDS.map(([field]) => field), 'bodyType', 'character'])
-    const applyPetConfig = (key, value) => {
+    const applyPetConfig = (key: string, value: string) => {
       if (typeof key !== 'string' || !PET_CONFIG_KEYS.has(key)) return
       const next = key === 'bodyType'
         ? (BODY_TYPES.some(([type]) => type === value) ? value : null)
@@ -851,7 +851,7 @@ function apply(ctx) {
       // 음성 API 키 저장소도 선택적: 없으면 키 칸만 비활성화된다.
       ctx.inject(['remote', 'remote.credentials'], (scope) => {
         keys.attach(scope.remote.credentials)
-        const off = typeof scope.remote.$on === 'function' ? scope.remote.$on('credentials/reference-updated', (ref) => keys.changed(ref)) : null
+        const off = typeof scope.remote.$on === 'function' ? scope.remote.$on('credentials/reference-updated', (ref: string) => keys.changed(ref)) : null
         scope.effect(() => () => { off?.(); keys.detach() }, 'deepseek-harness-kr: voice key')
       })
     }
