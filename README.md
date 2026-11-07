@@ -87,7 +87,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 - Live2D 캐릭터의 표정·시선·터치 반응과 모음에 맞춘 입 모양
 - 작업 상태·추론 문구에 반응하는 말풍선
 - 파스텔 테마 (Harness의 밝은 모드·다크 모드 설정을 그대로 따름). 좁은 화면에서 겹쳐 뜨는 왼쪽 드로어·오른쪽 전체화면 패널은 내용이 비치지 않도록 불투명 배경으로 표시합니다
-- UI 번역 54개 네임스페이스를 제공하는 한국어 언어팩
+- UI 번역  네임스페이스를 제공하는 한국어 언어팩
 - 말풍선 음성(TTS): 설정 창에서 켜기와 URL·API 키 등록 (0.1.6부터 포함)
 - 설정 화면에서 소품·옷·체형 바꾸기 (동물귀 숨기기 포함)
 - 설정 화면에서 **시작할 때 등장 연출** 끄기 (처음부터 제자리에 뜸)
@@ -144,12 +144,12 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 
 ```powershell
 npm ci
-npm run locales:extract  # harness/overlay의 번역을 수정한 경우
+npm run locales          # 설치된 DSH 영어 사전과 비교해 빠진 번역 보고 (todo·merge는 plugin/locales.mjs 참고)
 npm run build
 npm test
 ```
 
-빌드는 `assets/`의 캐릭터 코드와 `plugin/locales.ko.json`으로 플러그인 클라이언트를 생성합니다. 설정 스키마는 DSH의 `@deepseek-ai/schemastery`를 사용합니다.
+빌드는 `character/`의 캐릭터 코드와 `plugin/locales.ko.json`으로 플러그인 클라이언트(`lib/client.js`)와 펫 창용 `assets/dsc.js`를 생성합니다. 한국어 번역의 원본은 `plugin/locales.ko.json`입니다. 설정 스키마는 DSH의 `@deepseek-ai/schemastery`를 사용합니다.
 빌드된 `lib/client.js`와 `assets/`를 저장소에 포함하므로 Git 주소로 설치할 때 빌드 스크립트를 실행하지 않습니다.
 캐릭터 코드·번역·자산을 수정한 뒤에는 `npm run build`를 실행하고 생성물도 함께 커밋하세요.
 사용자에게 나가는 변경이면 `package.json`의 `version`도 올려 주세요. Plugins 화면의 버전 표시로 새 버전인지 구분할 수 있습니다.
@@ -193,7 +193,7 @@ npm test
 
 | 폴더 | 내용 |
 |---|---|
-| `harness/overlay/` | 예전 ASAR 패치용 한국어화·데스크톱 패치 파일. 번역 추출(`npm run locales:extract`)의 원본으로 남겨 둡니다 |
+| `harness/overlay/` | 예전 ASAR 패치용 한국어화·데스크톱 패치 파일 (더 이상 번역 원본이 아님) |
 | `harness/tools/` | 예전 ASAR 패치·포터블 빌드 스크립트와 분석 도구 |
 
 ## 라이선스

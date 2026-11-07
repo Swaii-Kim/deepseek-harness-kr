@@ -30,7 +30,7 @@
   "scripts": {
     "build": "node plugin/build.mjs",
     "test": "node --test plugin/test/*.test.js plugins/dsh-tts/test/*.test.js",
-    "locales:extract": "node plugin/extract-locales.mjs"
+    "locales": "node plugin/locales.mjs report"
   },
   "engines": {
     "node": ">=22.19.0"
