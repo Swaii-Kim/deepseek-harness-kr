@@ -37,10 +37,11 @@ function contextBase(pageHidden = false) {
     chipRemoved: 0,
     rafCalls: 0,
     app: {
+      // 배치 루프가 배치 뒤에 직접 돌리는 티커 (스스로 rAF를 돌지 않는다)
       ticker: {
-        started: true,
-        start() { this.started = true },
-        stop() { this.started = false },
+        lastTime: -1,
+        updates: 0,
+        update() { this.updates++ },
       },
       // PR24: InteractionManager의 Ticker.system 구독을 끄고 켜는 대상
       renderer: { plugins: { interaction: { useSystemTicker: true } } },
@@ -94,7 +95,7 @@ function runPageContext() {
   ].join('\n')
   const script = [
     preamble,
-    sliceBetween('const setRender =', 'const place = () =>'),
+    sliceBetween('let renderOn = true;', 'const place = () =>'),
     sliceBetween('const hideChipVisible =', 'let placeErrorWarned'),
     sliceBetween('let hideChip = null;', '      if (!PET) {'),
   ].join('\n')
@@ -120,7 +121,7 @@ function runPageContext() {
     canvas: canvas.style,
     bubble: bubble.style,
     veil: veil.style,
-    ticker: app.ticker,
+    rendering: () => renderOn,
   })`
   return vm.runInContext(`${script}\n${expose}`, vm.createContext(context))
 }
@@ -135,7 +136,7 @@ function runPlaceContext() {
   ].join('\n')
   const script = [
     preamble,
-    sliceBetween('const setRender =', 'const place = () =>'),
+    sliceBetween('let renderOn = true;', 'const place = () =>'),
     sliceBetween('const hideChipVisible =', 'let placeErrorWarned'),
     sliceBetween('let hideChip = null;', '      if (!PET) {'),
     sliceBetween('const place = () =>', 'const hideChipVisible ='),
@@ -152,7 +153,7 @@ function runPlaceContext() {
     canvas: canvas.style,
     bubble: bubble.style,
     veil: veil.style,
-    ticker: app.ticker,
+    rendering: () => renderOn,
   })`
   return vm.runInContext(`${script}\n${expose}`, vm.createContext(context))
 }
@@ -306,7 +307,7 @@ test('플러그인·자동화 패널을 열면 창 안 캐릭터를 숨기고, �
   assert.equal(h.canvas.display, 'none')
   assert.equal(h.bubble.display, 'none')
   assert.equal(h.veil.opacity, 0)
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
   assert.equal(h.pageHiddenApplied(), true)
   assert.equal(h.hushCalls(), 0, '페이지 숨김은 hush/relay를 보내지 않는다')
   assert.equal(h.linkPosts().length, 0, '페이지 숨김은 외부 펫에 명령을 보내지 않는다')
@@ -326,7 +327,7 @@ test('place() 자체도 패널 숨김을 지켜 창 밖 펫 분기보다 먼저 
   h.place()
   assert.equal(h.canvas.display, 'none')
   assert.equal(h.bubble.display, 'none')
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
   assert.equal(h.pageHiddenApplied(), true)
 
   const pageBranch = source.indexOf('if (pageHiddenNow()) { hideForPage(); return; }')
@@ -338,14 +339,14 @@ test('PR24 배치 루프: 패널 숨김은 rAF/시스템 티커를 쉬게 하고
   const h = runPageContext()
   h.setPageHidden(true)
   h.syncPageHidden()
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
   assert.equal(h.tickerSystem(), false, '숨은 동안 InteractionManager의 시스템 티커도 끈다')
   assert.equal(h.rafIdle(), false, '이벤트만으로 예약된 프레임을 중복 취소하지 않는다')
 
   // 다음 배치 프레임: place가 hideForPage를 부르고, raf 하단이 pageHiddenNow를 보고 스스로 쉰다
   h.raf()
   assert.equal(h.rafIdle(), true)
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
   assert.equal(h.tickerSystem(), false)
 
   h.setPageHidden(false)
@@ -402,7 +403,7 @@ test('실제 place도 외부 펫이 떠 있으면 패널 복귀 후 창 안 그�
   h.syncPageHidden()
   assert.equal(h.canvas.display, 'none')
   assert.equal(h.bubble.display, 'none')
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
   assert.equal(h.external(), true)
   assert.equal(h.linkPosts().length, 0)
   h.raf()
@@ -421,7 +422,7 @@ test('사용자 hidden 상태는 패널 진입/이탈과 별개로 보존되고 
   h.syncPageHidden()
   assert.equal(h.hidden(), true, '패널 숨김이 사용자 hidden을 바꾸지 않는다')
   assert.equal(h.chip(), null, '패널 화면에는 복구 칩을 남기지 않는다')
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
 
   h.setPageHidden(false)
   h.syncPageHidden()
@@ -449,11 +450,11 @@ test('잠든 상태에서는 패널 진입/이탈이 잠을 깨우거나 다시 
   h.setPageHidden(true)
   h.syncPageHidden()
   assert.equal(h.canvas.display, 'none')
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
 
   h.setPageHidden(false)
   h.syncPageHidden()
   assert.equal(h.placeCalls(), 0, '잠든 캐릭터를 place()로 깨우지 않는다')
   assert.equal(h.canvas.display, 'none')
-  assert.equal(h.ticker.started, false)
+  assert.equal(h.rendering(), false)
 })

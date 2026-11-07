@@ -110,7 +110,8 @@ test('캔버스 숨김: 숨기면 그리기만 멈추고 칩을 남기며, 복�
   assert.ok(chip(), '숨김 상태에서는 복구 칩이 있어야 한다')
   assert.equal(setHidden(false), false)
   assert.equal(chip(), null, '복구하면 칩을 지운다')
-  assert.equal(wakeCalls(), 1, '복구하면 펫 창 때문에 쉬던 배치 루프를 깨운다')
+  // 그리기를 다시 켜는 setRender(true)도 깨우므로 호출은 여러 번일 수 있다 (실제 wakeRaf는 쉬는 중일 때만 동작)
+  assert.ok(wakeCalls() >= 1, '복구하면 펫 창 때문에 쉬던 배치 루프를 깨운다')
 })
 
 test('복구 칩은 모바일 숨김 설정이면 남지 않고, 설정을 되돌리면 다시 보인다', () => {
@@ -143,24 +144,77 @@ test('모바일 숨김 설정에서는 새 숨김에도 칩을 만들지 않는�
   h.setHidden(false)
 })
 
-test('티커는 상태가 바뀔 때만 시작/정지한다 (매 프레임 start/stop 반복 없음)', () => {
-  const slice = sliceBetween('const setRender =', 'const place = () =>')
-  const ticker = {
-    started: true, starts: 0, stops: 0,
-    start() { this.started = true; this.starts++ },
-    stop() { this.started = false; this.stops++ },
+test('그리기 여부는 바뀔 때만 반영하고, 다시 켜면 멈춘 시간을 건너뛰고 쉬던 배치 루프를 깨운다', () => {
+  const slice = sliceBetween('let renderOn = true;', 'const place = () =>')
+  const ticker = { lastTime: 5, update() {} }
+  const context = { app: { ticker }, wakes: 0, performance: { now: () => 1000 } }
+  const { setRender, rendering } = runScript(`let wakes = 0; const wakeRaf = () => { wakes++ };\n${slice}`, context,
+    '({ setRender, rendering: () => renderOn, wakes: () => wakes })')
+  assert.equal(rendering(), true, '창이 보이기 전에 첫 그리기를 끝내 두도록 처음엔 켜져 있다')
+  setRender(true)
+  assert.equal(ticker.lastTime, 5, '이미 켜져 있으면 아무것도 바꾸지 않는다')
+  setRender(false)
+  setRender(false)
+  assert.equal(rendering(), false)
+  setRender(true)
+  assert.equal(rendering(), true)
+  assert.equal(ticker.lastTime, 1000, '멈춰 있던 시간만큼 모델이 한꺼번에 움직이지 않게 기준 시각을 지금으로')
+})
+
+test('한 프레임 안에서 배치가 먼저 돌고 그 다음에 모델 갱신·그리기가 돈다', () => {
+  // 배치(크기·해상도 변경)가 그리기보다 늦으면 resize로 지워진 버퍼가 화면에 나간다(인트로 이동 중 사라짐)
+  const calls = []
+  const context = {
+    PET: false, petPower: false, hidden: false, SLEEP: { state: 'active' }, link: { open: false },
+    app: { ticker: { lastTime: 0, update: (time) => calls.push(`update@${time}`) } },
+    console,
+    performance: { now: () => 0 },
+    place: () => calls.push('place'),
+    syncHideChip: () => calls.push('chip'),
+    pageHiddenNow: () => false,
+    systemTicker: () => {},
+    requestAnimationFrame: () => calls.push('next'),
   }
-  const { setRender } = runScript(slice, { app: { ticker } }, '({ setRender })')
-  setRender(true)
-  setRender(true)
-  assert.equal(ticker.starts, 0)
+  const script = [
+    'let placeErrorWarned = false;',
+    sliceBetween('let renderOn = true;', 'const place = () =>'),
+    sliceBetween('let rafIdle = false;', '\n      requestAnimationFrame(raf);'),
+  ].join('\n')
+  const { raf, setRender } = runScript(script, context, '({ raf, setRender })')
+
+  raf(16)
+  assert.deepEqual(calls, ['place', 'update@16', 'next'])
+
+  // 그리기를 끄면 배치만 돌고 티커는 건드리지 않는다
+  calls.length = 0
   setRender(false)
-  setRender(false)
-  setRender(false)
-  assert.equal(ticker.stops, 1)
+  raf(32)
+  assert.deepEqual(calls, ['place', 'next'])
+
+  // 배치가 실패해도 그 프레임 그리기는 그대로 한다
+  calls.length = 0
   setRender(true)
-  assert.equal(ticker.starts, 1)
-  assert.equal(ticker.started, true)
+  context.place = () => { calls.push('place'); throw new Error('boom') }
+  const warn = console.warn
+  console.warn = () => {}
+  try { raf(48) } finally { console.warn = warn }
+  assert.deepEqual(calls, ['place', 'update@48', 'next'])
+})
+
+test('렌더 해상도는 실제로 바뀔 때만 버퍼를 다시 만든다', () => {
+  const slice = sliceBetween('const setRes = ', '\n')
+  const calls = []
+  const app = { renderer: { resolution: 3, resize: (w, h) => calls.push(`resize ${w}x${h}@${app.renderer.resolution}`) } }
+  const setRes = runScript(slice, { app, DPR: 3, W: 300, H: 300 }, 'setRes')
+  setRes(1.5)
+  assert.deepEqual(calls, ['resize 300x300@4.5'])
+  calls.length = 0
+  setRes(1.5); setRes(1)
+  assert.deepEqual(calls, ['resize 300x300@3'])
+  // 배율 1 이하는 해상도가 그대로(DPR)라 버퍼를 건드리지 않는다
+  calls.length = 0
+  setRes(0.6); setRes(0.42)
+  assert.deepEqual(calls, [])
 })
 
 test('캔버스를 숨긴 동안 펫 창 단축키는 아무 것도 하지 않고, 복구하면 다시 열린다', () => {
@@ -390,11 +444,7 @@ function runChipContext() {
       documentElement: { classList: { remove() {} } },
     },
     app: {
-      ticker: {
-        started: true, starts: 0, stops: 0,
-        start() { this.started = true; this.starts++ },
-        stop() { this.started = false; this.stops++ },
-      },
+      ticker: { lastTime: -1, update() {} },
     },
     SLEEP: { state: 'active', lastActive: 0 },
     drag: { pending: null, on: false },
@@ -424,7 +474,7 @@ function runChipContext() {
   const script = [
     preamble,
     sliceBetween('const hideChipVisible =', 'let placeErrorWarned'),
-    sliceBetween('const setRender =', 'const place = () =>'),
+    sliceBetween('let renderOn = true;', 'const place = () =>'),
     sliceBetween('let hideChip = null;', '      if (!PET) {'),
   ].join('\n')
   const api = runScript(script, context, `({
@@ -433,7 +483,7 @@ function runChipContext() {
     chip: () => hideChip,
     placeCalls: () => placeCalls,
     wakeCalls: () => wakeCalls,
-    ticker: app.ticker,
+    rendering: () => renderOn,
     removed: () => removed,
     canvas: canvas.style, bubble: bubble.style, veil: veil.style,
   })`)
