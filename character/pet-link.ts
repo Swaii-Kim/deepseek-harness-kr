@@ -86,19 +86,30 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
   };
 
   // 펫 창 알림 하나를 처리한다
+  // 보임: 이쪽이 연(따라오게 했거나 던져서 연) 경우만 받음. 이미 숨기라고 한 뒤 늦게 온 알림은 무시
+  const onShown = () => {
+    if (!link.follow) { if (link.opening) link.enter(); return; }
+    if (!link.follow.shown) { link.follow.shown = true; link.queue.push(...deps.snapshot()); }
+  };
+  // 숨음: 펫 창이 맡고 있던 때만 돌아옴. 따라오던 펫 창이 숨으면 창 안 캐릭터가 다시 보이게 (방금 이쪽이 숨긴 따라오기 창이면 무시)
+  const onHidden = () => {
+    if (link.open) link.leave();
+    else if (link.follow?.shown) link.follow.shown = false;
+  };
+  // 펫 창 우클릭 메뉴·설정 패널에서 바꾼 값
+  const onConfig = (list: unknown) => {
+    if (!Array.isArray(list)) return;
+    for (const pair of list as unknown[]) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
+      try { deps.onConfig(pair[0], pair[1]); } catch {}
+    }
+  };
   const handle = (ev: PetEvent) => {
     if (ev.seq !== undefined && ev.seq !== link.seq) return;   // 이전 회차(붙고 숨은 뒤 늦게 남은) 알림은 버림
-    // 보임: 이쪽이 연(따라오게 했거나 던져서 연) 경우만 받음. 이미 숨기라고 한 뒤 늦게 온 알림은 무시
-    if (ev.type === "shown") { if (link.follow) { if (!link.follow.shown) { link.follow.shown = true; link.queue.push(...deps.snapshot()); } } else if (link.opening) link.enter(); }
-    // 붙음·닫힘·오류: 창 안 캐릭터로 돌아옴. 숨음: 펫 창이 맡고 있던 때만 (방금 이쪽이 숨긴 따라오기 창이면 무시)
+    if (ev.type === "shown") onShown();
+    // 붙음·닫힘·오류: 창 안 캐릭터로 돌아옴
     else if (ev.type === "attach" || ev.type === "closed" || ev.type === "error") { link.follow = null; link.leave(); }
-    else if (ev.type === "hidden" && link.open) link.leave();
-    else if (ev.type === "hidden" && link.follow?.shown) link.follow.shown = false;   // 따라오던 펫 창이 숨음 → 창 안 캐릭터가 다시 보이게
-    else if (ev.type === "config" && Array.isArray(ev.list)) {   // 펫 창 우클릭 메뉴·설정 패널에서 바꾼 값
-      for (const pair of ev.list as unknown[]) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
-        try { deps.onConfig(pair[0], pair[1]); } catch {}
-      }
-    }
+    else if (ev.type === "hidden") onHidden();
+    else if (ev.type === "config") onConfig(ev.list);
   };
 
   link.poll = () => {

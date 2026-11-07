@@ -338,28 +338,37 @@
         if (!link.open && !link.follow) link.post("hide");
       });
     };
-    const handle = (ev) => {
-      if (ev.seq !== void 0 && ev.seq !== link.seq) return;
-      if (ev.type === "shown") {
-        if (link.follow) {
-          if (!link.follow.shown) {
-            link.follow.shown = true;
-            link.queue.push(...deps.snapshot());
-          }
-        } else if (link.opening) link.enter();
-      } else if (ev.type === "attach" || ev.type === "closed" || ev.type === "error") {
-        link.follow = null;
-        link.leave();
-      } else if (ev.type === "hidden" && link.open) link.leave();
-      else if (ev.type === "hidden" && link.follow?.shown) link.follow.shown = false;
-      else if (ev.type === "config" && Array.isArray(ev.list)) {
-        for (const pair of ev.list) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
-          try {
-            deps.onConfig(pair[0], pair[1]);
-          } catch {
-          }
+    const onShown = () => {
+      if (!link.follow) {
+        if (link.opening) link.enter();
+        return;
+      }
+      if (!link.follow.shown) {
+        link.follow.shown = true;
+        link.queue.push(...deps.snapshot());
+      }
+    };
+    const onHidden = () => {
+      if (link.open) link.leave();
+      else if (link.follow?.shown) link.follow.shown = false;
+    };
+    const onConfig = (list) => {
+      if (!Array.isArray(list)) return;
+      for (const pair of list) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
+        try {
+          deps.onConfig(pair[0], pair[1]);
+        } catch {
         }
       }
+    };
+    const handle = (ev) => {
+      if (ev.seq !== void 0 && ev.seq !== link.seq) return;
+      if (ev.type === "shown") onShown();
+      else if (ev.type === "attach" || ev.type === "closed" || ev.type === "error") {
+        link.follow = null;
+        link.leave();
+      } else if (ev.type === "hidden") onHidden();
+      else if (ev.type === "config") onConfig(ev.list);
     };
     link.poll = () => {
       if (link.polling) return;
