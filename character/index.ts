@@ -13,6 +13,8 @@ import { chordDown, chordWithinGrace, chordUp } from "./chord.ts";
 import { clamp, noise, S, spring, sstep, addGesture, blinkClose, seg, coverForearm } from "./motion.ts";
 import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-signals.ts";
 import { createPetLink, type PetMessage } from "./pet-link.ts";
+import { parseSyllables } from "./speech.ts";
+import { meshBounds, meshHit } from "./hit.ts";
 import type { Lifetime } from "./lifetime.ts";
 import type { CharacterApi, CharacterPrefs, Motion, PetBridge } from "./types.ts";
 import "./globals.d.ts";
@@ -966,31 +968,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
 
       // ---- 말하기: 말풍선 글자의 모음으로 입 모양 ----
-      // 한글 중성 21개 → 입 모양 (ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ)
-      const JUNG = "AEAEOEOEOAEEOUOEIUUII";
+      // 글자 → 입 모양 음절은 character/speech.ts
       let talk = null;   // { syl: [{v, d, amp, stress}], t0, total, quiet }
       const startTalk = (text, ms, quiet) => {
-        const syl = [];
-        const words = String(text).split(/(\s+)/);
-        for (const w of words) {
-          if (/^\s+$/.test(w)) { syl.push({ v: null, d: 0.07 }); continue; }
-          let first = true, prevVowel = false;
-          for (const ch of w) {
-            const c = ch.charCodeAt(0);
-            if (c >= 0xac00 && c <= 0xd7a3) {
-              syl.push({ v: JUNG[Math.floor(((c - 0xac00) % 588) / 28)], d: 0.15 + Math.random() * 0.05, amp: 0.65 + Math.random() * 0.35, stress: first });
-              first = false;
-            } else if (/[aeiouy]/i.test(ch)) {
-              if (!prevVowel) { const l = ch.toLowerCase(); syl.push({ v: l === "a" ? "A" : l === "e" ? "E" : l === "o" ? "O" : l === "u" ? "U" : "I", d: 0.13 + Math.random() * 0.05, amp: 0.55 + Math.random() * 0.35, stress: first }); first = false; }
-              prevVowel = true; continue;
-            } else if (/[.,!?…~。，！？]/.test(ch)) syl.push({ v: null, d: ch === "," || ch === "，" ? 0.12 : 0.24 });
-            else if (/[0-9]/.test(ch)) { syl.push({ v: "A", d: 0.12, amp: 0.7, stress: first }); first = false; }
-            prevVowel = false;
-          }
-        }
-        let total = syl.reduce((s, x) => s + x.d, 0);
-        const limit = (ms || 3000) / 1000 * 0.92;
-        if (total > limit && total > 0) { const k = limit / total; for (const x of syl) x.d *= k; total = limit; }   // 말풍선 시간 안에 끝나게
+        const { syl, total } = parseSyllables(text, ms);
         talk = { syl, t0: performance.now(), total, quiet };
       };
       const VOW = ["A", "I", "U", "E", "O"];
@@ -1290,12 +1271,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
       };
       // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
-      const writeOutfit = ({ now, dt }) => {
-        const of = prefs.outfit || {};
+      // 소품·옷 파라미터를 켠 정도(outfitW)만큼 서서히 더한다
+      const writeOutfitParams = (of, dt) => {
         for (const [key, id, v] of OUTFIT_PARAMS) {
           const w = outfitW[key] = (outfitW[key] || 0) + ((of[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
           if (w > 0.005) core.addParameterValueById(id, v * w);
         }
+      };
+      const writeEarHide = (of, dt) => {
         // 동물귀 숨김: 파라미터가 아니라 귀 파트(Part159)의 opacity를 보간한다. 파트가 없으면 no-op.
         // (bbox·크기·다른 파트는 건드리지 않는다. 완전히 복구된 프레임에서만 opacity를 1로 되돌린다.)
         const earWas = earW;
@@ -1304,17 +1287,30 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           if (earW > 0.005) applyEarOpacity(cm.parts, earPartIndex, earW);
           else if (earWas > 0.005) cm.parts.opacities[earPartIndex] = 1;
         }
+      };
+      // 세숫대야와 체형(산책·절전으로 나갈 때는 꼬마 모습)
+      const writeBodyShape = (of, now, dt) => {
         const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
         basinW += ((now < basinUntil ? 1 : 0) - basinW) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
         if (basinW > 0.005) core.addParameterValueById("key10", basinW);
         bodyW += ((walkingBody ? 1 : BODY_VALUE[of.bodyType] || 0) - bodyW) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
         if (bodyW > 0.002) core.addParameterValueById("Clothes2", bodyW);
         model.y = baseY + chibiDrop * clamp(bodyW, 0, 1);
+      };
+      // 켜는 순간 한마디 (처음 불러올 때는 말 안 함)
+      const talkOutfitChange = (of) => {
         if (outfitPrev && outfitTalk) {   // 켜는 순간 한마디 (처음 불러올 때는 말 안 함)
           for (const [key] of OUTFIT_PARAMS) if (of[key] && !outfitPrev[key]) outfitTalk(OUTFIT_LINE[key]);
           if ((of.bodyType || "default") !== (outfitPrev.bodyType || "default")) outfitTalk("body_" + (of.bodyType || "default"));
         }
         outfitPrev = { ...of };
+      };
+      const writeOutfit = ({ now, dt }) => {
+        const of = prefs.outfit || {};
+        writeOutfitParams(of, dt);
+        writeEarHide(of, dt);
+        writeBodyShape(of, now, dt);
+        talkOutfitChange(of);
       };
       im.motionManager.expressionManager = {
         destroy() {},
@@ -1813,49 +1809,35 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const a = alphaMaps[tex]; if (!a) return 255;
         return a[Math.min(AN - 1, Math.max(0, Math.floor((1 - v) * AN))) * AN + Math.min(AN - 1, Math.max(0, Math.floor(u * AN)))];
       };
+      // 터치를 받을 수 있는 drawable인지 (귀는 earHide 감쇠 전 가시성으로 터치 판정 유지)
+      const touchable = (i) => earSet.has(i) ? earHitVisible(i) : !(DR.opacities[i] < 0.05 || !(DR.dynamicFlags[i] & 1));
       const pickDrawable = (x, y) => {   // x, y: 캔버스(배율 1) 좌표
         if (!alphaMaps) buildAlpha();
         const px = (x - model.x) / model.scale.x, py = (y - model.y) / model.scale.y;
         let best = -1, bestOrder = -Infinity;
         for (let i = 0; i < DR.count; i++) {
-          if (earSet.has(i)) { if (!earHitVisible(i)) continue; }   // 귀는 earHide 감쇠 전 가시성으로 터치 판정 유지
-          else if (DR.opacities[i] < 0.05 || !(DR.dynamicFlags[i] & 1)) continue;
+          if (!touchable(i)) continue;
           const order = DR.renderOrders[i];
           if (order <= bestOrder) continue;
           const v = im.getDrawableVertices(i);
-          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-          for (let k = 0; k < v.length; k += 2) { if (v[k] < x0) x0 = v[k]; if (v[k] > x1) x1 = v[k]; if (v[k + 1] < y0) y0 = v[k + 1]; if (v[k + 1] > y1) y1 = v[k + 1]; }
+          const [x0, y0, x1, y1] = meshBounds(v);
           if (px < x0 || px > x1 || py < y0 || py > y1) continue;
-          const idx = DR.indices[i], uv = DR.vertexUvs[i];
-          for (let k = 0; k < idx.length; k += 3) {
-            const a = idx[k] * 2, b = idx[k + 1] * 2, c = idx[k + 2] * 2;
-            const d = (v[b + 1] - v[c + 1]) * (v[a] - v[c]) + (v[c] - v[b]) * (v[a + 1] - v[c + 1]);
-            if (Math.abs(d) < 1e-9) continue;
-            const l1 = ((v[b + 1] - v[c + 1]) * (px - v[c]) + (v[c] - v[b]) * (py - v[c + 1])) / d;
-            const l2 = ((v[c + 1] - v[a + 1]) * (px - v[c]) + (v[a] - v[c]) * (py - v[c + 1])) / d;
-            const l3 = 1 - l1 - l2;
-            if (l1 < 0 || l2 < 0 || l3 < 0) continue;
-            if (alphaAt(DR.textureIndices[i], l1 * uv[a] + l2 * uv[b] + l3 * uv[c], l1 * uv[a + 1] + l2 * uv[b + 1] + l3 * uv[c + 1]) > 40) { best = i; bestOrder = order; break; }
-          }
+          if (meshHit(v, DR.indices[i], DR.vertexUvs[i], px, py, (u, w) => alphaAt(DR.textureIndices[i], u, w))) { best = i; bestOrder = order; }
         }
         return best;
       };
-      const touchRegion = (x, y, d) => {
-        if (bodyW > 0.5) {   // 꼬마 모습(체형 2): 가슴 반응 없이 머리(위쪽 45%)·몸만 구분 (데스크톱 펫과 같음)
-          let y0 = Infinity, y1 = -Infinity;
-          for (let i = 0; i < DR.count; i++) {
-            if (DR.opacities[i] < 0.05) continue;
-            const v = im.getDrawableVertices(i);
-            for (let k = 1; k < v.length; k += 2) { if (v[k] < y0) y0 = v[k]; if (v[k] > y1) y1 = v[k]; }
-          }
-          return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < 0.45 ? "head" : "body";
+      // 꼬마 모습(체형 2): 가슴 반응 없이 머리(보이는 그림 위쪽 45%)·몸만 구분 (데스크톱 펫과 같음)
+      const chibiRegion = (y) => {
+        let y0 = Infinity, y1 = -Infinity;
+        for (let i = 0; i < DR.count; i++) {
+          if (DR.opacities[i] < 0.05) continue;
+          const v = im.getDrawableVertices(i);
+          for (let k = 1; k < v.length; k += 2) { if (v[k] < y0) y0 = v[k]; if (v[k] > y1) y1 = v[k]; }
         }
-        const sc = model.scale.x, cc = chestCenter();
-        const shiftX = cc && chestBase ? cc.x - chestBase.x : 0, shiftY = cc && chestBase ? cc.y - chestBase.y : 0;
-        const rx = (x - model.x - (B.minX + shiftX) * sc) / (B.w * sc);
-        const ry = (y - model.y - (B.minY + shiftY) * sc) / (B.h * sc);
-        const inChest = Math.pow((rx - 0.45) / 0.13, 2) + Math.pow((ry - 0.295) / 0.045, 2) <= 1;
-        let r = drawRegion[d];
+        return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < 0.45 ? "head" : "body";
+      };
+      // 부위 그림(drawRegion)과 가슴 타원·높이(ry)로 부위를 정한다
+      const regionByShape = (r, ry, inChest) => {
         if (r === "head" && ry > 0.3) r = null;
         if (r === "arm" && cover.q > 0.3 && ry < 0.45) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
         if (r === "arm" || r === "leg" || r === "head") return r;
@@ -1864,6 +1846,15 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (r === "waist") return ry > 0.4 ? "lower" : "chest";
         if (r === null && ry < 0.3) return "head";
         return ry < 0.4 ? "chest" : "body";
+      };
+      const touchRegion = (x, y, d) => {
+        if (bodyW > 0.5) return chibiRegion(y);
+        const sc = model.scale.x, cc = chestCenter();
+        const shiftX = cc && chestBase ? cc.x - chestBase.x : 0, shiftY = cc && chestBase ? cc.y - chestBase.y : 0;
+        const rx = (x - model.x - (B.minX + shiftX) * sc) / (B.w * sc);
+        const ry = (y - model.y - (B.minY + shiftY) * sc) / (B.h * sc);
+        const inChest = Math.pow((rx - 0.45) / 0.13, 2) + Math.pow((ry - 0.295) / 0.045, 2) <= 1;
+        return regionByShape(drawRegion[d], ry, inChest);
       };
       // 화면 좌표 → 캔버스 좌표, 캐릭터 위면 [x, y, 메시 번호]
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
@@ -1995,14 +1986,18 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           }); }, 700);   // 꼬마 모습으로 바뀐 뒤 출발
         }, 2300);
       };
+      // 산책을 떠나면 안 되는 때: 시작 연출·작업·대기·삐짐·도망 중
+      const walkMoodBusy = (now) => intro.phase !== "done" || mood !== "idle" || running || !!waitingKind || now < sulkUntil || now < inputLockedUntil || fleeX !== 0;
+      // 누르거나 들고 있을 때·움직이는 중·펫 창으로 넘긴 동안은 산책 안 함 (펫 창이 대신 산책)
+      const walkInputBusy = () => !!(drag.pending || drag.on || free.anim || link.open || link.opening || link.follow);
+      // 말하는 중, 최근 1분 안에 만졌거나 15초 안에 말했을 때, 화면이 안 보일 때
+      const walkRecentlyActive = (now) => bubble.classList.contains("show") || now - walk.lastTouch < 60000 || now - lastSayAt < 15000 || document.hidden;
       walkCheck = (now) => {
         if (SLEEP.state !== "active") return;   // 절전 중에는 산책하지 않음
         if (walk.phase === "away" && running) return walkBack();   // 나가 있는 동안 작업이 시작되면 바로 돌아옴
         if (walk.phase || now < walk.next) return;
         walk.next = now + 30000;   // 지금은 갈 때가 아니면 30초 뒤 다시 확인
-        if (intro.phase !== "done" || mood !== "idle" || running || waitingKind || now < sulkUntil || now < inputLockedUntil || fleeX !== 0) return;
-        if (drag.pending || drag.on || free.anim || link.open || link.opening || link.follow) return;   // 누르거나 들고 있을 때·움직이는 중·펫 창으로 넘긴 동안은 산책 안 함 (펫 창이 대신 산책)
-        if (bubble.classList.contains("show") || now - walk.lastTouch < 60000 || now - lastSayAt < 15000 || document.hidden) return;
+        if (walkMoodBusy(now) || walkInputBusy() || walkRecentlyActive(now)) return;
         walk.next = now + (240 + Math.random() * 240) * 1000;   // 다음 산책은 4~8분 뒤
         startWalk();
       };
@@ -2261,21 +2256,45 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
         return false;
       };
+      // ---- 포인터 누르기: 오른쪽 버튼 → 캐릭터 위인지 → 머리·가슴 제스처 예약 → 집기 예약 순서 ----
+      // 오른쪽 버튼 (단독으로는 다른 동작 없음)
+      const rightButtonDown = (e, nowDown) => {
+        if (e.button === 2) {
+          rightPress = rightStart(e);
+          if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, nowDown, e.pointerId);
+        }
+        // 오른쪽 버튼이 왼쪽을 누른 채 150ms 안에 눌리면, 그 사이 예약된 쓰다듬기·가슴 끌기를 버리고
+        // 집기 예약을 되살린다. (두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 처리한다.)
+        if ((e.buttons & 1) && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e, nowDown);
+      };
+      // 머리를 누르면 쓰다듬기, 가슴을 누르면 위로 끄는지 지켜봄 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김). 머리였으면 true
+      const armHeadOrChest = (e, h) => {
+        const head = !!h && performance.now() >= inputLockedUntil && touchRegion(h[0], h[1], h[2]) === "head";
+        if (head) strokeFrom = { x: e.clientX, y: e.clientY, t: performance.now(), h };
+        else if (h && canPullChest(performance.now()) && touchRegion(h[0], h[1], h[2]) === "chest") chestFrom = { x: e.clientX, y: e.clientY, id: e.pointerId, h };
+        return head;
+      };
+      // 터치 화면에는 오른쪽 버튼이 없으니, 길게 누르면 집기 모드로 바꾼다 (그 뒤 움직이면 옮겨짐, 그냥 떼면 터치 반응)
+      const armTouchHold = (e) => {
+        clearTimeout(touchHold);
+        touchHold = setTimeout(() => {
+          if (!drag.pending || drag.pending.id !== e.pointerId || drag.pending.touchStroke) return;   // 이미 쓰다듬기로 판정했으면 집기로 바꾸지 않는다
+          drag.pending.touchGrab = true;
+          strokeFrom = null; chestFrom = null;   // 길게 눌렀으면 쓰다듬기·가슴 끌기 판정은 취소
+          if (PET) PET.press(true);
+        }, TOUCH.grabMs);
+      };
+      // 끌 수도 있으니 누르는 순간 펫 창을 숨긴 채 미리 띄움. 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김
+      const preparePetOnPress = () => {
+        if (link.supported && link.petState === "none") link.post("warm");
+        else if (!PET && link.petState === "shown" && !link.open && !link.follow) link.post("hide");
+      };
       life.listen(document, "pointerdown", (e) => {
         if (hidden) return;
         const nowDown = performance.now();
         mouseButtons = e.buttons & 3;
         chord = chordDown(chord, e.button, e.buttons, nowDown);
-        if (e.button !== 0) {
-          if (e.button === 2) {
-            rightPress = rightStart(e);
-            if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, nowDown, e.pointerId);
-          }
-          // 오른쪽 버튼이 왼쪽을 누른 채 150ms 안에 눌리면, 그 사이 예약된 쓰다듬기·가슴 끌기를 버리고
-          // 집기 예약을 되살린다. (두 버튼을 함께 오래 누르는 기존 동작은 아래 pointermove의 both 판정이 처리한다.)
-          if ((e.buttons & 1) && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e, nowDown);
-          return;   // 오른쪽 버튼 단독으로는 다른 동작 없음
-        }
+        if (e.button !== 0) { rightButtonDown(e, nowDown); return; }
         if (chestFrom) { e.preventDefault(); e.stopPropagation(); swallowClick = true; return; }
         swallowClick = false; strokeFrom = null;
         if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;   // 패널 안 조작은 끌기·터치로 보지 않음
@@ -2283,27 +2302,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const h = hitAt(e.clientX, e.clientY);
         if (!h && !(PET && overBody(e.clientX, e.clientY))) return;
         e.preventDefault(); e.stopPropagation(); swallowClick = true;
-        const head = !!h && performance.now() >= inputLockedUntil && touchRegion(h[0], h[1], h[2]) === "head";
-        if (head) strokeFrom = { x: e.clientX, y: e.clientY, t: performance.now(), h };
-        // 가슴을 누르면 위로 끄는지 지켜봄 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김)
-        else if (h && canPullChest(performance.now()) && touchRegion(h[0], h[1], h[2]) === "chest") chestFrom = { x: e.clientX, y: e.clientY, id: e.pointerId, h };
+        const head = armHeadOrChest(e, h);
         if (intro.phase !== "done" || fleeX !== 0 || link.opening) { if (h && !head) onTouch(h[0], h[1], h[2]); return; }   // 시작 연출·도망·펫 창 여는 중엔 끌기 없음 (머리는 떼는 순간 터치)
         const [px, py] = pt(e);
         drag.pending = { id: e.pointerId, sx: px, sy: py, h, ox: px - shown.x, oy: py - shown.y };
         chord.valid = true;   // 캐릭터 위에서 시작한 누름만 코드 그레이스 대상 (빈 곳 클릭은 제외)
-        // 터치 화면에는 오른쪽 버튼이 없으니, 길게 누르면 집기 모드로 바꾼다 (그 뒤 움직이면 옮겨짐, 그냥 떼면 터치 반응)
-        if (e.pointerType === "touch") {
-          clearTimeout(touchHold);
-          touchHold = setTimeout(() => {
-            if (!drag.pending || drag.pending.id !== e.pointerId || drag.pending.touchStroke) return;   // 이미 쓰다듬기로 판정했으면 집기로 바꾸지 않는다
-            drag.pending.touchGrab = true;
-            strokeFrom = null; chestFrom = null;   // 길게 눌렀으면 쓰다듬기·가슴 끌기 판정은 취소
-            if (PET) PET.press(true);
-          }, TOUCH.grabMs);
-        }
+        if (e.pointerType === "touch") armTouchHold(e);
         if (PET) PET.press(true);   // 누르고 있는 동안은 커서가 몸 밖으로 벗어나도 클릭을 계속 받음
-        if (link.supported && link.petState === "none") link.post("warm");   // 끌 수도 있으니 누르는 순간 펫 창을 숨긴 채 미리 띄움
-        else if (!PET && link.petState === "shown" && !link.open && !link.follow) link.post("hide");   // 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김
+        preparePetOnPress();
       }, true);
       // 마우스 좌우 버튼 코드 보완: Pointer Events는 첫 버튼에만 pointerdown을 준다.
       //  · 우→좌: 오른쪽으로 시작했으면 pending이 없으므로, 왼쪽이 합류하는 mousedown에서 예약을 만든다.
@@ -2590,12 +2596,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 휠로 크기 조절: 몸 위에서 올리면 커지고 내리면 작아짐 (몸 아래 가운데를 기준으로). 들고 있을 때·움직이는 중·산책·도망 중엔 무시
       //   펫 창 = 0.45배 ~ 화면에 들어가는 크기 (넘겨받을 때는 HEAD_GAIN으로 머리 크기를 창 안과 맞춤)
       //   창 안 = 자유 위치일 때만 0.42배~그 창에 들어가는 최대치. 제자리에 붙어 있으면 크기는 자동이라 휠은 대화 스크롤 그대로
+      // 휠이 캐릭터 크기를 바꾸는 때: 모바일이 아니고(캐릭터 위 휠이 대화 스크롤을 막지 않게), 지금 입력 모드의 자유 위치이고, 몸 위일 때
+      const wheelResizes = (e) => (PET || !coarsePointer()) && free.applied && intro.phase === "done" && free.on && overBody(e.clientX, e.clientY);
       life.listen(document, "wheel", (e) => {
         if (hidden) return;
         if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;   // 패널 안에서는 휠로 크기를 건드리지 않음
-        if (!PET && coarsePointer()) return;   // 모바일에서는 캐릭터 위 휠이 대화 스크롤을 막지 않게 한다
-        if (!free.applied) return;   // 다른 입력 모드의 보류 자리에는 크기 변경을 적용하지 않는다
-        if (intro.phase !== "done" || !free.on || !overBody(e.clientX, e.clientY)) return;
+        if (!wheelResizes(e)) return;
         e.preventDefault(); e.stopPropagation();   // 캐릭터 위에서는 대화 스크롤 대신 크기 조절
         if (drag.on || free.anim || walk.phase || fleeX !== 0) return;
         const kMin = PET ? PET_K_MIN : SHOW_K, kMax = PET ? PET_K_MAX : Math.min(1.25, (innerHeight * 0.45) / visH);

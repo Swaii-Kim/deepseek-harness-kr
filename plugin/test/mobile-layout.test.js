@@ -242,7 +242,9 @@ test('입력 모드가 바뀌어도 세션의 자유 위치 상태를 지우지 
 
 test('모바일 자유 위치는 카드가 잠깐 없을 때 저장된 크기로 안정된다', () => {
   assert.match(source, /coarsePointer\(\) && home\.r \? home\.k : free\.k/)
-  assert.match(source, /!PET && coarsePointer\(\)\) return;.*모바일에서는 캐릭터 위 휠/)
+  // 모바일에서는 캐릭터 위 휠이 대화 스크롤을 막지 않게 크기 조절에서 뺀다
+  assert.match(source, /const wheelResizes = \(e\) => \(PET \|\| !coarsePointer\(\)\) &&/)
+  assert.match(source, /if \(!wheelResizes\(e\)\) return;/)
 })
 
 test('피할 자리가 없는 제자리는 SHOW_K로 끌어올리지 않는다', () => {
