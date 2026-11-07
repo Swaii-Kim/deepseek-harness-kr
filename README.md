@@ -57,7 +57,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 2. **Add Plugin** 창에 아래 GitHub 주소를 입력해 설치·활성화합니다.
 
    ```text
-   git+https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR.git
+   git+https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR.git
    ```
 
 3. 한국어가 자동 선택되지 않으면 **Settings → General → Language**에서 **한국어**를 선택합니다.
@@ -211,12 +211,12 @@ npm test
 
 ### 기여해 주신 분
 
-- [@conankun](https://github.com/conankun) — 말풍선 TTS와 오디오 기반 입 모양 플러그인 `plugins/dsh-tts` ([#2](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/2)), 말풍선 꼬리를 얼굴 가운데로 정렬 ([#20](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/20))
-- [@shortstories](https://github.com/shortstories) — Harness 플러그인 메뉴에서 바로 설치하는 방식, 캐릭터·테마·한국어 개별 설정 ([#3](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/3))
-- [@TraceofLight](https://github.com/TraceofLight) — macOS(Apple silicon) 적용 스크립트 ([#4](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/4)), 승인·질문 카드가 캐릭터에 가려지던 문제 수정 ([#6](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/6)), Live2D 렌더링 최적화와 시작 시 끊김 완화 ([#7](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/7)), 말풍선 음성 내장·말풍선 꼬리·캐릭터 자유 위치와 바깥 펫 창 ([#12](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/12)), 펫 창 대기 오버헤드 감소·짧은 말풍선 꼬리·혼합 배율 모니터 위치 수정 ([#24](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/24))
-- [@iwannagit](https://github.com/iwannagit) — 파스텔 테마 다크 모드 지원 ([#5](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/5)), 절전모드와 캐릭터 켜기·끄기 단축키 ([#11](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/11))
-- [@0x2b-or-0xd4](https://github.com/0x2b-or-0xd4) — 단축키를 문자 입력 대신 키 녹음으로 지정 ([#14](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/14)), 바깥 펫 창 우클릭 메뉴·설정 패널과 크기 조절 ([#16](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/16)), 캐릭터 이동 키·펫 창·캔버스 단축키 ([#21](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/21))
-- [@ByungHyun21](https://github.com/ByungHyun21) — 자산 응답 캐시(ETag·304)로 새로고침 속도 개선, 질문 카드 감지를 안정적인 data 속성으로 수정 ([#17](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/17)), 모바일 입력창·키보드 회피 ([#19](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/19)), 모바일 패널 배경 수정 ([#23](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/pull/23)), 동물귀 숨기기 제안 ([#22](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/issues/22))
-- [@mayoxz](https://github.com/mayoxz) — 설치본 아이콘 모듈 누락 제보와 원인 분석 ([#18](https://github.com/noire113-dev/deepseek-jang-plugin-for-dsh-with-KR/issues/18))
+- [@conankun](https://github.com/conankun) — 말풍선 TTS와 오디오 기반 입 모양 플러그인 `plugins/dsh-tts` ([#2](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/2)), 말풍선 꼬리를 얼굴 가운데로 정렬 ([#20](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/20))
+- [@shortstories](https://github.com/shortstories) — Harness 플러그인 메뉴에서 바로 설치하는 방식, 캐릭터·테마·한국어 개별 설정 ([#3](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/3))
+- [@TraceofLight](https://github.com/TraceofLight) — macOS(Apple silicon) 적용 스크립트 ([#4](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/4)), 승인·질문 카드가 캐릭터에 가려지던 문제 수정 ([#6](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/6)), Live2D 렌더링 최적화와 시작 시 끊김 완화 ([#7](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/7)), 말풍선 음성 내장·말풍선 꼬리·캐릭터 자유 위치와 바깥 펫 창 ([#12](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/12)), 펫 창 대기 오버헤드 감소·짧은 말풍선 꼬리·혼합 배율 모니터 위치 수정 ([#24](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/24))
+- [@iwannagit](https://github.com/iwannagit) — 파스텔 테마 다크 모드 지원 ([#5](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/5)), 절전모드와 캐릭터 켜기·끄기 단축키 ([#11](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/11))
+- [@0x2b-or-0xd4](https://github.com/0x2b-or-0xd4) — 단축키를 문자 입력 대신 키 녹음으로 지정 ([#14](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/14)), 바깥 펫 창 우클릭 메뉴·설정 패널과 크기 조절 ([#16](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/16)), 캐릭터 이동 키·펫 창·캔버스 단축키 ([#21](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/21))
+- [@ByungHyun21](https://github.com/ByungHyun21) — 자산 응답 캐시(ETag·304)로 새로고침 속도 개선, 질문 카드 감지를 안정적인 data 속성으로 수정 ([#17](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/17)), 모바일 입력창·키보드 회피 ([#19](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/19)), 모바일 패널 배경 수정 ([#23](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/23)), 동물귀 숨기기 제안 ([#22](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/issues/22))
+- [@mayoxz](https://github.com/mayoxz) — 설치본 아이콘 모듈 누락 제보와 원인 분석 ([#18](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/issues/18))
 
 좋은 기능을 보내 주신 분들께 감사드립니다!
