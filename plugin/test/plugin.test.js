@@ -53,7 +53,8 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
       document: { hidden: false, querySelector: (selector) => selector === 'stop' ? working : selector.includes(card) && card },
       prefs: { sleep: { enabled: true, minutes: 0.5 } },
       PET: false, drag: {}, free: {}, link: {},
-      UI: { stop: 'stop', approval: 'approval' }, intro: { phase: 'center' }, walk: { phase: '', slideId: 0, timers: [] },
+      // 화면 읽기(character/harness-signals.js)는 따로 검사하고, 여기서는 그 결과만 흉내 낸다
+      readStatus: () => ({ running: working, waiting: card === 'approval' ? 'approval' : card ? 'question' : null }), intro: { phase: 'center' }, walk: { phase: '', slideId: 0, timers: [] },
       speak: (line) => lines.push(line), say: (line) => lines.push(line), hush() {}, place() {},
       setExp() {}, setMood() {}, play() {}, mutterCheck() {}, flashExp() {},
       TEXT: { approval: 'approval', question: 'question' },

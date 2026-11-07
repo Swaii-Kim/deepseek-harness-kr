@@ -83,6 +83,120 @@
   };
   var chordUp = (chord, buttons) => (buttons & 3) === 0 ? { at: null, button: null, valid: false } : chord;
 
+  // character/harness-signals.js
+  var TOOLS = {
+    "명령 실행": "명령 실행 중…",
+    "코드": "코드 돌리는 중…",
+    "읽기": "파일 읽는 중…",
+    "이미지 읽기": "그림 보는 중…",
+    "편집": "코드 고치는 중…",
+    "쓰기": "파일 쓰는 중…",
+    "검색": "찾아보는 중…",
+    "파일 내용 검색": "찾아보는 중…",
+    "파일 찾기": "파일 찾는 중…",
+    "웹 검색": "검색하는 중…",
+    "웹페이지 가져오기": "웹페이지 보는 중…",
+    "하위 에이전트 만들기": "도우미 부르는 중…",
+    "팀원 만들기": "도우미 부르는 중…",
+    "워크플로 실행": "워크플로 돌리는 중…",
+    // 영어 화면
+    "Bash": "명령 실행 중…",
+    "Pwsh": "명령 실행 중…",
+    "Code": "코드 돌리는 중…",
+    "Read": "파일 읽는 중…",
+    "Read image": "그림 보는 중…",
+    "Edit": "코드 고치는 중…",
+    "Write": "파일 쓰는 중…",
+    "Search": "찾아보는 중…",
+    "Grep": "찾아보는 중…",
+    "Glob": "파일 찾는 중…",
+    "Fetch": "웹페이지 보는 중…",
+    "Create subagent": "도우미 부르는 중…",
+    "Create teammate": "도우미 부르는 중…",
+    "Run workflow": "워크플로 돌리는 중…"
+  };
+  var UI = {
+    stop: 'button[aria-label="생성 중지"], button[aria-label="Stop generating"]',
+    approval: '[aria-label="승인 상세"], [aria-label="Approval details"]',
+    turnError: ["이번 턴 실행 실패", "This turn failed"]
+  };
+  function readStatus(doc) {
+    const running = !!doc.querySelector(UI.stop);
+    const waiting = doc.querySelector(UI.approval + ', [class*="Zf6DNq_card"]') ? "approval" : doc.querySelector('[data-question-reply], [data-question-key], [class*="Nksazq_card"], [class*="wnLwla_card"]') ? "question" : null;
+    return { running, waiting };
+  }
+  function scanAddedNode(node, { running }) {
+    const found = { error: false, tool: null };
+    if (node.nodeType !== 1) return found;
+    const t = node.textContent || "";
+    if (t.length < 400 && UI.turnError.some((w) => t.includes(w))) found.error = true;
+    if (running && t.length < 200) {
+      const leaves = node.children.length === 0 ? [node] : node.querySelectorAll("span, div");
+      for (const el of leaves) {
+        if (el.children.length) continue;
+        const s = (el.textContent || "").trim();
+        if (TOOLS[s]) {
+          found.tool = TOOLS[s];
+          break;
+        }
+      }
+    }
+    return found;
+  }
+  function readThought(doc) {
+    const live = [...doc.querySelectorAll('[class*="VJlF5q_summary"][data-streaming]')].map((e) => (e.textContent || "").trim()).filter(Boolean).pop();
+    if (live) return live;
+    const live2 = [...doc.querySelectorAll('button[data-process-activity="thinking"][aria-expanded="false"] [data-shimmer] > span:first-child')].pop();
+    if (live2) {
+      const t = live2.textContent || "", i = t.indexOf(" · ");
+      if (i >= 0 && t.slice(i + 3).trim()) return t.slice(i + 3).trim();
+    }
+    const body = [...doc.querySelectorAll('[class*="VJlF5q_thinkBody"]')].pop();
+    if (!body) return "";
+    const paras = (body.innerText || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    return paras.length > 1 ? paras[paras.length - 2].split("\n")[0] : "";
+  }
+  var VERB = {
+    is: "are",
+    was: "were",
+    has: "have",
+    wants: "want",
+    needs: "need",
+    asks: "ask",
+    asked: "asked",
+    said: "said",
+    says: "say",
+    likes: "like",
+    prefers: "prefer",
+    seems: "seem",
+    mentioned: "mentioned",
+    requested: "requested"
+  };
+  var vtuberize = (s) => s.replace(/\b(the|this) user's\b/gi, (m) => m[0] === "T" ? "Your" : "your").replace(/\b(the|this) user (\w+)/gi, (m, d, v) => {
+    const you = d[0] === d[0].toUpperCase() ? "You" : "you";
+    return you + " " + (VERB[v.toLowerCase()] || v);
+  }).replace(/\b(the|this) user\b/gi, (m) => m[0] === m[0].toUpperCase() ? "You" : "you");
+  function thoughtLine(s, random = Math.random) {
+    const t = s.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().replace(/^(?:[-•]|\d+[.)])\s+/, "").replace(/^\([^)]{1,30}\):?\s*/, "");
+    const hangul = (t.match(/[가-힣]/g) || []).length;
+    const latin = (t.match(/[A-Za-z]/g) || []).length;
+    const first = (t.match(/^.{4,}?[.!?。…](\s|$)/) || [t])[0].trim();
+    if (hangul >= 4 && latin <= hangul * 0.35)
+      return first.length > 42 ? first.slice(0, 40).trim() + "…" : first;
+    const words = first.split(" ").filter((w) => /[A-Za-z]{2,}/.test(w)).length;
+    const symbols = (first.match(/[{}()\[\];=<>\/\\|$@]/g) || []).length;
+    if (latin < 12 || words < 3 || hangul > latin * 0.1 || symbols > first.length * 0.04 || first.includes("://")) return null;
+    let line = vtuberize(first);
+    const hmm = random() < 0.3 ? "Hmm… " : "";
+    const max = 64 - hmm.length;
+    if (line.length > max) {
+      const cut = line.slice(0, max - 2), sp = cut.lastIndexOf(" ");
+      line = (sp > 30 ? cut.slice(0, sp) : cut).replace(/[\s,;:]+$/, "") + "…";
+    }
+    if ((line.match(/"/g) || []).length % 2) line = line.slice(0, line.lastIndexOf('"')).replace(/[\s,;:]+$/, "") + "…";
+    return hmm + line;
+  }
+
   // character/index.js
   function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
     const BASE = base;
@@ -117,62 +231,14 @@
       done: "다 했어요! …칭찬해 주실 거죠?",
       error: "앗, 문제가 생겼어요… …한 번만 더 봐 주세요"
     };
-    const TOOLS = {
-      "명령 실행": "명령 실행 중…",
-      "코드": "코드 돌리는 중…",
-      "읽기": "파일 읽는 중…",
-      "이미지 읽기": "그림 보는 중…",
-      "편집": "코드 고치는 중…",
-      "쓰기": "파일 쓰는 중…",
-      "검색": "찾아보는 중…",
-      "파일 내용 검색": "찾아보는 중…",
-      "파일 찾기": "파일 찾는 중…",
-      "웹 검색": "검색하는 중…",
-      "웹페이지 가져오기": "웹페이지 보는 중…",
-      "하위 에이전트 만들기": "도우미 부르는 중…",
-      "팀원 만들기": "도우미 부르는 중…",
-      "워크플로 실행": "워크플로 돌리는 중…",
-      // 영어 화면
-      "Bash": "명령 실행 중…",
-      "Pwsh": "명령 실행 중…",
-      "Code": "코드 돌리는 중…",
-      "Read": "파일 읽는 중…",
-      "Read image": "그림 보는 중…",
-      "Edit": "코드 고치는 중…",
-      "Write": "파일 쓰는 중…",
-      "Search": "찾아보는 중…",
-      "Grep": "찾아보는 중…",
-      "Glob": "파일 찾는 중…",
-      "Fetch": "웹페이지 보는 중…",
-      "Create subagent": "도우미 부르는 중…",
-      "Create teammate": "도우미 부르는 중…",
-      "Run workflow": "워크플로 돌리는 중…"
-    };
-    const UI = {
-      stop: 'button[aria-label="생성 중지"], button[aria-label="Stop generating"]',
-      send: 'button[aria-label="메시지 보내기"], button[aria-label="Send message"]',
-      approval: '[aria-label="승인 상세"], [aria-label="Approval details"]',
-      turnError: ["이번 턴 실행 실패", "This turn failed"]
-    };
     const ready = (fn) => document.body ? fn() : addEventListener("DOMContentLoaded", fn, { once: true });
     ready(() => {
       let running = false, lastError = -1e9, lastToolSay = 0, waitingKind = null;
       const listeners = { tool: null };
       const scanAdded = (node) => {
-        if (node.nodeType !== 1) return;
-        const t = node.textContent || "";
-        if (t.length < 400 && UI.turnError.some((w) => t.includes(w))) lastError = performance.now();
-        if (running && listeners.tool && t.length < 200) {
-          const leaves = node.children.length === 0 ? [node] : node.querySelectorAll("span, div");
-          for (const el of leaves) {
-            if (el.children.length) continue;
-            const s = (el.textContent || "").trim();
-            if (TOOLS[s]) {
-              listeners.tool(TOOLS[s]);
-              break;
-            }
-          }
-        }
+        const found = scanAddedNode(node, { running: running && !!listeners.tool });
+        if (found.error) lastError = performance.now();
+        if (found.tool) listeners.tool(found.tool);
       };
       if (!pet) new MutationObserver((records) => {
         for (const r of records) for (const n of r.addedNodes) scanAdded(n);
@@ -3352,61 +3418,8 @@
           say(text, 0, false, "status");
         };
         let lastThought = "", lastMutterAt = 0;
-        const thoughtLine = (s2) => {
-          const t = s2.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().replace(/^(?:[-•]|\d+[.)])\s+/, "").replace(/^\([^)]{1,30}\):?\s*/, "");
-          const hangul = (t.match(/[가-힣]/g) || []).length;
-          const latin = (t.match(/[A-Za-z]/g) || []).length;
-          const first = (t.match(/^.{4,}?[.!?。…](\s|$)/) || [t])[0].trim();
-          if (hangul >= 4 && latin <= hangul * 0.35)
-            return first.length > 42 ? first.slice(0, 40).trim() + "…" : first;
-          const words = first.split(" ").filter((w) => /[A-Za-z]{2,}/.test(w)).length;
-          const symbols = (first.match(/[{}()\[\];=<>\/\\|$@]/g) || []).length;
-          if (latin < 12 || words < 3 || hangul > latin * 0.1 || symbols > first.length * 0.04 || first.includes("://")) return null;
-          let line = vtuberize(first);
-          const hmm = Math.random() < 0.3 ? "Hmm… " : "";
-          const max = 64 - hmm.length;
-          if (line.length > max) {
-            const cut = line.slice(0, max - 2), sp = cut.lastIndexOf(" ");
-            line = (sp > 30 ? cut.slice(0, sp) : cut).replace(/[\s,;:]+$/, "") + "…";
-          }
-          if ((line.match(/"/g) || []).length % 2) line = line.slice(0, line.lastIndexOf('"')).replace(/[\s,;:]+$/, "") + "…";
-          return hmm + line;
-        };
-        const VERB = {
-          is: "are",
-          was: "were",
-          has: "have",
-          wants: "want",
-          needs: "need",
-          asks: "ask",
-          asked: "asked",
-          said: "said",
-          says: "say",
-          likes: "like",
-          prefers: "prefer",
-          seems: "seem",
-          mentioned: "mentioned",
-          requested: "requested"
-        };
-        const vtuberize = (s2) => s2.replace(/\b(the|this) user's\b/gi, (m) => m[0] === "T" ? "Your" : "your").replace(/\b(the|this) user (\w+)/gi, (m, d, v) => {
-          const you = d[0] === d[0].toUpperCase() ? "You" : "you";
-          return you + " " + (VERB[v.toLowerCase()] || v);
-        }).replace(/\b(the|this) user\b/gi, (m) => m[0] === m[0].toUpperCase() ? "You" : "you");
-        const readThought = () => {
-          const live = [...document.querySelectorAll('[class*="VJlF5q_summary"][data-streaming]')].map((e) => (e.textContent || "").trim()).filter(Boolean).pop();
-          if (live) return live;
-          const live2 = [...document.querySelectorAll('button[data-process-activity="thinking"][aria-expanded="false"] [data-shimmer] > span:first-child')].pop();
-          if (live2) {
-            const t = live2.textContent || "", i = t.indexOf(" · ");
-            if (i >= 0 && t.slice(i + 3).trim()) return t.slice(i + 3).trim();
-          }
-          const body = [...document.querySelectorAll('[class*="VJlF5q_thinkBody"]')].pop();
-          if (!body) return "";
-          const paras = (body.innerText || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-          return paras.length > 1 ? paras[paras.length - 2].split("\n")[0] : "";
-        };
         const mutterCheck = () => {
-          const raw = readThought();
+          const raw = readThought(document);
           if (!raw || raw === lastThought) return;
           lastThought = raw;
           const now = performance.now();
@@ -3698,8 +3711,7 @@
           PET.send({ type: "ready" });
         }
         if (!PET) setInterval(() => {
-          const nowRunning = !!document.querySelector(UI.stop);
-          const kind = document.querySelector(UI.approval + ', [class*="Zf6DNq_card"]') ? "approval" : document.querySelector('[data-question-reply], [data-question-key], [class*="Nksazq_card"], [class*="wnLwla_card"]') ? "question" : null;
+          const { running: nowRunning, waiting: kind } = readStatus(document);
           const cfg = prefs.sleep || {};
           SLEEP.enabled = !PET && cfg.enabled !== false;
           const cfgMin = Number(cfg.minutes);
