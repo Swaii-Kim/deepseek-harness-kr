@@ -617,8 +617,8 @@
             const min = core.getParameterMinimumValue(i), max = core.getParameterMaximumValue(i);
             return Number.isFinite(min) && Number.isFinite(max) ? { id, min, max } : null;
           };
-          const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter(Boolean);
-          const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter(Boolean);
+          const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter((p) => !!p);
+          const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter((p) => !!p);
           im.physics.evaluate = function(...args) {
             const result = evaluate.apply(this, args);
             const lift = dragLift.x * CHEST_DRAG_SIGN, shift = dragShift.x * CHEST_DRAG_SIGN;
@@ -1045,9 +1045,10 @@
         const freeAnimPose = (a, home, now) => {
           const p = Math.min(1, (now - a.t0) / a.ms), to = a.snap ? (PET ? petDock : dockTarget(home)) || a.from : a.to;
           const e = a.snap ? easeBack(p) : easeOut(p), ek = easeOut(p);
-          const pose2 = { k: a.from.k + (to.k - a.from.k) * ek, x: a.from.x + (to.x - a.from.x) * e, y: a.from.y + (to.y - a.from.y) * e };
+          const tp = to;
+          const pose2 = { k: a.from.k + (tp.k - a.from.k) * ek, x: a.from.x + (tp.x - a.from.x) * e, y: a.from.y + (tp.y - a.from.y) * e };
           if (a.snap) snapP = ek;
-          if (p >= 1) finishFreeAnim(a, to);
+          if (p >= 1) finishFreeAnim(a, tp);
           return pose2;
         };
         const freeWindowPose = (home) => {
@@ -1465,7 +1466,7 @@
           requestAnimationFrame(raf);
         };
         requestAnimationFrame(raf);
-        let bubbleTimer;
+        let bubbleTimer = 0;
         let lastSayAt = 0;
         let lastSayText = "";
         const hideBubble = (delay) => {
@@ -1746,24 +1747,25 @@
           if (Math.random() < 0.45) nodKick = Math.max(nodKick, 0.6 + Math.random() * 0.5);
         };
         const talkOpen = (now, introCalm) => {
-          let t = (now - talk.t0) / 1e3;
-          if (t >= talk.total) {
+          const tk = talk;
+          let t = (now - tk.t0) / 1e3;
+          if (t >= tk.total) {
             talk = null;
             return 0;
           }
           let i = 0;
-          while (i < talk.syl.length && t > talk.syl[i].d) {
-            t -= talk.syl[i].d;
+          while (i < tk.syl.length && t > tk.syl[i].d) {
+            t -= tk.syl[i].d;
             i++;
           }
-          const s2 = talk.syl[i];
+          const s2 = tk.syl[i];
           if (!(s2 && s2.v)) return 0;
           const p = t / s2.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
-          const open = env * s2.amp * (talk.quiet ? 0.3 : 1);
+          const open = env * s2.amp * (tk.quiet ? 0.3 : 1);
           vowel[s2.v] = Math.max(vowel[s2.v], open);
           if (s2.stress && i !== lastStressIdx) {
             lastStressIdx = i;
-            if (!talk.quiet) stressKick(introCalm);
+            if (!tk.quiet) stressKick(introCalm);
           }
           return open;
         };
@@ -1796,7 +1798,7 @@
             goal.bodyY = -5;
           }
           const pk = Math.min(1, dt * 2.2);
-          for (const key in goal) {
+          for (const key of Object.keys(goal)) {
             pose1[key] += (goal[key] - pose1[key]) * pk;
             pose[key] += (pose1[key] - pose[key]) * pk;
           }
@@ -1835,7 +1837,7 @@
               nextIdleGesture = Math.max(nextIdleGesture, now + 2500 + Math.random() * 3500);
             } else addGesture(GO, gest.name, p, gest.dir);
           }
-          for (const ch in GO) {
+          for (const ch of Object.keys(GO)) {
             const gk = GEST_K[ch];
             spring(gestS[ch], GO[ch], dt, gk[0], gk[1]);
           }

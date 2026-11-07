@@ -438,7 +438,7 @@ test('펫 창 크기: 기본(머리 맞춤) 대비 배율로 기억하고, 패�
   assert.match(dsc, /function petPanelBox\(body\)/)   // 패널 영역도 클릭을 받도록 hitbox에 더함
   assert.match(dsc, /petPanel\.contains\(e\.target\)/)
   assert.match(dsc, /onConfig: \(key, value\) => onSetting\?\.\(key, value\)/)   // 펫 창 메뉴 값 → 플러그인 설정 (처리 규칙은 pet-link.test.js)
-  assert.match(dsc, /PET\.send\(\{ type: "fit", w: fitW, h: fitH \}\)/)   // 패널/캐릭터에 맞춰 창 크기
+  assert.match(dsc, /PET\s*\.send\(\{ type: "fit", w: fitW, h: fitH \}\)/)   // 타입 단언(!)이 지워진 자리의 공백 허용   // 패널/캐릭터에 맞춰 창 크기
 })
 
 test('펫 창 설정 패널: 값을 설정 저장소로 넘기고 이 플러그인이 아는 키만 반영한다', async () => {
