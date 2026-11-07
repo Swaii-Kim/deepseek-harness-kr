@@ -53,6 +53,11 @@ export function extractDictionaries(source, lang = 'en') {
       return result
     }
     if (node.type === 'ArrayExpression') return node.elements.map((item) => value(item, stack, seen))
+    // 다른 상수의 속성을 그대로 쓰는 문구 (예: builtinCommandTokens.en.goal)
+    if (node.type === 'MemberExpression') {
+      const object = value(node.object, stack, seen), key = node.computed ? value(node.property, stack, seen) : node.property.name
+      if (object && typeof object === 'object' && Object.hasOwn(object, key)) return object[key]
+    }
     if (node.type === 'BinaryExpression' && node.operator === '+') return value(node.left, stack, seen) + value(node.right, stack, seen)
     if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.property.name === 'join') {
       const array = value(node.callee.object, stack, seen)
@@ -60,19 +65,60 @@ export function extractDictionaries(source, lang = 'en') {
     }
     throw new Error('Non-static expression')
   }
+  // 이름이면 선언된 초기값 노드까지 따라간다 (사전을 상수에 담아 넘기는 등록: register(NS, dictionaries))
+  const resolve = (node, stack) => {
+    for (let hops = 0; node?.type === 'Identifier' && hops < 8; hops++) {
+      let next = null
+      for (let i = stack.length - 1; i >= 0 && !next; i--) {
+        const init = scopes.get(stack[i]).get(node.name)
+        if (init) { next = init; stack = stack.slice(0, i + 1) }
+      }
+      if (!next) return null
+      node = next
+    }
+    return node ? { node, stack } : null
+  }
+  const langProp = (node, stack) => {
+    const r = resolve(node, stack)
+    if (r?.node.type !== 'ObjectExpression') return null
+    const prop = r.node.properties.find((p) => p.type === 'Property' && (p.key?.name ?? p.key?.value) === lang)
+    return prop ? { node: prop.value, stack: r.stack } : null
+  }
+  // 언어별로 한 번씩 등록하는 모양: for (const [code, dict] of pairs) register(NS, code, dict)
+  const pairEntry = (call, ancestors, stack) => {
+    const [, codeArg, dictArg] = call.arguments
+    if (codeArg?.type !== 'Identifier' || dictArg?.type !== 'Identifier') return null
+    const loop = [...ancestors].reverse().find((a) => a.type === 'ForOfStatement')
+    const pattern = loop?.left.type === 'VariableDeclaration' ? loop.left.declarations[0].id : loop?.left
+    if (pattern?.type !== 'ArrayPattern' || pattern.elements[0]?.name !== codeArg.name || pattern.elements[1]?.name !== dictArg.name) return null
+    const list = resolve(loop.right, stack)
+    if (list?.node.type !== 'ArrayExpression') return null
+    for (const pair of list.node.elements) {
+      if (pair?.type !== 'ArrayExpression') continue
+      try { if (value(pair.elements[0], list.stack) === lang) return { node: pair.elements[1], stack: list.stack } } catch {}
+    }
+    return null
+  }
+  const dictionaryOf = (call, ancestors, stack) => {
+    if (call.arguments.length >= 3) {
+      try { if (value(call.arguments[1], stack) === lang) return { node: call.arguments[2], stack } } catch {}
+      return pairEntry(call, ancestors, stack)
+    }
+    return langProp(call.arguments[1], stack)
+  }
   const found = {}
-  ;(function visit(node, stack = []) {
+  ;(function visit(node, stack = [], ancestors = []) {
     if (scopeNode(node)) stack = [...stack, node]
     if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.property.name === 'register') {
       const receiver = node.callee.object
       const isLocale = (receiver.type === 'Identifier' && receiver.name === 'locale') || (receiver.type === 'MemberExpression' && receiver.property.name === 'locale')
-      const dict = isLocale && node.arguments[1]?.type === 'ObjectExpression'
-        ? node.arguments[1].properties.find((prop) => (prop.key?.name ?? prop.key?.value) === lang) : null
+      const dict = isLocale ? dictionaryOf(node, ancestors, stack) : null
       if (dict) {
-        try { found[value(node.arguments[0], stack)] = value(dict.value, stack) } catch {}   // 정적으로 못 읽는 등록은 건너뜀
+        try { found[value(node.arguments[0], stack)] = value(dict.node, dict.stack) } catch {}   // 정적으로 못 읽는 등록은 건너뜀
       }
     }
-    for (const child of children(node)) visit(child, stack)
+    const below = [...ancestors, node]
+    for (const child of children(node)) visit(child, stack, below)
   })(ast)
   return found
 }

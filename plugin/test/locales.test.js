@@ -9,6 +9,21 @@ test('번들의 locale.register에서 지정한 언어 사전만 정적으로 �
   assert.deepEqual(extractDictionaries(source, 'zh'), { ns: { a: '甲' } })
 })
 
+test('상수에 담은 사전, 언어별 등록(인자 3개), 다른 상수의 속성 참조도 읽는다', () => {
+  const source = [
+    'const NS = "menu"; const dictionaries = { en: { failed: "Failed" }, zh: { failed: "失败" } }; ctx.locale.register(NS, dictionaries);',
+    'const tokens = { en: { goal: "goal" } }; const en = { "token.goal": tokens.en.goal, label: "Goal" }; const zh = { label: "目标" };',
+    'const manager = { zh, en }; ctx.effect(() => ctx.locale.register("cmd", manager));',
+    'const pairs = [["zh", { title: "选择" }], ["en", { title: "Select" }]];',
+    'for (const [code, dict] of pairs) ctx.locale.register("browser", code, dict);',
+    'ctx.locale.register("direct", "en", { ok: "OK" });',
+  ].join('\n')
+  assert.deepEqual(extractDictionaries(source, 'en'), {
+    menu: { failed: 'Failed' }, cmd: { 'token.goal': 'goal', label: 'Goal' }, browser: { title: 'Select' }, direct: { ok: 'OK' },
+  })
+  assert.deepEqual(extractDictionaries(source, 'zh'), { menu: { failed: '失败' }, cmd: { label: '目标' }, browser: { title: '选择' } })
+})
+
 test('키 이름에 점이 들어 있어도 중첩 경로와 섞이지 않는다', () => {
   assert.deepEqual(flatten({ 'message.copy': 'C', nested: { x: 'X' } }), [['message.copy', 'C'], ['nested›x', 'X']])
   const en = { chat: { 'message.copy': 'Copy', nested: { x: 'X' } } }
