@@ -1,8 +1,8 @@
-// LOCAL PATCH: DeepSeek짱 — Harness 화면에 밝은 파스텔 테마와 Live2D 캐릭터(상반신)를 띄우고,
+// DeepSeek짱 — Harness 화면에 밝은 파스텔 테마와 Live2D 캐릭터(상반신)를 띄우고,
 // 지금 열린 대화의 Harness 작업 상태(작업 중 / 도구 / 승인·질문 대기 / 완료 / 실패)에 반응한다.
-// 바깥 신호는 받지 않는다(포트 없음). 제거: dist/index.html의 dsc 두 줄을 지우면 된다.
+// 바깥 신호는 받지 않는다(포트 없음).
 (() => {
-  const BASE = new URL("./", document.currentScript.src).href;   // dsh-app://app/assets/dsc/
+  const BASE = new URL("./", document.currentScript.src).href;   // 이 파일이 있는 assets/ 폴더
   const TEXT = {
     hello: "안녕하세요, 주인님! 오늘은… 저랑 뭐 해 볼까요?",
     start: "알겠어요! …잘 부탁드려요, 주인님",
@@ -32,18 +32,6 @@
 
   const ready = (fn) => (document.body ? fn() : addEventListener("DOMContentLoaded", fn, { once: true }));
   ready(() => {
-    // ---------- 밝은 모드 고정 + 테마용 표시 ----------
-    let tagQueued = false;
-    const tag = () => {
-      tagQueued = false;
-      document.querySelectorAll('[class*="_card"]').forEach((e) => {
-        if (!e.classList.contains("dsc-composer") && e.closest('[class*="_root"]') && e.querySelector('[class*="_input"]')) e.classList.add("dsc-composer");
-      });
-      document.querySelectorAll(UI.send.split(", ").map((s) => s + ":not(.dsc-send)").join(", ")).forEach((e) => e.classList.add("dsc-send"));
-      document.querySelectorAll('button[class*="_newSession"]:not(.dsc-newsession)').forEach((e) => e.classList.add("dsc-newsession"));
-    };
-    tag();
-
     // ---------- 상태 감시 ----------
     let running = false, lastError = -1e9, lastToolSay = 0, waitingKind = null;
     const listeners = { tool: null };
@@ -60,8 +48,7 @@
         }
       }
     };
-    new MutationObserver((records) => {
-      if (!tagQueued) { tagQueued = true; requestAnimationFrame(tag); }
+    if (!window.__dscPetMode) new MutationObserver((records) => {
       for (const r of records) for (const n of r.addedNodes) scanAdded(n);
     }).observe(document.body, { childList: true, subtree: true });
 
@@ -80,6 +67,10 @@
       const bubble = document.createElement("div"); bubble.id = "dsc-bubble";
       document.body.append(canvas, bubble);
       const app = new PIXI.Application({ view: canvas, width: W, height: H, sharedTicker: false, backgroundAlpha: 0, antialias: true, autoDensity: true, resolution: (devicePixelRatio || 1) * 1.5 });   // 1.5배로 그려 줄여 보여 줌
+      // PIXI 상호작용(InteractionManager)은 쓰지 않는다(autoInteract: false, 터치 판정은 hitAt). 이 매니저의 Ticker.system 구독은
+      // app.ticker를 멈춰도 프레임마다 화면을 깨우므로, 배치 루프가 쉬는 동안만 끈다.
+      // (늘 꺼 두면 캐릭터가 보이는 동안 renderer 문맥 전환이 약 7% 늘어서 보이는 동안은 원래대로 둔다, 실측)
+      const systemTicker = (on) => { try { app.renderer.plugins.interaction.useSystemTicker = on; } catch {} };
       const model = await PIXI.live2d.Live2DModel.from(BASE + "model/model.model3.json", { autoUpdate: false, autoInteract: false, idleMotionGroup: "Idle" });
       app.stage.addChild(model);
       // 전용 티커로 모델도 갱신하고 긴 프레임은 제한
@@ -255,7 +246,7 @@
       // follow: 끄는 도중 창 밖으로 나가 펫 창이 커서를 따라오는 중 ({ shown, pose, busy }), boot: 화면을 처음 불러온 뒤 첫 조회 전,
       // petState: 호스트가 알려 준 펫 프로세스 상태 (none | starting | hidden | shown),
       // seq: 펫 창을 열 때마다 올리는 회차 번호. 펫 창 알림에 같은 번호가 붙어 와서, 이전 회차에서 늦게 온 알림을 가려냄
-      const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, home: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 };
+      const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 };
       // 펫 창이 보이는 동안(따라오는 중 포함)만 반응을 모아 보냄
       const relay = (fn, args) => { if (link.open || link.follow?.shown) link.queue.push([fn, args]); };
       let linkPost = async () => null;   // 아래 연결 코드에서 채움
@@ -341,12 +332,12 @@
         return { k, x: rightX(k), y: bottomY(k), above: false, noSafe: true };   // 컴포저 위·아래 어디에도 피할 자리가 없음 → 제자리에서는 숨긴다
       };
       // 말풍선 배치: 머리 위가 기본. 카드와 겹치면 옆/아래로 피하되, 뷰포트 밖으로 나가지 않게 자른다
-      const bubbleLayout = ({ vp, headX, headTop, bw, bh, r, above }) => {
+      const bubbleLayout = ({ vp, headX, headTop, bw, bh, r, above, tail = BUBBLE_TAIL }) => {
         const clampX = (left) => Math.min(Math.max(vp.left + HOME_GAP, left), Math.max(vp.left + HOME_GAP, vp.left + vp.w - bw - HOME_GAP));
         const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh - HOME_GAP));
         const hit = (left, top) => r && left < r.right && left + bw > r.left && top < r.bottom && top + bh > r.top;
         const aboveTop = clampY(headTop - bh - 10);
-        const aboveLeft = clampX(headX + 55 - bw);   // 꼬리(오른쪽 55px)가 머리 가운데에 오게
+        const aboveLeft = clampX(headX + tail - bw);   // 꼬리(오른쪽 tail px)가 머리 가운데에 오게
         if (!hit(aboveLeft, aboveTop) || above) return { left: aboveLeft, top: aboveTop, side: false };
         const below = r.bottom + HOME_GAP, sideLeft = clampX(vp.left + vp.w - bw - HOME_GAP);
         if (below + bh <= vp.top + vp.h - HOME_GAP) return { left: sideLeft, top: clampY(below), side: true };
@@ -356,9 +347,11 @@
       // 말풍선 꼬리(오른쪽 55px)를 코(noseX)에 맞추는 기준. 화면 오른쪽 경계는 HOME_GAP만 남기고,
       // 왼쪽 기준(등장 연출)은 뷰포트 안으로 자른다. 순수 함수라 테스트에서 그대로 실행한다.
       const BUBBLE_TAIL = 55;
-      const tailRight = ({ noseX, width, margin = HOME_GAP }) => Math.max(margin, width - (noseX + BUBBLE_TAIL));
-      const tailLeft = ({ noseX, bw, width, margin = HOME_GAP }) => Math.min(
-        Math.max(margin, noseX - (bw - BUBBLE_TAIL)),
+      // 짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁혀 몸통 밖에 뜨지 않게 한다 (CSS 꼬리 가운데 --dsc-tail-c = 이 값 - 2px)
+      const bubbleTail = (bw) => Math.min(BUBBLE_TAIL, Math.round((bw || 2 * BUBBLE_TAIL) / 2) + 2);
+      const tailRight = ({ noseX, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.max(margin, width - (noseX + tail));
+      const tailLeft = ({ noseX, bw, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.min(
+        Math.max(margin, noseX - (bw - tail)),
         Math.max(margin, width - bw - margin),
       );
       let curK = 1, fleeX = 0;     // 현재 배율, 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽)
@@ -598,8 +591,8 @@
           setRender(false);
           canvas.style.display = bubble.style.display = "none"; veil.style.opacity = 0; veil.style.pointerEvents = "none"; lastPlaceKey = ""; return;
         }
+        if (link.open || link.follow?.shown) { setRender(false); canvas.style.display = bubble.style.display = "none"; lastPlaceKey = ""; return; }   // 펫 창이 대신 보여 줌 (붙을 자리는 150ms 틱이 계산)
         const home = homePose();
-        if (link.open || link.follow?.shown) { link.home = home; setRender(false); canvas.style.display = bubble.style.display = "none"; lastPlaceKey = ""; return; }   // 펫 창이 대신 보여 줌
         const dock = dockPose(home, now);
         let { k, x, y } = dock;
         let introOn = intro.phase !== "done", vo = 0;
@@ -718,24 +711,26 @@
         canvas.style.left = x + "px"; canvas.style.top = y + "px";
         const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
+        const fitTail = () => { const t = bubbleTail(bubble.offsetWidth); bubble.style.setProperty("--dsc-tail-c", t - 2 + "px"); return t; };   // 지금 폭에 맞춘 꼬리 자리 (최대폭을 정한 뒤 부름)
         if (introOn) {   // 가운데에선 머리 위에 큰 말풍선. 꼬리는 코에 맞추고 화면 밖으로 넘치지 않게 자른다
           bubble.style.right = "auto"; bubble.style.fontSize = "22px"; bubble.style.padding = "14px 24px"; bubble.style.maxWidth = "560px";
-          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight;
+          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
           if (!coarsePointer()) {   // 데스크톱: 창 오른쪽 경계만 남기고 자른다
-            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth }) + "px";
+            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
             bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
             return;
           }
           const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
-          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w }) + "px";
+          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
           bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
           return;
         }
         const card = home.card;
         if (!coarsePointer() && !home.above) {   // 데스크톱 말풍선은 기존 배치 그대로
           bubble.style.left = "auto";
-          bubble.style.right = tailRight({ noseX, width: innerWidth }) + "px";   // 꼬리(오른쪽 55px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다
           bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
+          const tail = fitTail();
+          bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";   // 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남긴다
           bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
           if (card && home.r) {
             const r = home.r, bl = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl, top: bt, right: bl + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };   // 등장 애니메이션(transform) 영향 없는 레이아웃 크기
@@ -760,7 +755,7 @@
         bubble.style.right = "auto";
         bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
         // 머리 위가 기본. 카드와 겹치면 옆/아래로 피하고, 뷰포트(주소창·키보드) 밖으로는 나가지 않게 자른다
-        const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above });
+        const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
         bubble.style.left = bl.left + "px";
         bubble.style.top = bl.top + "px";
         if (bl.side && !home.above) bubble.classList.add("side");
@@ -769,6 +764,9 @@
       // 모바일 숨김 설정(mobileCharacter=false)이면 칩도 남기지 않고, 설정을 되돌리면 다음 프레임에 다시 보인다.
       const hideChipVisible = ({ pet = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet && isHidden && !mobileHiddenNow;
       let placeErrorWarned = false;
+      // 배치 루프를 쉬는 중인지. 숨은 펫 창과, 펫 창이 대신 보여 주는 동안의 창 안 캐릭터는 배치할 것이 없으므로 쉬고 다시 필요해지면 wakeRaf로 깨운다
+      let rafIdle = false;
+      const wakeRaf = () => { if (rafIdle) { rafIdle = false; systemTicker(true); requestAnimationFrame(raf); } };
       const raf = () => {
         if (hidden) {
           // 설정이 바뀌어도 복구 칩이 따라가게 한다 (모바일 숨김 설정이면 칩을 남기지 않는다)
@@ -780,6 +778,8 @@
             if (!placeErrorWarned) { placeErrorWarned = true; console.warn("캐릭터 배치 실패:", error); }
           }
         }
+        // 펫: 창이 숨음(open 이 오면 다시 시작). 창 안: 펫 창이 대신 보여 주는 중(leaveLink·setHidden(false)에서 다시 시작)
+        if (PET ? !petPower : link.open) { rafIdle = true; systemTicker(false); return; }
         requestAnimationFrame(raf);
       };
       requestAnimationFrame(raf);
@@ -852,6 +852,7 @@
           setRender(true);
           // 펫 창이 떠 있었거나 정리 이벤트를 놓쳐 link가 붙잡혀 있으면, 창 안 표시를 위해 닫고 그린다
           if (link.open || link.follow) { link.open = false; link.follow = null; link.opening = 0; try { linkPost("hide"); } catch {} }
+          wakeRaf();
           place();
           // 링크 정리·자리 계산이 늦게 끝나는 경우를 대비해 한 번 더 그린다
           requestAnimationFrame(() => { if (!hidden && !link.open && !link.follow && canvas.style.display === "none") { lastPlaceKey = ""; place(); } });
@@ -2753,6 +2754,7 @@
       const leaveLink = () => {   // 펫 창이 제자리에 붙었거나 닫힘 → 창 안 제자리로
         if (!link.open) { link.opening = 0; return; }   // 아직 안 떴으면 창 안 캐릭터는 그대로
         link.open = false; link.opening = 0; link.queue = [];
+        wakeRaf();
         SLEEP.state = "active"; SLEEP.lastActive = performance.now();
         free.on = false; free.anim = null; saveFree(); lastPlaceKey = "";   // 제자리로 (창이 좁으면 구석, 매 프레임 다시 계산)
         // 창 안 캐릭터가 다시 그려지는 프레임에 바로 펫 창을 숨김 (펫 창이 스스로 숨을 때까지 둘이 겹쳐 보이던 것 방지)
@@ -2801,7 +2803,7 @@
           if (link.opening && performance.now() - link.opening > 15000) link.opening = 0;   // 펫 창이 끝내 안 뜨면 포기
           if (!link.open && !link.opening && !link.follow) return;
           if (link.open || link.follow) {   // 붙을 자리(DSH 창의 제자리, 창이 좁으면 구석)와 소품·옷을 펫 창에 알려 줌
-            const h = dockTarget(link.home || homePose()), d = screenOf(h.x - fleeX, h.y);
+            const h = dockTarget(homePose()), d = screenOf(h.x - fleeX, h.y);
             // 붙는 순간 창 안 상반신 그림과 정확히 겹치도록, 허리(잘린 단면)와 가슴 중심을 기준으로 자리를 잡는다.
             //  · 창 안: 허리는 캔버스 y = WAIST_WIN, 상반신 가로 중심은 캔버스 가운데
             //  · 펫 창: 같은 허리·중심이 그 지점에 오도록 배율(PET_HEAD_RATIO)과 위치를 역산
@@ -2869,6 +2871,7 @@
             if (!m.on) { petTracking = false; petGrab = null; closePetPanel(); }
             petPower = !!m.on;
             setRender(petPower);
+            if (petPower) wakeRaf();
           } else if (m.type === "panel") {   // 우클릭 메뉴: 설정(또는 크기) 패널 열기
             openPetPanel(m.focus);
           } else if (m.type === "size") {   // 우클릭 메뉴: 정해진 배율로 (기본 대비)
@@ -2876,6 +2879,7 @@
           } else if (m.type === "open") {   // 창 밖으로 던진 자리에서 나타나 남은 거리만큼 미끄러짐. follow면 놓을 때까지 창 안 커서를 따라옴
             petPower = true;
             setRender(true);
+            wakeRaf();
             // 이전 회차에 남은 상태(끄는 중·식은땀·산책·도망)를 모두 지우고 시작
             for (const t of walk.timers) clearTimeout(t);
             walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; drag.pending = null; PET.press(false);
@@ -2925,7 +2929,7 @@
         setRender(false);   // 처음엔 숨은 채 대기 (open 이 오면 그리기 시작)
         PET.send({ type: "ready" });
       }
-      setInterval(() => {
+      if (!PET) setInterval(() => {
         const nowRunning = !!document.querySelector(UI.stop);
         const kind = document.querySelector(UI.approval + ', [class*="Zf6DNq_card"]') ? "approval"
           // 질문 카드 클래스명은 셸 빌드마다 해시가 바뀌어 곧 죽은 셀렉터가 된다. 셸이 안정적으로 내보내는

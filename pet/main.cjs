@@ -5,6 +5,7 @@ const { app, BrowserWindow, Menu, ipcMain, net, protocol, screen } = require('el
 const path = require('node:path')
 const { connect } = require('node:net')
 const { pathToFileURL } = require('node:url')
+const { createPlacer } = require('./placement.cjs')
 
 const arg = (name) => { const hit = process.argv.find((a) => a.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : '' }
 const PIPE = arg('dsc-pipe'), ASSETS = arg('dsc-assets'), APP = __dirname
@@ -31,6 +32,8 @@ if (MAC) {
 protocol.registerSchemesAsPrivileged([{ scheme: 'dscpet', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
 let win = null, socket = null, buffer = ''
+// 창 이동은 모두 여기로: 위치·크기를 함께 지시하고 멈춘 뒤 실제 자리를 확인해 맞춤 (배율이 다른 모니터를 넘나들 때 어긋남 방지)
+const placer = createPlacer(() => win, { width: WIN_W, height: WIN_H })
 // 지금 회차 번호(창 안 캐릭터가 펫 창을 열 때마다 올림). 보이기·숨기·붙기 알림에 붙여, 이전 회차 알림과 섞이지 않게 함
 let seq
 const toHost = (message) => { if (socket && !socket.destroyed) socket.write(JSON.stringify(seq === undefined ? message : { ...message, seq }) + '\n') }
@@ -51,7 +54,9 @@ function checkCursor() {
   const p = screen.getCursorScreenPoint(), b = win.getBounds()
   setAccept(p.x >= b.x + box.l && p.x <= b.x + box.r && p.y >= b.y + box.t && p.y <= b.y + box.b)
 }
-setInterval(checkCursor, 30)
+// 커서 확인은 창이 보이는 동안만 30ms마다 (숨은 동안엔 클릭을 받을 일이 없음). 창이 만들어진 뒤 show/hide 이벤트로 켜고 끈다
+let cursorTimer = null
+const watchCursor = (on) => { clearInterval(cursorTimer); cursorTimer = on ? setInterval(checkCursor, 30) : null }
 // 따라오기: 창 안 캐릭터가 끌어낼 때 창 위치는 여기서 커서를 읽는 즉시 옮김 (페이지로 보내 다음 프레임에 계산해 되돌려 받으면
 // 프레임마다 위치가 밀리거나 건너뛰어 끊겨 보임). 페이지에는 몸 흔들림 계산용으로 커서만 알려 줌. grab = 커서가 몸을 잡은 자리, off = 창 안 몸 왼쪽 위 좌표
 let tracker = null
@@ -65,7 +70,7 @@ function track(on, grab, off) {
     const p = screen.getCursorScreenPoint(), key = `${p.x},${p.y}`
     if (key === last) return
     last = key
-    win.setPosition(Math.round(p.x - g.x - o.x) | 0, Math.round(p.y - g.y - o.y) | 0)   // | 0: -0 방지 (아래 move와 같은 이유)
+    placer.place(p.x - g.x - o.x, p.y - g.y - o.y)
     toPage({ type: 'cursor', x: p.x, y: p.y })
   }
   tick()   // 창을 보이기 전에 먼저 커서 자리로 (잠깐 엉뚱한 자리에 떠 보이지 않게)
@@ -107,6 +112,8 @@ app.whenReady().then(() => {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
   }
   win.setIgnoreMouseEvents(true, { forward: true })   // 처음엔 클릭 통과 (accepting = false)
+  win.on('show', () => watchCursor(true))   // showInactive 도 show 를 보냄 (Windows 실측)
+  win.on('hide', () => watchCursor(false))
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
   win.loadURL(`dscpet://assets${OWN}/index.html`)
@@ -114,7 +121,7 @@ app.whenReady().then(() => {
     if (event.sender !== win.webContents || !message || typeof message.type !== 'string') return
     switch (message.type) {
       // | 0: Math.round 결과가 -0이면 Electron이 정수로 받지 못해 오류 창을 띄움
-      case 'move': if (Number.isFinite(message.x) && Number.isFinite(message.y)) win.setPosition(Math.round(message.x) | 0, Math.round(message.y) | 0); return
+      case 'move': placer.place(message.x, message.y); return
       case 'track': track(!!message.on, message.grab, message.off); return
       case 'press': force = !!message.on; checkCursor(); return   // 누르고 있는 동안은 커서가 몸 밖이어도 늘 받음
       case 'hitbox': box = message.box && ['l', 't', 'r', 'b'].every((k) => Number.isFinite(message.box[k])) ? message.box : null; checkCursor(); return
@@ -123,8 +130,7 @@ app.whenReady().then(() => {
         const wa = screen.getPrimaryDisplay().workAreaSize
         const w = Math.min(Math.round(Number(message.w)), wa.width), h = Math.min(Math.round(Number(message.h)), wa.height)
         if (!Number.isFinite(w) || !Number.isFinite(h) || w < 80 || h < 80) return
-        const b = win.getBounds()
-        if (b.width !== w || b.height !== h) win.setSize(w, h)
+        placer.resize(w, h)   // 크기도 placer 로: 이후 이동(place)이 이 크기를 유지하고, 배율이 다른 모니터에서도 확인함
         return
       }
       // 이미 보이는 중이어도(따라오기 회차에서 바로 던지기 회차로 넘어간 경우) 지금 회차로 shown을 다시 알림

@@ -56,7 +56,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
     vm.runInContext('let fleeX = 0, hidden = false, running = false, waitingKind = null, lastSayAt = 0, lastError = 0;', context)
     vm.runInContext(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')), context)
     vm.runInContext(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')), context)
-    const pollStart = code.lastIndexOf('      setInterval(() => {')
+    const pollStart = code.lastIndexOf('      if (!PET) setInterval(() => {')
     vm.runInContext(code.slice(pollStart, code.indexOf('      }, 400);', pollStart) + '      }, 400);'.length), context)
     const read = (s) => vm.runInContext(s, context)
     const frame = () => { now += 500; frames.splice(0).forEach((fn) => fn()) }
