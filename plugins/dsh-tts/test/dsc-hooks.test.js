@@ -17,7 +17,7 @@ const DSC_JS = path.resolve(
 const { stripTypeScriptTypes } = process.getBuiltinModule("node:module");
 const emitWarning = process.emitWarning;
 process.emitWarning = (warning, ...rest) => { if (!String(warning).includes("stripTypeScriptTypes")) emitWarning.call(process, warning, ...rest); };
-const SRC = stripTypeScriptTypes(fs.readFileSync(DSC_JS, "utf8"));
+const SRC = stripTypeScriptTypes(fs.readFileSync(DSC_JS, "utf8")).replace(/(?<=\S) {2,}(?=[),=])/g, (m, i, all) => (all[i + m.length] === "=" ? " " : ""));
 process.emitWarning = emitWarning;
 
 test("dsc.js 존재 + dsc:say CustomEvent 동기 디스패치", () => {

@@ -671,7 +671,7 @@
         core.setParameterValueById("Clothes2", 1);
         core.update();
         let chibiMinY = Infinity, chibiMaxY = -Infinity;
-        each((x, y) => {
+        each((_x, y) => {
           chibiMinY = Math.min(chibiMinY, y);
           chibiMaxY = Math.max(chibiMaxY, y);
         });
