@@ -758,7 +758,7 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
       ...fields.map(([field, label]) => React.createElement('label', { key: field, style: row },
         React.createElement('span', null, label),
         React.createElement('input', { type: 'checkbox', role: 'switch', checked: state.value?.[field] !== false, disabled: off, onChange: (event) => change(field, event.target.checked) }))),
-      React.createElement('p', { style: { opacity: 0.7 } }, ko ? '변경 사항은 바로 적용되고 저장됩니다. 한국어는 Settings → General → Language에서 선택할 수 있습니다.' : 'Changes apply and save immediately. Select Korean under Settings → General → Language.'),
+      React.createElement('p', { style: { opacity: 0.7 } }, ko ? '변경 사항은 바로 적용되고 저장됩니다. 한국어는 설정 → 일반 설정 → 언어에서 선택할 수 있습니다.' : 'Changes apply and save immediately. Select Korean under Settings → General → Language.'),
       React.createElement('section', { 'aria-label': ko ? '소품·옷' : 'Accessories and outfit', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
         React.createElement('strong', null, ko ? '소품·옷' : 'Accessories and outfit'),
         ...OUTFIT_FIELDS.map(([field, koLabel, enLabel]) => outfitSwitch([field, ko ? koLabel : enLabel]))),
