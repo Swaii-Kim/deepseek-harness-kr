@@ -21,6 +21,7 @@ const SEP = /[\\/]+/
 export const isWindows = (platform = process.platform) => platform === 'win32'
 
 // 경로를 소문자 세그먼트 배열로 (드라이브 문자·구분자 차이 무시)
+/** @param {string} path */
 const segments = (path) => resolve(String(path)).replace(/\\/g, '/').toLowerCase().split('/').filter(Boolean)
 
 // 실행 파일과 바로가기 대상이 같은 설치 폴더인지.
@@ -28,10 +29,12 @@ const segments = (path) => resolve(String(path)).replace(/\\/g, '/').toLowerCase
 //    (포터블 런처 `...\Portable\App.exe` ↔ 내부 exe `...\Portable\Harness\App.exe`)
 //  · 공유 구간이 2칸 미만이면(드라이브 루트 등) 인정하지 않는다
 //  · 이름이 접두어만 같은 남의 폴더(`C:\Apps\DSH` ↔ `C:\Apps\DSH2`)는 제외
+/** @param {unknown} target @param {unknown} exe @returns {boolean} */
 export function sameInstall(target, exe) {
   if (typeof target !== 'string' || typeof exe !== 'string' || !target || !exe) return false
   const dirT = segments(target).slice(0, -1)
   const dirE = segments(exe).slice(0, -1)
+  /** @param {string[]} a @param {string[]} b */
   const isPrefix = (a, b) => a.length <= b.length && a.every((s, i) => s === b[i])
   const shorter = Math.min(dirT.length, dirE.length)
   if (shorter < 2) return false
@@ -39,10 +42,12 @@ export function sameInstall(target, exe) {
 }
 
 // 바로가기에 넣을 IconLocation 값. bind: 아이콘 파일, restore: 원래 실행 파일 아이콘
+/** @param {string} path */
 export const shortcutIconValue = (path) => `${path},0`
 
 // 아이콘을 안정된 경로(%LOCALAPPDATA%\deepseek-harness-kr\app-icon.ico)로 복사한다.
 // 설치 폴더가 바뀌거나 플러그인이 업데이트돼도 바로가기가 깨지지 않게 하기 위함.
+/** @param {string} assetsDir @param {NodeJS.ProcessEnv} [env] */
 export async function installIconFile(assetsDir, env = process.env) {
   const source = join(assetsDir, APP_ICON_FILE)
   const base = env.LOCALAPPDATA || join(env.USERPROFILE || env.HOME || '.', 'AppData', 'Local')
@@ -86,6 +91,7 @@ $changed
 `
 
 // 스크립트를 -File 로 실행한다(-Command 로 param 블록을 넘기면 실패한다).
+/** @param {NodeJS.ProcessEnv} env */
 async function installScriptFile(env) {
   const base = env.LOCALAPPDATA || join(env.USERPROFILE || env.HOME || '.', 'AppData', 'Local')
   const dir = join(base, PROFILE_DIR)
@@ -97,6 +103,13 @@ async function installScriptFile(env) {
 
 /**
  * 설정이 켜져 있으면 바로가기 아이콘을 플러그인 아이콘으로, 꺼져 있으면 원래대로 되돌린다.
+ * @param {object} options
+ * @param {string} options.assetsDir 아이콘 파일(app-icon.ico)이 있는 자산 폴더
+ * @param {boolean} options.enabled
+ * @param {string} [options.exePath] 지금 실행 중인 실행 파일
+ * @param {NodeJS.Platform} [options.platform]
+ * @param {NodeJS.ProcessEnv} [options.env]
+ * @param {(file: string, args: string[], options: { timeout: number, windowsHide: boolean }) => Promise<{ stdout: string | Buffer }>} [options.runner] PowerShell 실행 (시험용)
  * @returns {Promise<{skipped?: string, changed?: number, message?: string}>}
  */
 export async function applyShortcutIcon({ assetsDir, enabled, exePath = process.execPath, platform = process.platform, env = process.env, runner = run }) {
@@ -114,6 +127,6 @@ export async function applyShortcutIcon({ assetsDir, enabled, exePath = process.
     const changed = Number(String(stdout).trim().split(/\s+/).pop())
     return { changed: Number.isFinite(changed) ? changed : 0 }
   } catch (error) {
-    return { skipped: 'spawn-failed', message: error?.message }
+    return { skipped: 'spawn-failed', message: /** @type {Error | null | undefined} */ (error)?.message }
   }
 }

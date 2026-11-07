@@ -14,8 +14,24 @@ import { OUTFIT_ITEMS, BODY_TYPES } from '../shared/settings.js'
 export const name = 'deepseek-harness-kr'
 export const inject = ['webServer', 'connection']
 
+/** @typedef {import('node:http').IncomingMessage} IncomingMessage */
+/** @typedef {import('node:http').ServerResponse} ServerResponse */
+/** @typedef {(req: IncomingMessage, res: ServerResponse) => Promise<void>} RequestHandler */
+/**
+ * DSH 컨텍스트 중 이 플러그인이 쓰는 범위 (registerSpeechRoutes 에도 그대로 넘김)
+ * @typedef {object} HostContext
+ * @property {(fn: () => (() => void) | void | undefined, label: string) => void} effect
+ * @property {{ register(route: { kind: 'prefix', path: string, handler: RequestHandler }): (() => void) | undefined }} webServer
+ * @property {{ requestRejection?: (req: IncomingMessage) => number | undefined } | undefined} connection
+ */
+/**
+ * 설정 중 이 파일이 읽는 값 (volatile 참조일 수 있어 readLive로 읽음)
+ * @typedef {{ tts?: unknown, appIcon?: unknown }} HostConfig
+ */
+
 // 말풍선 음성(TTS). 설정 화면이 쓰는 값은 모두 volatile이어야 한다(Settings는 volatile 필드만 쓴다).
 // 값의 범위·형식 검사는 요청마다 dsh-tts normalize가 맡고, 잘못된 값은 /dsh-tts/state가 이유를 알려 준다.
+/** @template R @param {{ volatile(): R }} schema @returns {R} */
 const live = (schema) => schema.volatile()
 export const TtsConfig = z.object({
   enabled: live(z.boolean().default(false)),
@@ -45,6 +61,10 @@ export const TtsConfig = z.object({
 })
 
 // volatile 참조(.get())가 섞인 설정을 그 시점의 평범한 값으로 바꾼다.
+/**
+ * @param {any} value 설정 값 아무거나 (volatile 참조·객체·원시값이 섞임)
+ * @returns {unknown}
+ */
 export function readLive(value) {
   if (value && typeof value.get === 'function') return structuredClone(value.get())
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value
@@ -81,8 +101,10 @@ export const Config = z.object({
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
 const assets = fileURLToPath(new URL('../assets/', import.meta.url))
+/** @type {Record<string, string | undefined>} */
 const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream' }
 
+/** @param {string} [root] @returns {RequestHandler} */
 export function createAssetHandler(root = assets) {
   return async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -112,17 +134,19 @@ export function createAssetHandler(root = assets) {
       else await pipeline(createReadStream(target), res)
     } catch (error) {
       if (!res.headersSent) { res.writeHead(error instanceof URIError ? 400 : 404); res.end() }
-      else if (!res.destroyed) res.destroy(error)
+      else if (!res.destroyed) res.destroy(/** @type {Error} */ (error))
     }
   }
 }
 
+/** @param {HostContext} ctx @param {HostConfig | undefined} config */
 export function apply(ctx, config) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ASSET_PATH, handler: createAssetHandler() }), 'deepseek-harness-kr: assets')
   // 말풍선 음성: 설정 화면에서 바꾼 값(volatile)을 요청마다 다시 읽는다. 꺼져 있으면 404.
   registerSpeechRoutes(ctx, () => normalizeTts(readLive(config?.tts)))
   ctx.effect(() => {
     const pet = createPetManager({ assets })
+    /** @param {IncomingMessage} req */
     const rejection = (req) => { const c = ctx.connection; return typeof c?.requestRejection === 'function' ? c.requestRejection(req) : 503 }
     const unregister = ctx.webServer.register({ kind: 'prefix', path: PET_PATH, handler: createPetHandler(pet, rejection) })
     return () => { unregister?.(); pet.dispose() }
@@ -130,7 +154,7 @@ export function apply(ctx, config) {
   // 앱 바로가기 아이콘(Windows): 켜면 시작할 때·플러그인 업데이트 후에 적용하고, 끄면 원래 아이콘으로 되돌린다.
   // 설정은 volatile이라 몇 초마다 확인해 바뀐 경우에만 실행한다(같은 값이면 아무 것도 하지 않음).
   ctx.effect(() => {
-    let last = null, stopped = false
+    let last = /** @type {boolean | null} */ (null), stopped = false
     const sync = () => {
       if (stopped) return
       const enabled = readLive(config?.appIcon) !== false
