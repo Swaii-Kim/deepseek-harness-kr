@@ -1,3 +1,4 @@
+// @ts-check
 import z from '@deepseek-ai/schemastery'
 import { createReadStream } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'

@@ -1,3 +1,4 @@
+// @ts-check
 // 바깥 펫 창: DSH 데스크톱의 Electron 실행 파일을 다시 써서 투명한 펫 창 프로세스를 띄우고, 창 안 캐릭터와 메시지를 이어 준다.
 // - 런타임(Windows): DSH 설치 폴더 파일을 하드링크(같은 드라이브면 디스크 0)로 묶고 resources/app 에 펫 앱(../pet/)만 넣는다.
 //   (DSH Electron은 OnlyLoadAppFromAsar·asar 무결성 검사 fuse가 꺼져 있어 resources/app 폴더 앱을 불러온다)
@@ -155,6 +156,16 @@ const defaultBase = (platform = process.platform) => platform === 'darwin'
 /**
  * 펫 프로세스 하나를 관리한다. 처음 끌 때 숨긴 채로 띄워 두고(warm), 창 밖으로 던지면 보여 준다(open).
  * 붙으면 창 안 캐릭터가 숨김을 요청하고 프로세스는 남아 다음에 바로 뜬다. 호스트가 내려가면 파이프가 끊겨 펫도 끝난다.
+ * @param {object} [options]
+ * @param {string} [options.assets] 캐릭터 자산 폴더 (펫 창이 dsc.js·모델을 읽는 곳)
+ * @param {string | null} [options.exe] DSH Electron 실행 파일
+ * @param {NodeJS.Platform} [options.platform]
+ * @param {string} [options.base] 펫 런타임을 만들 폴더
+ * @param {string} [options.app] 펫 앱 폴더 (pet/)
+ * @param {(command: string, args: string[], options: object) => any} [options.spawnImpl] 프로세스 실행 (시험용)
+ * @param {typeof prepareRuntime} [options.prepare] 펫 런타임 준비 (시험용)
+ * @param {number} [options.readyTimeout] 펫 창이 준비됐다고 알릴 때까지 기다리는 시간(ms)
+ * @param {number} [options.authTimeout] 펫 프로세스가 비밀값으로 인증할 때까지 기다리는 시간(ms)
  */
 export function createPetManager({ assets, exe = electronExecutable(), platform = process.platform, base = defaultBase(platform), app = PET_APP, spawnImpl = spawn, prepare = prepareRuntime, readyTimeout = READY_TIMEOUT, authTimeout = 5000 } = {}) {
   const supported = supportedOn(platform, exe)
@@ -221,7 +232,7 @@ export function createPetManager({ assets, exe = electronExecutable(), platform 
 
     // 리슨 전에 닫히면(시작 도중 dispose) 리슨 콜백이 오지 않으므로 close로도 끝냄
     const srv = server
-    await new Promise((resolve, reject) => { srv.once('error', reject); srv.once('close', () => reject(new Error('disposed'))); srv.listen(pipe, resolve) })
+    await new Promise((resolve, reject) => { srv.once('error', reject); srv.once('close', () => reject(new Error('disposed'))); srv.listen(pipe, /** @type {() => void} */ (resolve)) })
     if (disposed) throw new Error('disposed')
     const bin = await prepare(exe, base, app)
     if (disposed) throw new Error('disposed')
@@ -265,6 +276,8 @@ const readJson = (req, limit = 256 * 1024) => new Promise((resolve, reject) => {
 /**
  * 창 안 캐릭터가 부르는 경로: GET poll(상태 + 쌓인 알림을 비움), POST warm·open·send·hide.
  * 프로세스를 띄우는 경로라 DSH 연결 서비스의 인증 검사(requestRejection)를 통과한 요청만 받는다. 검사기가 없으면 모두 거절.
+ * @param {ReturnType<typeof createPetManager>} pet
+ * @param {(req: import('node:http').IncomingMessage) => number | undefined} [rejection] 거절할 HTTP 상태 코드 (통과면 undefined)
  */
 export function createPetHandler(pet, rejection = () => 503) {
   return async (req, res) => {

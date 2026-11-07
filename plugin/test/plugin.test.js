@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { readSource } from './source.mjs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import React from 'react'
 const require = createRequire(import.meta.url)
@@ -37,7 +38,7 @@ test('source build preserves sleep code and matches the committed bundle', async
 })
 
 test('sleep cancels departures, protects intro and wakes for waiting cards', async () => {
-  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
   // 번들은 esbuild가 다시 찍어 들여쓰기·이름이 달라지므로 소스 구간을 실행한다 (번들이 소스와 같은지는 위 빌드 재현 테스트가 확인)
   for (const code of [source]) {
     let now = 100000, timerId = 0, poll, stopped = false, card = null, working = false
@@ -102,7 +103,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
 })
 
 test('sleep preserves free placement, blocks dragging and never sleeps while the pet is outside', async () => {
-  const code = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  const code = readSource(new URL('../../character/index.ts', import.meta.url))
   for (const petPage of [false, true]) {
     let now = 0, stopped = false, listeners = 0
     const frames = [], timers = [], lines = []
@@ -543,11 +544,11 @@ test('pet window settings panel is tall enough to avoid a needless scrollbar', a
 })
 
 test('character source supports modifier drag and a pet window toggle', async () => {
-  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
   for (const code of [source, bundle]) {
     assert.match(code, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
     assert.match(code, /hooks\.togglePet = link\.toggle/)
-    assert.match(code, /const list = \[\["drag", \[dragKeyRaw\(\)\]\]\];/)   // 펫 창이 보이기 시작할 때 이동 키를 보낸다 (petLinkDragMessages)
+    assert.match(code, /const list\s*= \[\["drag", \[dragKeyRaw\(\)\]\]\];/)   // 펫 창이 보이기 시작할 때 이동 키를 보낸다 (petLinkDragMessages)
     assert.match(code, /fn === "drag"\) prefs\.drag = \{ key: a\[0\] \}/)
     assert.match(code, /fn === "dragheld"\)/)
     assert.match(code, /hooks\.toggleCanvas = \(\) => setHidden\(!hidden\)/)
@@ -857,7 +858,7 @@ test('settings page offers accessories, outfit and body type, and shares them wi
 })
 
 test('core worker is registered for termination when the plugin unloads', async () => {
-  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(source, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\);? \} catch \{\} \}\)/)
   assert.match(bundle, /w\.terminate\(\)/)
 })

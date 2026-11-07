@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { JSDOM } from 'jsdom'
-import { readStatus, scanAddedNode, readThought, thoughtLine, vtuberize, TOOLS } from '../../character/harness-signals.js'
+import { readStatus, scanAddedNode, readThought, thoughtLine, vtuberize, TOOLS } from '../../character/harness-signals.ts'
 
 // DSH 화면(DOM)을 읽는 부분만 모은 모듈을 실제 DOM으로 확인한다
 const page = (html) => new JSDOM(`<!doctype html><body>${html}</body>`).window.document

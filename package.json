@@ -13,7 +13,6 @@
   "files": [
     "plugin/host.js",
     "plugin/app-icon.js",
-    "plugin/client.js",
     "plugins/dsh-tts/src/cache.js",
     "plugins/dsh-tts/src/config.js",
     "plugins/dsh-tts/src/host.js",
@@ -30,6 +29,7 @@
   "scripts": {
     "build": "node plugin/build.mjs",
     "test": "node --test plugin/test/*.test.js plugins/dsh-tts/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.loose.json",
     "locales": "node plugin/locales.mjs report"
   },
   "engines": {
@@ -56,11 +56,14 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.2.17",
+    "@types/node": "24.10.1",
+    "@types/react": "18.3.26",
     "acorn": "^8.15.0",
     "esbuild": "0.25.11",
     "jsdom": "^27.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "typescript": "5.9.3"
   },
   "publishConfig": {
     "access": "public"

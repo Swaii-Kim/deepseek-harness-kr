@@ -1,4 +1,5 @@
-// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.js, shared/)를 고친 뒤 npm run build 하세요.
+// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.ts, shared/)를 고친 뒤 npm run build 하세요.
+"use strict";
 (() => {
   // shared/settings.js
   var OUTFIT_ITEMS = [
@@ -17,7 +18,7 @@
     { key: "type2", ko: "체형 2 (꼬마)", en: "Body type 2 (chibi)", value: 1 }
   ];
 
-  // character/layout.js
+  // character/layout.ts
   var HOME_GAP = 8;
   var BUBBLE_ROOM = 78;
   var SHOW_K = 0.42;
@@ -48,7 +49,7 @@
   var bubbleLayout = ({ vp, headX, headTop, bw, bh, r, above, tail = BUBBLE_TAIL }) => {
     const clampX = (left) => Math.min(Math.max(vp.left + HOME_GAP, left), Math.max(vp.left + HOME_GAP, vp.left + vp.w - bw - HOME_GAP));
     const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh - HOME_GAP));
-    const hit = (left, top) => r && left < r.right && left + bw > r.left && top < r.bottom && top + bh > r.top;
+    const hit = (left, top) => !!r && left < r.right && left + bw > r.left && top < r.bottom && top + bh > r.top;
     const aboveTop = clampY(headTop - bh - 10);
     const aboveLeft = clampX(headX + tail - bw);
     if (!hit(aboveLeft, aboveTop) || above) return { left: aboveLeft, top: aboveTop, side: false };
@@ -64,7 +65,7 @@
     Math.max(margin, width - bw - margin)
   );
 
-  // character/chord.js
+  // character/chord.ts
   var CHORD_GRACE_MS = 150;
   var chordDown = (chord, button, buttons, now) => {
     if (button !== 0 && button !== 2) return chord;
@@ -79,11 +80,12 @@
     const secondBit = button === 0 ? 1 : button === 2 ? 2 : 0;
     if (!firstBit || !secondBit) return false;
     if (!(buttons & firstBit) || !(buttons & secondBit)) return false;
-    return now >= chord.at && now - chord.at <= graceMs;
+    const at = chord.at;
+    return now >= at && now - at <= graceMs;
   };
   var chordUp = (chord, buttons) => (buttons & 3) === 0 ? { at: null, button: null, valid: false } : chord;
 
-  // character/motion.js
+  // character/motion.ts
   var clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   var hash = (n) => {
     const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -184,7 +186,7 @@
   var seg = (a, b, x) => clamp((x - a) / (b - a), 0, 1);
   var coverForearm = (q) => q < 0.25 ? 0.15 * sstep(q / 0.25) : q < 0.45 ? 0.15 + 0.55 * seg(0.25, 0.45, q) : q < 0.8 ? 0.7 + 0.19 * sstep(seg(0.45, 0.8, q)) : 0.89 - 0.03 * sstep(seg(0.8, 1, q));
 
-  // character/harness-signals.js
+  // character/harness-signals.ts
   var TOOLS = {
     "명령 실행": "명령 실행 중…",
     "코드": "코드 돌리는 중…",
@@ -229,10 +231,11 @@
   function scanAddedNode(node, { running }) {
     const found = { error: false, tool: null };
     if (node.nodeType !== 1) return found;
-    const t = node.textContent || "";
+    const element = node;
+    const t = element.textContent || "";
     if (t.length < 400 && UI.turnError.some((w) => t.includes(w))) found.error = true;
     if (running && t.length < 200) {
-      const leaves = node.children.length === 0 ? [node] : node.querySelectorAll("span, div");
+      const leaves = element.children.length === 0 ? [element] : element.querySelectorAll("span, div");
       for (const el of leaves) {
         if (el.children.length) continue;
         const s = (el.textContent || "").trim();
@@ -298,7 +301,7 @@
     return hmm + line;
   }
 
-  // character/pet-link.js
+  // character/pet-link.ts
   function createPetLink(deps) {
     const { url, fetch: fetch2, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now() } = deps;
     const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 };
@@ -446,7 +449,7 @@
     return link;
   }
 
-  // character/index.js
+  // character/index.ts
   function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
     const BASE = base;
     const prefs = { ...initialPrefs };
@@ -468,10 +471,10 @@
       }
     });
     const setTimeout = life.timeout, setInterval = life.interval, requestAnimationFrame = life.frame;
-    const addEventListener = (...args) => life.listen(window, ...args);
-    function MutationObserver(fn) {
+    const addEventListener = (type, fn, options) => life.listen(window, type, fn, options);
+    const MutationObserver = function(fn) {
       return life.observe(fn);
-    }
+    };
     const TEXT = {
       hello: "안녕하세요, 주인님! 오늘은… 저랑 뭐 해 볼까요?",
       start: "알겠어요! …잘 부탁드려요, 주인님",
@@ -1083,7 +1086,7 @@
             skipIntro();
             setRender(false);
             hideCharacter();
-            veil.style.opacity = 0;
+            veil.style.opacity = "0";
             veil.style.pointerEvents = "none";
             lastPlaceKey = "";
             return true;
@@ -1102,7 +1105,7 @@
           if (introOn && !intro.begun) {
             if (home.card && !intro.cardAt) intro.cardAt = now;
             if (!(intro.cardAt && now - intro.cardAt > 300) && now - intro.start < 8e3) {
-              veil.style.opacity = 1;
+              veil.style.opacity = "1";
               veil.style.pointerEvents = "none";
               return null;
             }
@@ -1137,9 +1140,9 @@
                 bubble.style.padding = "";
               }
             }
-            veil.style.opacity = vo;
+            veil.style.opacity = String(vo);
             veil.style.pointerEvents = intro.phase === "center" ? "auto" : "none";
-            canvas.style.opacity = intro.phase === "center" ? ease((now - intro.start) / 300) : "";
+            canvas.style.opacity = intro.phase === "center" ? String(ease((now - intro.start) / 300)) : "";
           }
           return { k, x, y, introOn };
         };
@@ -1438,7 +1441,7 @@
         const hideForPage = () => {
           pageHiddenApplied = true;
           canvas.style.display = bubble.style.display = "none";
-          veil.style.opacity = 0;
+          veil.style.opacity = "0";
           veil.style.pointerEvents = "none";
           setRender(false);
           clearHideChip();
@@ -3933,7 +3936,7 @@
     };
   }
 
-  // character/lifetime.js
+  // character/lifetime.ts
   function createLifetime() {
     let stopped = false;
     const cleanups = [];
@@ -4012,7 +4015,7 @@
     };
   }
 
-  // character/standalone.js
+  // character/standalone.ts
   createCharacter({
     base: new URL("./", document.currentScript.src).href,
     life: createLifetime(),

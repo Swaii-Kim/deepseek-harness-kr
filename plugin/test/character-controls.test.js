@@ -1,13 +1,14 @@
 import test from 'node:test'
+import { readSource } from './source.mjs'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
-import * as layout from '../../character/layout.js'
-import * as chordFns from '../../character/chord.js'
+import * as layout from '../../character/layout.ts'
+import * as chordFns from '../../character/chord.ts'
 
 // dsc.js의 순수 계산/상태 조각을 그대로 실행해 확인한다. DOM·캔버스 없이 돌 수 있게
 // 필요한 값만 vm 컨텍스트에 넣고, 실제 소스 구간(문자열 경계)을 잘라 쓴다.
-const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+const source = readSource(new URL('../../character/index.ts', import.meta.url))
 
 const sliceBetween = (startText, endText) => {
   const start = source.indexOf(startText)
@@ -381,7 +382,7 @@ test('좌우 버튼 코드: 첫 버튼 누른 채 150ms 이내 두 번째 버튼
 })
 
 test('코드 그레이스는 기존 양쪽 hold(임의 간격) 판정을 150ms로 제한하지 않는다', async () => {
-  const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(source, /if \(\(e\.buttons & 1\) && chordWithinGrace\(chord, e\.button, e\.buttons, nowDown\)\)/)
   assert.match(source, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
   assert.match(source, /chord = chordUp\(chord, e\.buttons\)/)

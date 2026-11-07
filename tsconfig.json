@@ -1,0 +1,26 @@
+{
+  // 타입 검사 전용 (출력 없음). 빌드는 esbuild(plugin/build.mjs)가 타입만 지우고 묶는다.
+  // npm run typecheck = tsc -p tsconfig.json && tsc -p tsconfig.loose.json
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true
+  },
+  // 엄격하게 검사하는 작은 모듈과 공용 설정 정의 (JS는 // @ts-check 를 붙인 파일만 검사)
+  "include": [
+    "character/layout.ts", "character/chord.ts", "character/motion.ts", "character/harness-signals.ts",
+    "character/pet-link.ts", "character/lifetime.ts", "character/types.ts",
+    "shared/settings.js"
+  ]
+}

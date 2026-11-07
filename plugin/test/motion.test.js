@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { addGesture, blinkClose, clamp, coverForearm, holdCurve, noise, S, seg, spring, sstep } from '../../character/motion.js'
+import { addGesture, blinkClose, clamp, coverForearm, holdCurve, noise, S, seg, spring, sstep } from '../../character/motion.ts'
 
 const zero = () => ({ yaw: 0, pitch: 0, roll: 0, bodyX: 0, bodyY: 0, bodyZ: 0, lean: 0, smile: 0, eyeSmile: 0, eyeClose: 0, mouth: 0 })
 

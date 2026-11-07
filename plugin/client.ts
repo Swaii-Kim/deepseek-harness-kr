@@ -2,8 +2,8 @@
 // plugin/build.mjs가 이 파일을 묶어 lib/client.js(DSH 모듈 로더 형식)로 만든다.
 import React from 'react'
 import { name as PLUGIN_ID } from '../package.json'
-import { createCharacter } from '../character/index.js'
-import { createLifetime } from '../character/lifetime.js'
+import { createCharacter } from '../character/index.ts'
+import { createLifetime } from '../character/lifetime.ts'
 import * as ttsClient from '../plugins/dsh-tts/src/client/index.js'
 import KOREAN_DICTIONARIES from './locales.ko.json'
 import { OUTFIT_ITEMS, BODY_TYPES as BODY_TYPE_ITEMS } from '../shared/settings.js'
@@ -236,10 +236,10 @@ const browserStorage = {
   clear() { try { window.localStorage.removeItem(PENDING_KEY) } catch {} },
 }
 
-function createUpdater({ fetch: fetchImpl = (...args) => window.fetch(...args), storage = browserStorage, now = () => Date.now() } = {}) {
-  const listeners = new Set()
+function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) => window.fetch(...args), storage = browserStorage, now = () => Date.now() }: { fetch?: typeof fetch; storage?: typeof browserStorage; now?: () => number } = {}) {
+  const listeners = new Set<() => void>()
   let manager = null, generation = 0
-  let snapshot = { phase: 'unavailable' }
+  let snapshot: { phase: string; current?: string; latest?: string; source?: any; error?: string; from?: string } = { phase: 'unavailable' }
   const set = (patch) => { snapshot = { ...snapshot, ...patch }; for (const fn of [...listeners]) fn() }
   const message = (error) => (error && (error.message || error.code || String(error))) || ''
   const failure = (value) => [value?.error?.code, value?.error?.diagnostic].filter(Boolean).join(': ') || 'failed'
@@ -356,9 +356,9 @@ function ttsSignature(value) {
 
 // API 키는 Harness credentials에 저장한다. 화면은 "설정됨" 여부만 알고 값은 받지 않는다.
 function createKeyStore() {
-  const listeners = new Set()
+  const listeners = new Set<() => void>()
   let remote = null, ref = DEFAULT_KEY_REF, generation = 0
-  let snapshot = { available: false, configured: false, source: null }
+  let snapshot: { available: boolean; configured: boolean; source: string | null } = { available: false, configured: false, source: null }
   const set = (next) => { snapshot = next; for (const fn of [...listeners]) fn() }
   const refresh = async () => {
     const mine = ++generation
@@ -392,7 +392,7 @@ const fieldStyle = { display: 'grid', gap: 4 }
 const inputStyle = { width: '100%', boxSizing: 'border-box' }
 
 // 입력 중에는 초안을 들고 있다가, 포커스를 벗어나거나 Enter를 누르면 저장한다.
-function TtsField({ label, hint, value, placeholder, disabled, multiline, type, min, max, step, commit }) {
+function TtsField({ label, hint, value, placeholder, disabled, multiline, type, min, max, step, commit }: Record<string, any>) {
   const shown = value ?? ''
   const [draft, setDraft] = React.useState(shown)
   const [error, setError] = React.useState('')
@@ -405,7 +405,7 @@ function TtsField({ label, hint, value, placeholder, disabled, multiline, type, 
   const onKeyDown = (event) => { if (!multiline && event.key === 'Enter') event.currentTarget.blur() }
   const input = React.createElement(multiline ? 'textarea' : 'input', {
     style: inputStyle, value: draft, placeholder, disabled, type: multiline ? undefined : (type || 'text'), rows: multiline ? 3 : undefined,
-    min, max, step, spellCheck: false, onChange: (event) => setDraft(event.target.value), onBlur: save, onKeyDown,
+    min, max, step, spellCheck: false, onChange: (event: { target: HTMLInputElement }) => setDraft(event.target.value), onBlur: save, onKeyDown,
   })
   return React.createElement('label', { style: fieldStyle },
     React.createElement('span', null, label),
@@ -479,12 +479,12 @@ function TtsSection({ form, keys, ko, writable, tts }) {
     setError(failed)
     return failed
   }
-  const text = (path, label, extra = {}) => React.createElement(TtsField, { key: path.join('.'), label, disabled: off, commit: (draft) => write(path, draft.trim()), ...extra })
-  const json = (path, label, value, placeholder, hint) => text(path, label, {
+  const text = (path: string[], label: string, extra: Record<string, any> = {}) => React.createElement(TtsField, { key: path.join('.'), label, disabled: off, commit: (draft) => write(path, draft.trim()), ...extra })
+  const json = (path: string[], label: string, value: unknown, placeholder: string, hint?: string) => text(path, label, {
     multiline: true, placeholder, hint, value: value && Object.keys(value).length ? JSON.stringify(value, null, 2) : '',
     commit: (draft) => { const parsed = parseJsonObject(draft, ko); return parsed.error ? parsed.error : write(path, parsed.value) },
   })
-  const number = (path, label, value, min, extra = {}) => text(path, label, {
+  const number = (path: string[], label: string, value: unknown, min: number, extra: { max?: number; [key: string]: unknown } = {}) => text(path, label, {
     type: 'number', min, max: extra.max, step: 1, value: value === undefined ? '' : String(value), ...extra,
     commit: (draft) => { const n = Number(draft); return Number.isInteger(n) && n >= min && n <= (extra.max ?? Infinity) ? write(path, n) : t(min + '~' + extra.max + ' 범위의 정수를 넣어 주세요.', 'Enter a whole number from ' + min + ' to ' + extra.max + '.') },
   })
@@ -559,7 +559,7 @@ function updateSection(updater, ko) {
 }
 
 // 단축키 입력 칸: 칸을 눌러 두면 누른 키 조합을 그대로 저장한다. Esc 취소 · Backspace/Delete 지우기 · Tab은 포커스 이동.
-function ShortcutField({ label, control, hintId, hint, value, placeholder, ariaLabel, ko, disabled, inactive, onChange }) {
+function ShortcutField({ label, control, hintId, hint, value, placeholder, ariaLabel, ko, disabled, inactive, onChange }: Record<string, any>) {
   const [recording, setRecording] = React.useState(false)
   const [held, setHeld] = React.useState('')
   const capture = (event) => {
@@ -784,7 +784,7 @@ function apply(ctx) {
   window[SLOT]?.()
   const life = createLifetime()
   const features = new Map()
-  const reconcile = (name, enabled, mount) => {
+  const reconcile = (name: string, enabled: boolean, mount?: (feature: ReturnType<typeof createLifetime>) => void) => {
     if (enabled === features.has(name)) return
     if (!enabled) { features.get(name).dispose(); features.delete(name); return }
     const feature = createLifetime()

@@ -1,3 +1,4 @@
+// @ts-check
 // 앱 바로가기(.lnk) 아이콘 바꾸기 — Windows 전용.
 //
 // 설치 경로를 하드코딩하지 않는다. 호스트는 앱 안에서 돌기 때문에 process.execPath 로
@@ -96,7 +97,7 @@ async function installScriptFile(env) {
 
 /**
  * 설정이 켜져 있으면 바로가기 아이콘을 플러그인 아이콘으로, 꺼져 있으면 원래대로 되돌린다.
- * @returns {Promise<{skipped?: string, changed?: number}>}
+ * @returns {Promise<{skipped?: string, changed?: number, message?: string}>}
  */
 export async function applyShortcutIcon({ assetsDir, enabled, exePath = process.execPath, platform = process.platform, env = process.env, runner = run }) {
   if (!isWindows(platform)) return { skipped: 'platform' }

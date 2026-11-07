@@ -146,10 +146,11 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 npm ci
 npm run locales          # 설치된 DSH 영어 사전과 비교해 빠진 번역 보고 (todo·merge는 plugin/locales.mjs 참고)
 npm run build
+npm run typecheck    # TypeScript 타입 검사 (출력 없음)
 npm test
 ```
 
-빌드는 `character/`의 캐릭터 코드와 `plugin/locales.ko.json`으로 플러그인 클라이언트(`lib/client.js`)와 펫 창용 `assets/dsc.js`를 생성합니다. 한국어 번역의 원본은 `plugin/locales.ko.json`입니다. 설정 스키마는 DSH의 `@deepseek-ai/schemastery`를 사용합니다.
+캐릭터·설정 화면 소스는 TypeScript(`character/*.ts`, `plugin/client.ts`)이고, 호스트·펫 메인은 Node가 직접 읽는 JavaScript(`// @ts-check`)입니다. 빌드는 `character/`의 캐릭터 코드와 `plugin/locales.ko.json`으로 플러그인 클라이언트(`lib/client.js`)와 펫 창용 `assets/dsc.js`를 생성합니다. 한국어 번역의 원본은 `plugin/locales.ko.json`입니다. 설정 스키마는 DSH의 `@deepseek-ai/schemastery`를 사용합니다.
 빌드된 `lib/client.js`와 `assets/`를 저장소에 포함하므로 Git 주소로 설치할 때 빌드 스크립트를 실행하지 않습니다.
 캐릭터 코드·번역·자산을 수정한 뒤에는 `npm run build`를 실행하고 생성물도 함께 커밋하세요.
 사용자에게 나가는 변경이면 `package.json`의 `version`도 올려 주세요. Plugins 화면의 버전 표시로 새 버전인지 구분할 수 있습니다.

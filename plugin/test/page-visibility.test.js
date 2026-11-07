@@ -1,11 +1,12 @@
 import test from 'node:test'
+import { readSource } from './source.mjs'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 
 // dsc.js의 패널 숨김 구간을 그대로 잘라 실행한다. 실제 모델/PIXI 없이도
 // DOM 표시·렌더 정지·복구 칩·외부 펫 명령 여부를 확인할 수 있게 필요한 값만 둔다.
-const source = await readFile(new URL('../../character/index.js', import.meta.url), 'utf8')
+const source = readSource(new URL('../../character/index.ts', import.meta.url))
 
 const sliceBetween = (startText, endText) => {
   const start = source.indexOf(startText)
@@ -289,7 +290,7 @@ test('패널 숨김은 캐릭터 API로만 전달하고, 캐릭터는 setPrefs�
   // 캐릭터 쪽 수신부와 수명 래퍼는 소스에서 확인하고(번들은 esbuild가 다시 찍는다), 전달 경로는 번들을 실제로 실행해 확인한다
   assert.match(source, /if \(!PET\) hooks\.syncPageHidden = syncPageHidden;/)
   assert.match(source, /if \(pageChanged\) hooks\.syncPageHidden\?\.\(\);/)
-  assert.match(source, /const addEventListener = \(\.\.\.args\) => life\.listen\(window, \.\.\.args\)/)
+  assert.match(source, /const addEventListener = \(type\s*, fn\s*, options\s*\) => life\.listen\(window, type, fn, options\)/)
   assert.match(source, /if \(pageHiddenNow\(\)\) \{ hideForPage\(\); return true; \}/)
   assert.doesNotMatch(source, /window\.__dsc(?!\b)[A-Za-z]/, '캐릭터는 window.__dsc(디버그·TTS용) 말고는 전역을 쓰지 않는다')
   const h = runClientApply()
@@ -311,7 +312,7 @@ test('플러그인·자동화 패널을 열면 창 안 캐릭터를 숨기고, �
   h.syncPageHidden()
   assert.equal(h.canvas.display, 'none')
   assert.equal(h.bubble.display, 'none')
-  assert.equal(h.veil.opacity, 0)
+  assert.equal(h.veil.opacity, '0')   // 브라우저 style과 같이 문자열로 저장
   assert.equal(h.rendering(), false)
   assert.equal(h.pageHiddenApplied(), true)
   assert.equal(h.hushCalls(), 0, '페이지 숨김은 hush/relay를 보내지 않는다')

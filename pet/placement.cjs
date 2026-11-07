@@ -1,3 +1,4 @@
+// @ts-check
 // 펫 창을 지정한 자리·크기에 놓고, 놓인 결과를 확인해 어긋났으면 다시 맞춘다.
 // 배율(DPI)이 다른 모니터 사이를 넘나들면 Electron(Windows)은 setPosition 좌표를 창이 있던 모니터의 배율로 해석해 엉뚱한 자리에 놓거나
 // 창 크기를 키운 채 되돌리지 않는다 (electron/electron#10862). 한 번만 지시하면 산책으로 모니터 경계를 넘었다 돌아올 때 제자리에 못 돌아온다.
@@ -7,11 +8,14 @@
 const same = (a, b) => Math.abs(a - b) <= 1
 
 /**
- * @param getWin 지금 펫 창을 돌려주는 함수 (창이 없거나 닫혔으면 null/undefined)
- * @param opts.width opts.height 처음 창 크기 (DIP). 모니터를 넘으며 커진 크기를 되돌리려고 매번 함께 지시함. resize로 바꾸면 이후 지시도 그 크기를 씀
- * @param opts.delay 움직임이 멈춘 뒤 확인까지, 그리고 다시 지시한 뒤 다음 확인까지의 간격(ms). OS가 모니터를 판정할 시간
- * @param opts.tries 한 번 놓은 뒤 다시 지시하는 최대 횟수. 그래도 어긋나면 포기 (끝없이 다시 지시하지 않음)
- * @param opts.setTimer opts.clearTimer 시간 예약 (시험용으로 바꿔 끼움)
+ * @param {() => any} getWin 지금 펫 창을 돌려주는 함수 (창이 없거나 닫혔으면 null/undefined)
+ * @param {object} [opts]
+ * @param {number} [opts.width] 처음 창 너비 (DIP). 모니터를 넘으며 커진 크기를 되돌리려고 매번 함께 지시함. resize로 바꾸면 이후 지시도 그 크기를 씀
+ * @param {number} [opts.height] 처음 창 높이 (DIP)
+ * @param {number} [opts.delay] 움직임이 멈춘 뒤 확인까지, 그리고 다시 지시한 뒤 다음 확인까지의 간격(ms). OS가 모니터를 판정할 시간
+ * @param {number} [opts.tries] 한 번 놓은 뒤 다시 지시하는 최대 횟수. 그래도 어긋나면 포기 (끝없이 다시 지시하지 않음)
+ * @param {(fn: () => void, ms: number) => any} [opts.setTimer] 시간 예약 (시험용으로 바꿔 끼움)
+ * @param {(id: any) => void} [opts.clearTimer] 예약 취소
  */
 function createPlacer(getWin, { width, height, delay = 60, tries = 8, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   let size = { width, height }, target = null, applied = null, timer = null, attempt = 0

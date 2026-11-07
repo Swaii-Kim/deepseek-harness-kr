@@ -1,4 +1,5 @@
-// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.js, shared/)를 고친 뒤 npm run build 하세요.
+// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.ts, shared/)를 고친 뒤 npm run build 하세요.
+"use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;

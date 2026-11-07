@@ -11,9 +11,14 @@ const { spawnSync } = process.getBuiltinModule("node:child_process");
 const HERE = path.dirname(path.resolve(process.argv[1] || "plugins/dsh-tts/test/dsc-hooks.test.js"));
 const DSC_JS = path.resolve(
   HERE,
-  "../../../character/index.js",
+  "../../../character/index.ts",
 );
-const SRC = fs.readFileSync(DSC_JS, "utf8");
+// 캐릭터 소스는 TypeScript라 타입 표기만 공백으로 지워 읽는다 (줄·열 위치 유지)
+const { stripTypeScriptTypes } = process.getBuiltinModule("node:module");
+const emitWarning = process.emitWarning;
+process.emitWarning = (warning, ...rest) => { if (!String(warning).includes("stripTypeScriptTypes")) emitWarning.call(process, warning, ...rest); };
+const SRC = stripTypeScriptTypes(fs.readFileSync(DSC_JS, "utf8"));
+process.emitWarning = emitWarning;
 
 test("dsc.js 존재 + dsc:say CustomEvent 동기 디스패치", () => {
   assert.ok(SRC.length > 1000, "dsc.js 를 읽었다");

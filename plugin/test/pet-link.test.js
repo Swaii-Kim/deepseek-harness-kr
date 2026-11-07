@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createPetLink } from '../../character/pet-link.js'
+import { createPetLink } from '../../character/pet-link.ts'
 
 // 바깥 펫 창 연결(character/pet-link.js)을 가짜 fetch·타이머로 실제 실행해 확인한다.
 // 예전에는 이 흐름을 dsc.js 소스 문자열로만 확인했다.
