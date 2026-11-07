@@ -6,21 +6,14 @@ import { createCharacter } from '../character/index.js'
 import { createLifetime } from '../character/lifetime.js'
 import * as ttsClient from '../plugins/dsh-tts/src/client/index.js'
 import KOREAN_DICTIONARIES from './locales.ko.json'
+import { OUTFIT_ITEMS, BODY_TYPES as BODY_TYPE_ITEMS } from '../shared/settings.js'
 
 const ROOT = '/deepseek-harness-kr/assets/'
 const SLOT = '__deepseekHarnessKrDispose'
 const ENTRY_ID = 'deepseek-harness-kr'
 // 소품·옷 (데스크톱 펫 메뉴와 같은 항목, 세숫대야·앞으로 숙이기는 뺌)과 체형
-const OUTFIT_FIELDS = [
-  ['glasses', '뿔테 안경', 'Glasses'],
-  ['monocle', '외눈 안경', 'Monocle'],
-  ['skirt', '치마 길이 바꾸기', 'Change skirt length'],
-  ['chestClothes', '가슴 옷 바꾸기', 'Change top'],
-  ['shoesOff', '신발 벗기', 'Take off shoes'],
-  ['tailHide', '꼬리 숨기기', 'Hide tail'],
-  ['earHide', '동물귀 숨기기', 'Hide animal ears'],
-]
-const BODY_TYPES = [['default', '기본 체형', 'Default'], ['type1', '체형 1', 'Body type 1'], ['type2', '체형 2 (꼬마)', 'Body type 2 (chibi)']]
+const OUTFIT_FIELDS = OUTFIT_ITEMS.map(({ key, ko, en }) => [key, ko, en])
+const BODY_TYPES = BODY_TYPE_ITEMS.map(({ key, ko, en }) => [key, ko, en])
 // 이 두 화면에서는 창 안 캐릭터만 숨긴다 (대화 화면과 바깥 펫 창은 그대로).
 // 패널 id는 URL이 아니라 layout 서비스의 activePanelId로 판정한다.
 const HIDDEN_IN_WINDOW_PANELS = new Set(['plugins', 'schedules'])

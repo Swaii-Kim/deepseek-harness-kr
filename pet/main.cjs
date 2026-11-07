@@ -6,6 +6,8 @@ const path = require('node:path')
 const { connect } = require('node:net')
 const { pathToFileURL } = require('node:url')
 const { createPlacer } = require('./placement.cjs')
+// 소품·옷·체형 항목: 빌드가 shared/settings.js에서 만든 pet/settings.cjs (펫 앱 폴더째 런타임으로 복사된다)
+const { OUTFIT_ITEMS, BODY_TYPES } = require('./settings.cjs')
 
 const arg = (name) => { const hit = process.argv.find((a) => a.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : '' }
 const PIPE = arg('dsc-pipe'), ASSETS = arg('dsc-assets'), APP = __dirname
@@ -14,8 +16,8 @@ const WIN_W = 820, WIN_H = 1160   // 전신(최대 990px = 300×3.3배)과 머�
 // 우클릭 메뉴. 체크 표시는 페이지가 보내 주는 현재 상태({ size, outfit })로 그린다.
 // size = 기본(머리 크기 맞춤) 크기 대비 배율
 const MENU_SIZES = [0.75, 1, 1.25, 1.5]
-const MENU_OUTFIT = [['glasses', '뿔테 안경'], ['monocle', '외눈 안경'], ['skirt', '치마 길이 바꾸기'], ['chestClothes', '가슴 옷 바꾸기'], ['shoesOff', '신발 벗기'], ['tailHide', '꼬리 숨기기']]
-const MENU_BODY = [['default', '기본 체형'], ['type1', '체형 1'], ['type2', '체형 2 (꼬마)']]
+const MENU_OUTFIT = OUTFIT_ITEMS.map((item) => [item.key, item.ko])
+const MENU_BODY = BODY_TYPES.map((body) => [body.key, body.ko])
 let menuState = { size: 1, outfit: {} }
 
 const MAC = process.platform === 'darwin'

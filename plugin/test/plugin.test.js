@@ -549,10 +549,35 @@ test('character source supports modifier drag and a pet window toggle', async ()
     assert.match(code, /fn === "dragheld"\)/)
     assert.match(code, /hooks\.toggleCanvas = \(\) => setHidden\(!hidden\)/)
     assert.match(code, /id = "dsc-hide-chip"/)
-    assert.match(code, /\["earHide", "동물귀 숨기기"\]/)   // 펫 창 우클릭 소품·옷 메뉴에도 같은 항목
   }
+  // 펫 창 설정 패널 항목은 공용 정의에서 만든다
+  assert.match(source, /const PET_OUTFIT_ROWS = OUTFIT_ITEMS\.map\(/)
 })
 
+test('outfit and body items come from one shared definition everywhere', async () => {
+  const shared = await import('../../shared/settings.js')
+  const keys = shared.OUTFIT_ITEMS.map((item) => item.key)
+  assert.ok(keys.includes('earHide'))
+  // 호스트 설정 스키마: 항목마다 끔 기본값, 체형은 정의된 값만
+  const defaults = readLive(Config({}))
+  for (const key of keys) assert.equal(defaults[key], false, key)
+  assert.equal(defaults.bodyType, 'default')
+  assert.throws(() => Config({ bodyType: 'type3' }))
+  // 설정 화면·캐릭터 값: 같은 항목 + 체형
+  const h = clientHarness({ character: false, theme: false, translation: false })
+  try {
+    const prefs = h.client.internals.characterPrefs({ glasses: true })
+    assert.deepEqual(Object.keys(prefs.outfit), [...keys, 'bodyType'])
+    assert.equal(prefs.outfit.glasses, true)
+  } finally { h.dom.window.close() }
+  // 펫 Electron 메뉴용 산출물도 같은 정의 (빌드가 만든 pet/settings.cjs)
+  const pet = require('../../pet/settings.cjs')
+  assert.deepEqual(pet.OUTFIT_ITEMS, shared.OUTFIT_ITEMS)
+  assert.deepEqual(pet.BODY_TYPES, shared.BODY_TYPES)
+  const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
+  assert.match(main, /require\('\.\/settings\.cjs'\)/)
+  assert.match(main, /const MENU_OUTFIT = OUTFIT_ITEMS\.map\(/)
+})
 test('sleep minutes are bounded in schema and client settings', () => {
   assert.equal(Config.dict.idleSleepMinutes.meta.min, 0.5)
   assert.equal(Config.dict.idleSleepMinutes.meta.max, 60)

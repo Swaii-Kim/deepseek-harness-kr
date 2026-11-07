@@ -7,6 +7,8 @@
 // prefs: 플러그인 설정에서 온 값 { outfit, sleep, intro, mobile, drag, pageHidden }. 매 프레임·이벤트마다 읽으므로 setPrefs로 바꾸면 바로 반영된다.
 // onSetting(key, value): 펫 창 메뉴에서 바꾼 설정을 플러그인 설정에 저장하도록 알린다.
 // 반환: { setPrefs, togglePet, toggleCanvas, canvasHidden } — 플러그인 화면(plugin/client.js)이 쓰는 유일한 통로.
+import { OUTFIT_ITEMS, BODY_TYPES } from "../shared/settings.js";
+
 export function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
   const BASE = base;
   const prefs = { ...initialPrefs };
@@ -229,9 +231,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       if (life.stopped) return;   // 표정 파일을 받는 사이 꺼졌으면 여기서 멈춤
       const weight = {}, hold = {}, until = {};
       // 소품·옷: [설정 이름, 모델 파라미터, 켰을 때 값] (데스크톱 펫의 표정 파일과 같은 값)
-      const OUTFIT_PARAMS = [["glasses", "key11", 1], ["monocle", "key12", 1], ["skirt", "Clothes1", -1], ["chestClothes", "Clothes3", 1], ["shoesOff", "Clothes4", 1], ["tailHide", "Clothes5", -1]];
-      const OUTFIT_LINE = { glasses: "outfit_glasses", monocle: "outfit_glasses", skirt: "outfit_clothes", chestClothes: "outfit_clothes", shoesOff: "outfit_shoes", tailHide: "outfit_tail" };
-      const BODY_VALUE = { type1: 0.4, type2: 1 };   // 체형 = Clothes2 (기본 0, 체형 1 0.4, 체형 2 꼬마 1)
+      // 항목 정의는 shared/settings.js: [설정 이름, 모델 파라미터, 켰을 때 값], 켤 때 대사 묶음, 체형 = Clothes2 값
+      const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on]);
+      const OUTFIT_LINE = Object.fromEntries(OUTFIT_ITEMS.filter((item) => item.line).map((item) => [item.key, item.line]));
+      const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
       const outfitW = {};
       for (const [key] of OUTFIT_PARAMS) outfitW[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
       // 동물귀(#22): 파라미터가 아니라 모델의 별도 파트(Part159)다. 파트 ID로 런타임 인덱스를 찾고,
@@ -2597,8 +2600,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // ---------- 바깥 펫 창: 설정 패널 (우클릭 메뉴의 설정/크기에서 연다) ----------
       // 패널은 펫 창 안에만 만든다. 클릭이 통과되는 창이라, 패널이 열려 있는 동안에는 패널 영역도 클릭을 받도록
       // place()가 hitbox에 패널 사각형을 더하고, 패널이 들어갈 만큼 창도 키운다.
-      const PET_OUTFIT_ROWS = [["glasses", "뿔테 안경"], ["monocle", "외눈 안경"], ["skirt", "치마 길이 바꾸기"], ["chestClothes", "가슴 옷 바꾸기"], ["shoesOff", "신발 벗기"], ["tailHide", "꼬리 숨기기"], ["earHide", "동물귀 숨기기"]];
-      const PET_BODY_ROWS = [["default", "기본 체형"], ["type1", "체형 1"], ["type2", "체형 2 (꼬마)"]];
+      const PET_OUTFIT_ROWS = OUTFIT_ITEMS.map((item) => [item.key, item.ko]);
+      const PET_BODY_ROWS = BODY_TYPES.map((body) => [body.key, body.ko]);
       function petKFit() {   // 펫 창이 화면에 들어가며 그릴 수 있는 최대 배율
         return Math.min(PET_K_MAX, (screen.availHeight - PET_BUBBLE) / H, (screen.availWidth - 40) / W);
       }

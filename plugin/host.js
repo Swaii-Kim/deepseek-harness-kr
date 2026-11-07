@@ -8,6 +8,7 @@ import { normalize as normalizeTts } from '../plugins/dsh-tts/src/config.js'
 import { registerSpeechRoutes } from '../plugins/dsh-tts/src/index.js'
 import { createPetHandler, createPetManager, PET_PATH } from './pet-host.js'
 import { applyShortcutIcon } from './app-icon.js'
+import { OUTFIT_ITEMS, BODY_TYPES } from '../shared/settings.js'
 
 export const name = 'deepseek-harness-kr'
 export const inject = ['webServer', 'connection']
@@ -53,16 +54,9 @@ export const Config = z.object({
   character: z.boolean().default(true).volatile(),
   theme: z.boolean().default(true).volatile(),
   translation: z.boolean().default(true).volatile(),
-  // 소품·옷·체형 (데스크톱 펫의 "소품·옷" 메뉴와 같은 항목)
-  glasses: z.boolean().default(false).volatile(),
-  monocle: z.boolean().default(false).volatile(),
-  skirt: z.boolean().default(false).volatile(),
-  chestClothes: z.boolean().default(false).volatile(),
-  shoesOff: z.boolean().default(false).volatile(),
-  tailHide: z.boolean().default(false).volatile(),
-  // 동물귀 숨기기: 모델의 귀 파트(Part159)만 부드럽게 감춘다 (없는 모델에서는 표시만 되고 동작하지 않음)
-  earHide: z.boolean().default(false).volatile(),
-  bodyType: z.union([z.const('default'), z.const('type1'), z.const('type2')]).default('default').volatile(),
+  // 소품·옷·체형: 항목 정의는 shared/settings.js 하나 (펫 창 메뉴·설정 화면·캐릭터와 같은 목록)
+  ...Object.fromEntries(OUTFIT_ITEMS.map(({ key }) => [key, z.boolean().default(false).volatile()])),
+  bodyType: z.union(BODY_TYPES.map(({ key }) => z.const(key))).default('default').volatile(),
   tts: TtsConfig,
   // 시작할 때 가운데에서 크게 인사하는 등장 연출 (끄면 처음부터 제자리에 뜬다)
   intro: z.boolean().default(true).volatile(),

@@ -1,5 +1,22 @@
-// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.js)를 고친 뒤 npm run build 하세요.
+// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.js, shared/)를 고친 뒤 npm run build 하세요.
 (() => {
+  // shared/settings.js
+  var OUTFIT_ITEMS = [
+    { key: "glasses", ko: "뿔테 안경", en: "Glasses", param: "key11", on: 1, line: "outfit_glasses" },
+    { key: "monocle", ko: "외눈 안경", en: "Monocle", param: "key12", on: 1, line: "outfit_glasses" },
+    { key: "skirt", ko: "치마 길이 바꾸기", en: "Change skirt length", param: "Clothes1", on: -1, line: "outfit_clothes" },
+    { key: "chestClothes", ko: "가슴 옷 바꾸기", en: "Change top", param: "Clothes3", on: 1, line: "outfit_clothes" },
+    { key: "shoesOff", ko: "신발 벗기", en: "Take off shoes", param: "Clothes4", on: 1, line: "outfit_shoes" },
+    { key: "tailHide", ko: "꼬리 숨기기", en: "Hide tail", param: "Clothes5", on: -1, line: "outfit_tail" },
+    // 동물귀는 파라미터가 아니라 모델 파트(Part159)의 불투명도로 부드럽게 감춘다 (character/index.js의 earHide)
+    { key: "earHide", ko: "동물귀 숨기기", en: "Hide animal ears" }
+  ];
+  var BODY_TYPES = [
+    { key: "default", ko: "기본 체형", en: "Default", value: 0 },
+    { key: "type1", ko: "체형 1", en: "Body type 1", value: 0.4 },
+    { key: "type2", ko: "체형 2 (꼬마)", en: "Body type 2 (chibi)", value: 1 }
+  ];
+
   // character/index.js
   function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
     const BASE = base;
@@ -297,9 +314,9 @@
         }));
         if (life.stopped) return;
         const weight = {}, hold = {}, until = {};
-        const OUTFIT_PARAMS = [["glasses", "key11", 1], ["monocle", "key12", 1], ["skirt", "Clothes1", -1], ["chestClothes", "Clothes3", 1], ["shoesOff", "Clothes4", 1], ["tailHide", "Clothes5", -1]];
-        const OUTFIT_LINE = { glasses: "outfit_glasses", monocle: "outfit_glasses", skirt: "outfit_clothes", chestClothes: "outfit_clothes", shoesOff: "outfit_shoes", tailHide: "outfit_tail" };
-        const BODY_VALUE = { type1: 0.4, type2: 1 };
+        const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on]);
+        const OUTFIT_LINE = Object.fromEntries(OUTFIT_ITEMS.filter((item) => item.line).map((item) => [item.key, item.line]));
+        const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
         const outfitW = {};
         for (const [key] of OUTFIT_PARAMS) outfitW[key] = (prefs.outfit || {})[key] ? 1 : 0;
         const EAR_PART_ID = "Part159";
@@ -3161,8 +3178,8 @@
             renderPetPanel();
           }
         }, { capture: true, passive: false });
-        const PET_OUTFIT_ROWS = [["glasses", "뿔테 안경"], ["monocle", "외눈 안경"], ["skirt", "치마 길이 바꾸기"], ["chestClothes", "가슴 옷 바꾸기"], ["shoesOff", "신발 벗기"], ["tailHide", "꼬리 숨기기"], ["earHide", "동물귀 숨기기"]];
-        const PET_BODY_ROWS = [["default", "기본 체형"], ["type1", "체형 1"], ["type2", "체형 2 (꼬마)"]];
+        const PET_OUTFIT_ROWS = OUTFIT_ITEMS.map((item) => [item.key, item.ko]);
+        const PET_BODY_ROWS = BODY_TYPES.map((body) => [body.key, body.ko]);
         function petKFit() {
           return Math.min(PET_K_MAX, (screen.availHeight - PET_BUBBLE) / H, (screen.availWidth - 40) / W);
         }
