@@ -321,6 +321,19 @@ test('펫 창이 숨으면 페이지에 그리기 중지를 알리고, 페이지
   assert.match(dsc, /처음엔 숨은 채 대기/)
 })
 
+test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마다 깨우지 않고, open 이 오면 다시 돈다', async () => {
+  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  // 상호작용 매니저의 Ticker.system 구독은 루프가 쉬는 동안만 끄고, 깨울 때 되돌린다 (autoInteract: false 라 쓰지 않음)
+  assert.match(dsc, /const systemTicker = \(on\) => \{ try \{ app\.renderer\.plugins\.interaction\.useSystemTicker = on; \} catch \{\} \};/)
+  assert.match(dsc, /const wakeRaf = \(\) => \{ if \(rafIdle\) \{ rafIdle = false; systemTicker\(true\); requestAnimationFrame\(raf\); \} \};/)
+  assert.match(dsc, /autoInteract: false/)
+  // 숨은 펫(petPower=false)은 루프를 다음 프레임에 이어 가지 않는다
+  assert.match(dsc, /if \(PET && !petPower\) \{ rafIdle = true; systemTicker\(false\); return; \}[^\n]*\n\s*requestAnimationFrame\(raf\);/)
+  // power on·open 은 루프를 다시 깨운다
+  assert.match(dsc, /petPower = !!m\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
+  assert.match(dsc, /m\.type === "open"\) \{[^\n]*\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
+})
+
 test('펫 창 따라오기: 커서는 펫 프로세스가 직접 읽어 페이지로 보내고, 창 안 캐릭터는 위치를 HTTP로 보내지 않는다', async () => {
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
   const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')

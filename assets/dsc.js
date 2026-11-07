@@ -67,6 +67,10 @@
       const bubble = document.createElement("div"); bubble.id = "dsc-bubble";
       document.body.append(canvas, bubble);
       const app = new PIXI.Application({ view: canvas, width: W, height: H, sharedTicker: false, backgroundAlpha: 0, antialias: true, autoDensity: true, resolution: (devicePixelRatio || 1) * 1.5 });   // 1.5배로 그려 줄여 보여 줌
+      // PIXI 상호작용(InteractionManager)은 쓰지 않는다(autoInteract: false, 터치 판정은 hitAt). 이 매니저의 Ticker.system 구독은
+      // app.ticker를 멈춰도 프레임마다 화면을 깨우므로, 배치 루프가 쉬는 동안만 끈다.
+      // (늘 꺼 두면 캐릭터가 보이는 동안 renderer 문맥 전환이 약 7% 늘어서 보이는 동안은 원래대로 둔다, 실측)
+      const systemTicker = (on) => { try { app.renderer.plugins.interaction.useSystemTicker = on; } catch {} };
       const model = await PIXI.live2d.Live2DModel.from(BASE + "model/model.model3.json", { autoUpdate: false, autoInteract: false, idleMotionGroup: "Idle" });
       app.stage.addChild(model);
       // 전용 티커로 모델도 갱신하고 긴 프레임은 제한
@@ -756,6 +760,9 @@
       // 모바일 숨김 설정(mobileCharacter=false)이면 칩도 남기지 않고, 설정을 되돌리면 다음 프레임에 다시 보인다.
       const hideChipVisible = ({ pet = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet && isHidden && !mobileHiddenNow;
       let placeErrorWarned = false;
+      // 배치 루프를 쉬는 중인지. 숨은 펫 창은 배치할 것이 없으므로 쉬고, 다시 필요해지면 wakeRaf로 깨운다
+      let rafIdle = false;
+      const wakeRaf = () => { if (rafIdle) { rafIdle = false; systemTicker(true); requestAnimationFrame(raf); } };
       const raf = () => {
         if (hidden) {
           // 설정이 바뀌어도 복구 칩이 따라가게 한다 (모바일 숨김 설정이면 칩을 남기지 않는다)
@@ -767,6 +774,7 @@
             if (!placeErrorWarned) { placeErrorWarned = true; console.warn("캐릭터 배치 실패:", error); }
           }
         }
+        if (PET && !petPower) { rafIdle = true; systemTicker(false); return; }   // 펫 창이 숨음: open 이 오면 다시 시작
         requestAnimationFrame(raf);
       };
       requestAnimationFrame(raf);
@@ -2856,6 +2864,7 @@
             if (!m.on) { petTracking = false; petGrab = null; closePetPanel(); }
             petPower = !!m.on;
             setRender(petPower);
+            if (petPower) wakeRaf();
           } else if (m.type === "panel") {   // 우클릭 메뉴: 설정(또는 크기) 패널 열기
             openPetPanel(m.focus);
           } else if (m.type === "size") {   // 우클릭 메뉴: 정해진 배율로 (기본 대비)
@@ -2863,6 +2872,7 @@
           } else if (m.type === "open") {   // 창 밖으로 던진 자리에서 나타나 남은 거리만큼 미끄러짐. follow면 놓을 때까지 창 안 커서를 따라옴
             petPower = true;
             setRender(true);
+            wakeRaf();
             // 이전 회차에 남은 상태(끄는 중·식은땀·산책·도망)를 모두 지우고 시작
             for (const t of walk.timers) clearTimeout(t);
             walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; drag.pending = null; PET.press(false);
