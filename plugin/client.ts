@@ -7,6 +7,46 @@ import { createLifetime } from '../character/lifetime.ts'
 import * as ttsClient from '../plugins/dsh-tts/src/client/index.js'
 import KOREAN_DICTIONARIES from './locales.ko.json'
 import { OUTFIT_ITEMS, BODY_TYPES as BODY_TYPE_ITEMS } from '../shared/settings.js'
+import type { Lifetime } from '../character/lifetime.ts'
+import type { CharacterApi, CharacterPrefs } from '../character/types.ts'
+import type { ConfigForm, CredentialService, DshContext, InstallOutcome, PluginManager, RemoteError } from './dsh-types.ts'
+
+/** 이 플러그인의 설정값 (스키마는 plugin/host.js). 소품·옷 키는 OUTFIT_ITEMS에서 오므로 이름으로도 읽는다 */
+interface PluginSettings {
+  [field: string]: unknown
+  character?: boolean
+  mobileCharacter?: boolean
+  intro?: boolean
+  appIcon?: boolean
+  theme?: boolean
+  translation?: boolean
+  bodyType?: string
+  idleSleep?: boolean
+  idleSleepMinutes?: number | string
+  characterToggleKey?: string
+  petToggleKey?: string
+  canvasToggle?: boolean
+  canvasToggleKey?: string
+  dragKey?: string
+  tts?: TtsSettings
+}
+/** 말풍선 음성 설정 (plugins/dsh-tts 설정과 같은 모양) */
+interface TtsSettings {
+  enabled?: boolean
+  openai?: {
+    baseUrl?: string; model?: string; voice?: string; extraBody?: Record<string, unknown>; headers?: Record<string, string>
+    textPrefix?: string; timeoutMs?: number; apiKeyEnv?: string
+  }
+  stream?: { pcmSampleRate?: number }
+  voiceLines?: Record<string, boolean>
+  cache?: { enabled?: boolean }
+}
+/** 단축키 해석에 쓰는 키 입력 (KeyboardEvent·React 키 이벤트·테스트의 일반 객체) */
+interface KeyInput { key: string; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean; metaKey?: boolean }
+/** 녹음 중 키 입력 하나에 대한 동작 (shortcutKeyDown·dragKeyDown) */
+type RecordKeyAction = { action: 'leave' } | { action: 'cancel' } | { action: 'clear' } | { action: 'wait'; held: string }
+type ShortcutKeyAction = RecordKeyAction | { action: 'save'; combo: string }
+type DragKeyAction = RecordKeyAction | { action: 'save'; key: string }
 
 const ROOT = '/deepseek-harness-kr/assets/'
 const SLOT = '__deepseekHarnessKrDispose'
@@ -16,9 +56,9 @@ const OUTFIT_FIELDS = OUTFIT_ITEMS.map(({ key, ko, en }) => [key, ko, en])
 const BODY_TYPES = BODY_TYPE_ITEMS.map(({ key, ko, en }) => [key, ko, en])
 // 이 두 화면에서는 창 안 캐릭터만 숨긴다 (대화 화면과 바깥 펫 창은 그대로).
 // 패널 id는 URL이 아니라 layout 서비스의 activePanelId로 판정한다.
-const HIDDEN_IN_WINDOW_PANELS = new Set(['plugins', 'schedules'])
-const panelHidesInWindowCharacter = (activePanelId: string) => HIDDEN_IN_WINDOW_PANELS.has(activePanelId)
-const sleepMinutes = (value: string) => {
+const HIDDEN_IN_WINDOW_PANELS = new Set<string | undefined>(['plugins', 'schedules'])
+const panelHidesInWindowCharacter = (activePanelId: string | undefined) => HIDDEN_IN_WINDOW_PANELS.has(activePanelId)
+const sleepMinutes = (value: number | string | undefined) => {
   const n = Number(value ?? 1)
   return Number.isFinite(n) ? Math.min(60, Math.max(0.5, n)) : 1
 }
@@ -29,7 +69,7 @@ const PET_SHORTCUT_HINT_ID = 'deepseek-harness-kr-pet-shortcut-hint'
 const DRAG_HINT_ID = 'deepseek-harness-kr-drag-hint'
 const CANVAS_HINT_ID = 'deepseek-harness-kr-canvas-hint'
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock'])
-const MODIFIER_ALIASES = new Map([
+const MODIFIER_ALIASES = new Map<string, 'ctrl' | 'shift' | 'alt' | 'meta'>([
   ['ctrl', 'ctrl'], ['control', 'ctrl'],
   ['shift', 'shift'],
   ['alt', 'alt'], ['option', 'alt'],
@@ -37,14 +77,14 @@ const MODIFIER_ALIASES = new Map([
 ])
 const isMacPlatform = () => /Mac|iPhone|iPad|iPod/i.test(typeof navigator === 'object' && navigator ? String(navigator.platform || navigator.userAgent || '') : '')
 // 문자열 키를 저장·비교용 토큰으로: Space·+는 이름으로 바꿔 '+' 구분자와 겹치지 않게 한다.
-const shortcutKeyToken = (key: string) => {
+const shortcutKeyToken = (key: string | undefined) => {
   const text = String(key ?? '')
   if (text === ' ') return 'space'
   if (text === '+') return 'plus'
   return text.toLowerCase()
 }
 // 저장된 문자열("Ctrl+Shift+D")을 비교용 조합으로. 키가 없으면(수식 키만) null.
-function parseShortcut(value) {
+function parseShortcut(value: unknown) {
   const combo = { ctrl: false, shift: false, alt: false, meta: false, key: '' }
   for (const raw of String(value ?? '').split('+')) {
     const token = raw.trim()
@@ -56,10 +96,10 @@ function parseShortcut(value) {
   return combo.key ? combo : null
 }
 // 실제 키 입력을 저장할 문자열로. 수식 키만 눌렀으면 ''.
-function shortcutFromEvent(event) {
+function shortcutFromEvent(event: KeyInput) {
   const key = String(event?.key ?? '')
   if (!key || MODIFIER_KEYS.has(key)) return ''
-  const parts = []
+  const parts: string[] = []
   if (event.ctrlKey) parts.push('Ctrl')
   if (event.altKey) parts.push('Alt')
   if (event.shiftKey) parts.push('Shift')
@@ -67,14 +107,14 @@ function shortcutFromEvent(event) {
   parts.push(key === ' ' ? 'Space' : key === '+' ? 'Plus' : key.length === 1 ? key.toUpperCase() : key)
   return parts.join('+')
 }
-function matchesShortcut(value, event) {
+function matchesShortcut(value: unknown, event: KeyInput | null | undefined) {
   const combo = parseShortcut(value)
   if (!combo || !event) return false
   return combo.ctrl === !!event.ctrlKey && combo.alt === !!event.altKey && combo.shift === !!event.shiftKey
     && combo.meta === !!event.metaKey && combo.key === shortcutKeyToken(event.key)
 }
-const heldModifiers = (event) => {
-  const parts = []
+const heldModifiers = (event: KeyInput) => {
+  const parts: string[] = []
   if (event.ctrlKey) parts.push('Ctrl')
   if (event.altKey) parts.push('Alt')
   if (event.shiftKey) parts.push('Shift')
@@ -83,7 +123,7 @@ const heldModifiers = (event) => {
 }
 // 녹음 중 키 입력 하나를 동작으로 바꾼다. 화면 없이도 검사할 수 있게 순수 함수로 둔다.
 // leave: 탭은 포커스를 옮기도록 그냥 둔다 · cancel: Esc · clear: Backspace/Delete · wait: 수식 키만 · save: 조합 완성
-function shortcutKeyDown(event) {
+function shortcutKeyDown(event: KeyInput): ShortcutKeyAction {
   if (event.key === 'Tab') return { action: 'leave' }
   if (event.key === 'Escape') return { action: 'cancel' }
   if (event.key === 'Backspace' || event.key === 'Delete') return { action: 'clear' }
@@ -94,7 +134,7 @@ function shortcutKeyDown(event) {
 // 이동 키는 단일 키만 쓴다: 수식 키 하나는 떼는 순간(wait → keyup에서 저장), 그 밖의 키 하나는 누르는 순간 저장.
 const MODIFIER_LABELS = new Map([['Control', 'Ctrl'], ['Alt', 'Alt'], ['Shift', 'Shift'], ['Meta', isMacPlatform() ? 'Cmd' : 'Meta']])
 const DRAG_KEY_LABELS = new Map([[' ', 'Space'], ['+', 'Plus']])
-function dragKeyDown(event) {
+function dragKeyDown(event: KeyInput): DragKeyAction {
   if (event.key === 'Tab') return { action: 'leave' }
   if (event.key === 'Escape') return { action: 'cancel' }
   if (event.key === 'Backspace' || event.key === 'Delete') return { action: 'clear' }
@@ -108,20 +148,20 @@ function dragKeyDown(event) {
   return { action: 'save', key: label }
 }
 
-function stylesheet(life, file: string) {
+function stylesheet(life: Lifetime, file: string) {
   const link = document.createElement('link')
   link.rel = 'stylesheet'; link.href = ROOT + file
   document.head.appendChild(link)
   life.add(() => link.remove())
 }
 
-function mountLayout(life) {
-  const owned = new Map()
+function mountLayout(life: Lifetime) {
+  const owned = new Map<Element, Set<string>>()
   const mark = (node: Element, name: string) => {
     if (node.classList.contains(name)) return
     node.classList.add(name)
     if (!owned.has(node)) owned.set(node, new Set())
-    owned.get(node).add(name)
+    owned.get(node)!.add(name)
   }
   const tag = () => {
     document.querySelectorAll('[class*="_card"]').forEach((node) => {
@@ -140,7 +180,7 @@ function mountLayout(life) {
   life.add(() => { for (const [node, names] of owned) for (const name of names) node.classList.remove(name) })
 }
 
-function mountTheme(ctx, life) {
+function mountTheme(ctx: DshContext, life: Lifetime) {
   stylesheet(life, 'theme.css')
   life.add(() => {
     if (ctx.theme.getTheme().active.colorScheme === 'dark') document.body.setAttribute('data-ds-dark-theme', '')
@@ -148,7 +188,7 @@ function mountTheme(ctx, life) {
   })
 }
 
-function mountTranslation(ctx, life) {
+function mountTranslation(ctx: DshContext, life: Lifetime) {
   if (!ctx.locale.getLocale().locales.some((locale) => locale.id.toLowerCase() === 'ko')) {
     life.add(ctx.locale.addLanguage({ id: 'ko', label: '한국어', fallback: 'en' }))
   }
@@ -160,14 +200,14 @@ function mountTranslation(ctx, life) {
 // 캐릭터 연결: 설정값·패널 숨김 상태를 들고 있다가, 캐릭터 기능이 켜지면 넘겨주고 바뀔 때마다 전달한다.
 // 단축키·설정 화면은 이 객체를 통해서만 캐릭터를 부른다 (window 전역을 쓰지 않음). apply마다 하나씩 만든다.
 function createCharacterLink() {
-  let character = null, prefs = {}, pageHidden = false
+  let character: CharacterApi | null = null, prefs: CharacterPrefs = {}, pageHidden = false
   return {
     get character() { return character },
     get prefs() { return prefs },
     get pageHidden() { return pageHidden },
     // 캐릭터 API를 붙인다. 돌려준 함수로 떼며, 그사이 다른 캐릭터가 붙었으면 건드리지 않는다
-    attach(next) { character = next; return () => { if (character === next) character = null } },
-    setPrefs(next) { prefs = next; character?.setPrefs(next) },
+    attach(next: CharacterApi) { character = next; return () => { if (character === next) character = null } },
+    setPrefs(next: CharacterPrefs) { prefs = next; character?.setPrefs(next) },
     setPageHidden(next: boolean) {
       if (pageHidden === next) return
       pageHidden = next
@@ -176,9 +216,10 @@ function createCharacterLink() {
     initialPrefs() { return { ...prefs, pageHidden } },
   }
 }
+type CharacterLink = ReturnType<typeof createCharacterLink>
 
 // 플러그인 설정값 → 캐릭터가 읽는 값 (순수 함수)
-function characterPrefs(value) {
+function characterPrefs(value: PluginSettings) {
   return {
     // 캐릭터는 매 프레임 이 값을 읽어 소품·옷·체형을 바로 바꾼다 (다시 띄우지 않음)
     outfit: Object.fromEntries([...OUTFIT_FIELDS.map(([field]) => [field, value[field] === true]), ['bodyType', value.bodyType || 'default']]),
@@ -193,7 +234,7 @@ function characterPrefs(value) {
   }
 }
 
-function startCharacter(life, link, onSetting) {
+function startCharacter(life: Lifetime, link: CharacterLink, onSetting: (key: string, value: unknown) => void) {
   stylesheet(life, 'character.css')
   const character = createCharacter({ base: ROOT, life, prefs: link.initialPrefs(), onSetting })
   life.add(link.attach(character))
@@ -203,7 +244,7 @@ function startCharacter(life, link, onSetting) {
 // installBundle(설치할 때와 같은 기능)을 같은 설치 주소로 다시 불러 최신 커밋을 받는다.
 
 // GitHub 설치 주소 → { owner, repo, ref }. GitHub이 아니면 null.
-function githubSource(spec: string) {
+function githubSource(spec: string | null) {
   if (typeof spec !== 'string') return null
   const text = spec.trim()
   const short = text.match(/^github:([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:#(.+))?$/i)
@@ -213,8 +254,8 @@ function githubSource(spec: string) {
 }
 
 // "1.2.3" 형식 비교. 앞이 크면 양수. 뒤에 붙은 -rc 등은 같은 번호의 정식 버전보다 낮게 본다.
-function compareVersions(a: string, b: string) {
-  const parse = (v: string) => {
+function compareVersions(a: string | null | undefined, b: string | null | undefined) {
+  const parse = (v: string | null | undefined) => {
     const [core, pre] = String(v ?? '').trim().replace(/^v/i, '').split('-', 2)
     return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre: pre ?? null }
   }
@@ -230,19 +271,26 @@ function compareVersions(a: string, b: string) {
 }
 
 const PENDING_KEY = 'deepseek-harness-kr:update'
+/** 제거 → 다시 설치 업데이트 동안 localStorage에 남겨 두는 요청 (새 화면이 이어받는다) */
+interface PendingUpdate { requestId?: unknown; from?: string | null; to?: string | null; source?: string; at?: number }
 const browserStorage = {
-  read() { try { return JSON.parse(window.localStorage.getItem(PENDING_KEY) || 'null') } catch { return null } },
-  write(value) { try { window.localStorage.setItem(PENDING_KEY, JSON.stringify(value)) } catch {} },
+  read(): PendingUpdate | null { try { return JSON.parse(window.localStorage.getItem(PENDING_KEY) || 'null') } catch { return null } },
+  write(value: PendingUpdate) { try { window.localStorage.setItem(PENDING_KEY, JSON.stringify(value)) } catch {} },
   clear() { try { window.localStorage.removeItem(PENDING_KEY) } catch {} },
 }
 
+/** 업데이트 화면 상태. phase마다 updateSection이 안내 문구를 고른다 */
+type UpdatePhase = 'unavailable' | 'checking' | 'current' | 'available' | 'confirm' | 'updating' | 'updated' | 'restart'
+  | 'unsupported' | 'pinned' | 'check-failed' | 'update-failed'
+interface UpdateSnapshot { phase: UpdatePhase; current?: string | null; latest?: string | null; source?: string | null; error?: string; from?: string | null }
+
 function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) => window.fetch(...args), storage = browserStorage, now = () => Date.now() }: { fetch?: typeof fetch; storage?: typeof browserStorage; now?: () => number } = {}) {
   const listeners = new Set<() => void>()
-  let manager = null, generation = 0
-  let snapshot: { phase: string; current?: string; latest?: string; source?: any; error?: string; from?: string } = { phase: 'unavailable' }
-  const set = (patch) => { snapshot = { ...snapshot, ...patch }; for (const fn of [...listeners]) fn() }
-  const message = (error) => (error && (error.message || error.code || String(error))) || ''
-  const failure = (value) => [value?.error?.code, value?.error?.diagnostic].filter(Boolean).join(': ') || 'failed'
+  let manager: PluginManager | null = null, generation = 0
+  let snapshot: UpdateSnapshot = { phase: 'unavailable' }
+  const set = (patch: Partial<UpdateSnapshot>) => { snapshot = { ...snapshot, ...patch }; for (const fn of [...listeners]) fn() }
+  const message = (error: { message?: string; code?: string } | null | undefined) => (error && (error.message || error.code || String(error))) || ''
+  const failure = (value: { error?: RemoteError } | undefined) => [value?.error?.code, value?.error?.diagnostic].filter(Boolean).join(': ') || 'failed'
   // 이전 화면이 시작한 업데이트(자기 자신을 지웠다 다시 설치)가 끝나 새 버전이 뜬 경우 결과를 이어받는다.
   const resume = async (mine: number) => {
     const pending = storage.read()
@@ -251,7 +299,7 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
     if (snapshot.current && pending.to && compareVersions(snapshot.current, pending.to) >= 0) {
       storage.clear(); set({ phase: 'updated', from: pending.from, error: '' }); return true
     }
-    const waited = await manager.waitForInstall?.(pending.requestId)
+    const waited = await manager!.waitForInstall?.(pending.requestId)
     if (mine !== generation) return true
     if (waited?.ok && waited.value) {
       storage.clear()
@@ -287,10 +335,10 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
       if (mine !== generation) return
       set({ phase: compareVersions(latest, current) > 0 ? 'available' : 'current' })
     } catch (error) {
-      if (mine === generation) set({ phase: 'check-failed', error: message(error) })
+      if (mine === generation) set({ phase: 'check-failed', error: message(error as Error) })
     }
   }
-  const settle = (value) => {
+  const settle = (value: InstallOutcome) => {
     if (value.application === 'applied' || value.application === 'overridden') set({ phase: 'updated', from: snapshot.current })
     else if (value.application === 'restart-required') set({ phase: 'restart' })
     else if (value.application === 'cancelled') set({ phase: 'available', error: 'cancelled' })
@@ -321,13 +369,13 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
       storage.clear()
       if (mine === generation) settle(result.value)
     } catch (error) {
-      if (mine === generation) set({ phase: 'update-failed', error: message(error) })
+      if (mine === generation) set({ phase: 'update-failed', error: message(error as Error) })
     }
   }
   return {
-    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    subscribe(fn: () => void) { listeners.add(fn); return () => listeners.delete(fn) },
     getSnapshot: () => snapshot,
-    attach(next) { manager = next; check() },
+    attach(next: PluginManager) { manager = next; check() },
     detach() { manager = null; generation++; set({ phase: 'unavailable' }) },
     check,
     update,
@@ -335,6 +383,7 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
     confirm,
   }
 }
+type Updater = ReturnType<typeof createUpdater>
 
 // ---------- 말풍선 음성 (TTS) ----------
 // 재생·입 모양 코드는 plugins/dsh-tts/src/client 원본을 그대로 가져다 쓴다(모듈 수준 상태 없음).
@@ -342,24 +391,25 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
 const DEFAULT_KEY_REF = 'DSH_TTS_API_KEY'
 
 // 이 기능이 붙어 있는 동안만 dsc:say를 듣는다. 늦게 끝난 초기화는 feature.add가 바로 정리한다.
-function mountTts(feature) {
-  ttsClient.apply({ effect: (fn) => feature.add(fn()) })
+function mountTts(feature: Lifetime) {
+  ttsClient.apply({ effect: (fn: () => () => void) => feature.add(fn()) })
     .catch((error) => console.warn('DeepSeek짱 음성:', error))
 }
 
 // 설정이 바뀌면 다시 붙일지 정하는 값. 캐릭터가 꺼져 있으면 읽을 말풍선이 없다.
-function ttsSignature(value) {
+function ttsSignature(value: PluginSettings) {
   const tts = value.tts
   if (value.character === false || tts?.enabled !== true || !tts.openai?.baseUrl) return null
   return JSON.stringify([tts.openai.baseUrl, tts.stream?.pcmSampleRate, tts.voiceLines])
 }
 
 // API 키는 Harness credentials에 저장한다. 화면은 "설정됨" 여부만 알고 값은 받지 않는다.
+interface KeySnapshot { available: boolean; configured: boolean; source: string | null }
 function createKeyStore() {
   const listeners = new Set<() => void>()
-  let remote = null, ref = DEFAULT_KEY_REF, generation = 0
-  let snapshot: { available: boolean; configured: boolean; source: string | null } = { available: false, configured: false, source: null }
-  const set = (next) => { snapshot = next; for (const fn of [...listeners]) fn() }
+  let remote: CredentialService | null = null, ref = DEFAULT_KEY_REF, generation = 0
+  let snapshot: KeySnapshot = { available: false, configured: false, source: null }
+  const set = (next: KeySnapshot) => { snapshot = next; for (const fn of [...listeners]) fn() }
   const refresh = async () => {
     const mine = ++generation
     if (!remote || !ref) { set({ available: !!remote, configured: false, source: null }); return }
@@ -371,14 +421,14 @@ function createKeyStore() {
     } catch { if (mine === generation) set({ available: true, configured: false, source: null }) }
   }
   return {
-    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    subscribe(fn: () => void) { listeners.add(fn); return () => listeners.delete(fn) },
     getSnapshot: () => snapshot,
     get ref() { return ref },
-    setRef(next) { const name = typeof next === 'string' ? next : DEFAULT_KEY_REF; if (name !== ref) { ref = name; refresh() } },
-    attach(next) { remote = next; refresh() },
+    setRef(next: unknown) { const name = typeof next === 'string' ? next : DEFAULT_KEY_REF; if (name !== ref) { ref = name; refresh() } },
+    attach(next: CredentialService) { remote = next; refresh() },
     detach() { remote = null; generation++; set({ available: false, configured: false, source: null }) },
     changed(name: string) { if (name === ref) refresh() },
-    async save(value) {
+    async save(value: string) {
       if (!remote || !ref) return false
       const response = await remote.set(ref, value)
       await refresh()
@@ -386,13 +436,21 @@ function createKeyStore() {
     },
   }
 }
+type KeyStore = ReturnType<typeof createKeyStore>
 
-const sectionStyle = { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 }
-const fieldStyle = { display: 'grid', gap: 4 }
-const inputStyle = { width: '100%', boxSizing: 'border-box' }
+const sectionStyle: React.CSSProperties = { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 }
+const fieldStyle: React.CSSProperties = { display: 'grid', gap: 4 }
+const inputStyle: React.CSSProperties = { width: '100%', boxSizing: 'border-box' }
+
+/** TtsField 속성. commit은 저장하고 문제가 있으면 안내 문구를 돌려준다 */
+interface TtsFieldProps {
+  label: string; hint?: string; value?: string; placeholder?: string; disabled?: boolean; multiline?: boolean
+  type?: string; min?: number; max?: number; step?: number
+  commit(draft: string): string | undefined | Promise<string>
+}
 
 // 입력 중에는 초안을 들고 있다가, 포커스를 벗어나거나 Enter를 누르면 저장한다.
-function TtsField({ label, hint, value, placeholder, disabled, multiline, type, min, max, step, commit }: Record<string, any>) {
+function TtsField({ label, hint, value, placeholder, disabled, multiline, type, min, max, step, commit }: TtsFieldProps) {
   const shown = value ?? ''
   const [draft, setDraft] = React.useState(shown)
   const [error, setError] = React.useState('')
@@ -402,7 +460,7 @@ function TtsField({ label, hint, value, placeholder, disabled, multiline, type, 
     const problem = await commit(draft)
     setError(problem || '')
   }
-  const onKeyDown = (event) => { if (!multiline && event.key === 'Enter') event.currentTarget.blur() }
+  const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => { if (!multiline && event.key === 'Enter') event.currentTarget.blur() }
   const input = React.createElement(multiline ? 'textarea' : 'input', {
     style: inputStyle, value: draft, placeholder, disabled, type: multiline ? undefined : (type || 'text'), rows: multiline ? 3 : undefined,
     min, max, step, spellCheck: false, onChange: (event: { target: HTMLInputElement }) => setDraft(event.target.value), onBlur: save, onKeyDown,
@@ -415,7 +473,7 @@ function TtsField({ label, hint, value, placeholder, disabled, multiline, type, 
 }
 
 // JSON 칸: 객체만 받는다. 빈 칸은 {}.
-function parseJsonObject(text: string, ko) {
+function parseJsonObject(text: string, ko: boolean) {
   const trimmed = text.trim()
   if (trimmed === '') return { value: {} }
   try {
@@ -425,7 +483,7 @@ function parseJsonObject(text: string, ko) {
   return { error: ko ? '{ "이름": 값 } 형태의 JSON 객체를 넣어 주세요.' : 'Enter a JSON object such as { "name": value }.' }
 }
 
-function TtsKeyField({ keys, ko, disabled }) {
+function TtsKeyField({ keys, ko, disabled }: { keys: KeyStore; ko: boolean; disabled: boolean }) {
   const key = React.useSyncExternalStore((fn) => keys.subscribe(fn), () => keys.getSnapshot(), () => keys.getSnapshot())
   const [draft, setDraft] = React.useState('')
   const [message, setMessage] = React.useState('')
@@ -455,17 +513,17 @@ const VOICE_LINES = [
   ['others', '그 밖의 대사 (터치 반응 등)', 'Other lines (touch reactions, …)'],
 ]
 
-const groupStyle = { display: 'grid', gap: 10, borderTop: '1px dashed rgba(127,127,127,.2)', paddingTop: 10 }
-const groupTitleStyle = { fontSize: '0.85em', fontWeight: 600, opacity: 0.75 }
-const toggleRow = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24 }
+const groupStyle: React.CSSProperties = { display: 'grid', gap: 10, borderTop: '1px dashed rgba(127,127,127,.2)', paddingTop: 10 }
+const groupTitleStyle: React.CSSProperties = { fontSize: '0.85em', fontWeight: 600, opacity: 0.75 }
+const toggleRow: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24 }
 
 // 소제목과 구분선으로 묶은 한 덩어리.
-function ttsGroup(title, ...children) {
+function ttsGroup(title: string, ...children: React.ReactNode[]) {
   return React.createElement('div', { role: 'group', 'aria-label': title, style: groupStyle },
     React.createElement('span', { style: groupTitleStyle }, title), ...children)
 }
 
-function TtsSection({ form, keys, ko, writable, tts }) {
+function TtsSection({ form, keys, ko, writable, tts }: { form: ConfigForm<PluginSettings>; keys: KeyStore; ko: boolean; writable?: boolean; tts?: TtsSettings }) {
   const [error, setError] = React.useState('')
   const t = (k: string, e: string) => (ko ? k : e)
   const v = tts ?? {}, openai = v.openai ?? {}
@@ -473,27 +531,27 @@ function TtsSection({ form, keys, ko, writable, tts }) {
   const write = async (path: string[], value: unknown) => {
     setError('')
     try {
-      if (await form.mutate([{ op: 'set', path: ['tts', ...path], value }])) return ''
+      if (await form.mutate!([{ op: 'set', path: ['tts', ...path], value }])) return ''
     } catch {}
     const failed = t('설정을 저장하지 못했습니다.', 'Could not save settings.')
     setError(failed)
     return failed
   }
-  const text = (path: string[], label: string, extra: Record<string, any> = {}) => React.createElement(TtsField, { key: path.join('.'), label, disabled: off, commit: (draft: string) => write(path, draft.trim()), ...extra })
+  const text = (path: string[], label: string, extra: Partial<TtsFieldProps> = {}) => React.createElement(TtsField, { key: path.join('.'), label, disabled: off, commit: (draft: string) => write(path, draft.trim()), ...extra })
   const json = (path: string[], label: string, value: unknown, placeholder: string, hint?: string) => text(path, label, {
     multiline: true, placeholder, hint, value: value && Object.keys(value).length ? JSON.stringify(value, null, 2) : '',
     commit: (draft: string) => { const parsed = parseJsonObject(draft, ko); return parsed.error ? parsed.error : write(path, parsed.value) },
   })
-  const number = (path: string[], label: string, value: unknown, min: number, extra: { max?: number; [key: string]: unknown } = {}) => text(path, label, {
+  const number = (path: string[], label: string, value: unknown, min: number, extra: Partial<TtsFieldProps> = {}) => text(path, label, {
     type: 'number', min, max: extra.max, step: 1, value: value === undefined ? '' : String(value), ...extra,
-    commit: (draft) => { const n = Number(draft); return Number.isInteger(n) && n >= min && n <= (extra.max ?? Infinity) ? write(path, n) : t(min + '~' + extra.max + ' 범위의 정수를 넣어 주세요.', 'Enter a whole number from ' + min + ' to ' + extra.max + '.') },
+    commit: (draft: string) => { const n = Number(draft); return Number.isInteger(n) && n >= min && n <= (extra.max ?? Infinity) ? write(path, n) : t(min + '~' + extra.max + ' 범위의 정수를 넣어 주세요.', 'Enter a whole number from ' + min + ' to ' + extra.max + '.') },
   })
   // 화면에서는 초, 저장은 ms.
-  const seconds = (path: string[], label: string, ms) => text(path, label, {
+  const seconds = (path: string[], label: string, ms: number | undefined) => text(path, label, {
     type: 'number', min: 1, max: 600, step: 0.001, value: ms === undefined ? '' : String(ms / 1000),
-    commit: (draft) => { const n = Number(draft); return Number.isFinite(n) && n >= 1 && n <= 600 ? write(path, Math.round(n * 1000)) : t('1~600초로 넣어 주세요.', 'Enter 1 to 600 seconds.') },
+    commit: (draft: string) => { const n = Number(draft); return Number.isFinite(n) && n >= 1 && n <= 600 ? write(path, Math.round(n * 1000)) : t('1~600초로 넣어 주세요.', 'Enter 1 to 600 seconds.') },
   })
-  const check = (path, label, checked: boolean) => React.createElement('label', { key: path.join('.'), style: toggleRow },
+  const check = (path: string[], label: string, checked: boolean) => React.createElement('label', { key: path.join('.'), style: toggleRow },
     React.createElement('span', null, label),
     React.createElement('input', { type: 'checkbox', checked, disabled: off, onChange: (event) => write(path, event.target.checked) }))
   const serverDefault = t('비우면 서버 기본값', 'Empty = server default')
@@ -525,7 +583,7 @@ function TtsSection({ form, keys, ko, writable, tts }) {
     error ? React.createElement('p', { role: 'alert' }, error) : null)
 }
 
-function updateSection(updater, ko) {
+function updateSection(updater: Updater, ko: boolean) {
   const s = updater.getSnapshot()
   const t = (k: string, e: string) => (ko ? k : e)
   const versions = [s.current && t('현재 ' + s.current, 'Installed ' + s.current), s.latest && t('최신 ' + s.latest, 'Latest ' + s.latest)].filter(Boolean).join(' · ')
@@ -545,7 +603,7 @@ function updateSection(updater, ko) {
     'update-failed': t('업데이트하지 못했습니다.', 'Update failed.'),
   }[s.phase] ?? ''
   const busy = s.phase === 'checking' || s.phase === 'updating'
-  const button = (label, onClick, disabled: boolean) => React.createElement('button', { type: 'button', onClick, disabled }, label)
+  const button = (label: string, onClick: () => void, disabled: boolean) => React.createElement('button', { type: 'button', onClick, disabled }, label)
   return React.createElement('section', { 'aria-label': t('업데이트', 'Updates'), style: { display: 'grid', gap: 8, paddingTop: 12, borderTop: '1px solid #8881' } },
     React.createElement('strong', null, t('업데이트', 'Updates')),
     versions ? React.createElement('span', { style: { opacity: 0.7 } }, versions) : null,
@@ -558,11 +616,17 @@ function updateSection(updater, ko) {
         ? button(t('다시 확인', 'Check again'), () => updater.check(), busy) : null))
 }
 
+// 단축키·이동 키 입력 칸의 공통 속성. onChange는 새 값을 저장한다 ('' = 지움)
+interface KeyFieldProps {
+  label: string; hintId: string; hint: string; value?: string; ariaLabel: string; ko: boolean
+  disabled?: boolean; inactive?: boolean; onChange(value: string): unknown
+}
+
 // 단축키 입력 칸: 칸을 눌러 두면 누른 키 조합을 그대로 저장한다. Esc 취소 · Backspace/Delete 지우기 · Tab은 포커스 이동.
-function ShortcutField({ label, control, hintId, hint, value, placeholder, ariaLabel, ko, disabled, inactive, onChange }: Record<string, any>) {
+function ShortcutField({ label, control, hintId, hint, value, placeholder, ariaLabel, ko, disabled, inactive, onChange }: KeyFieldProps & { control?: React.ReactNode; placeholder?: string }) {
   const [recording, setRecording] = React.useState(false)
   const [held, setHeld] = React.useState('')
-  const capture = (event) => {
+  const capture = (event: React.KeyboardEvent<HTMLInputElement>) => {
     const action = shortcutKeyDown(event)
     const stop = () => { setRecording(false); setHeld('') }
     if (action.action === 'leave') { stop(); return }
@@ -596,11 +660,11 @@ function ShortcutField({ label, control, hintId, hint, value, placeholder, ariaL
 }
 
 // 이동 키 입력 칸: 수식 키 하나 또는 일반 키 하나를 그대로 등록한다. Esc 취소 · Backspace/Delete 지우기 · Tab은 포커스 이동.
-function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, inactive, onChange }) {
+function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, inactive, onChange }: KeyFieldProps) {
   const [recording, setRecording] = React.useState(false)
   const [held, setHeld] = React.useState('')
   const stop = () => { setRecording(false); setHeld('') }
-  const capture = (event) => {
+  const capture = (event: React.KeyboardEvent<HTMLInputElement>) => {
     const action = dragKeyDown(event)
     if (action.action === 'leave') { stop(); return }
     event.preventDefault()
@@ -611,7 +675,7 @@ function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, ina
     if (action.action === 'wait') { setHeld(action.held); return }
     stop(); void onChange(action.key); target.blur()
   }
-  const release = (event) => {   // 수식 키는 떼는 순간 저장 (다른 키와 조합하지 않는 단일 키)
+  const release = (event: React.KeyboardEvent<HTMLInputElement>) => {   // 수식 키는 떼는 순간 저장 (다른 키와 조합하지 않는 단일 키)
     const modifier = MODIFIER_LABELS.get(event.key)
     if (!modifier || !recording) return
     stop(); void onChange(modifier); event.currentTarget.blur()
@@ -637,7 +701,7 @@ function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, ina
 }
 
 // 캔버스만 숨김 상태를 설정 화면에도 보여 준다 — 설정(캐릭터와 말풍선)이 꺼진 것과 혼동하지 않게.
-function CanvasHiddenNotice({ ko, link }) {
+function CanvasHiddenNotice({ ko, link }: { ko: boolean; link: CharacterLink }) {
   const read = () => link.character?.canvasHidden() === true
   const [hidden, setHidden] = React.useState(read)
   React.useEffect(() => {
@@ -651,8 +715,8 @@ function CanvasHiddenNotice({ ko, link }) {
       ko ? '다시 표시' : 'Show again'))
 }
 
-function settingsPage(ctx, form, updater, keys, link) {
-  return function FeatureSettings({ view }) {
+function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater: Updater, keys: KeyStore, link: CharacterLink) {
+  return function FeatureSettings({ view }: { view?: string }) {
     const state = React.useSyncExternalStore((fn) => form.subscribe(fn), () => form.getSnapshot(), () => form.getSnapshot())
     const locale = React.useSyncExternalStore((fn) => ctx.locale.subscribe(fn), () => ctx.locale.getLocale(), () => ctx.locale.getLocale())
     React.useSyncExternalStore((fn) => updater.subscribe(fn), () => updater.getSnapshot(), () => updater.getSnapshot())
@@ -669,7 +733,7 @@ function settingsPage(ctx, form, updater, keys, link) {
       ['theme', ko ? '파스텔 테마' : 'Pastel theme'],
       ['translation', ko ? '한국어 언어팩' : 'Korean language pack'],
     ]
-    const change = async (field: string, checked) => {
+    const change = async (field: string, checked: unknown) => {
       const current = form.getSnapshot()
       if (current.status !== 'ready' || !current.writable) return
       setError(''); setPending(true)
@@ -678,9 +742,9 @@ function settingsPage(ctx, form, updater, keys, link) {
       } catch { setError(ko ? '설정을 저장하지 못했습니다.' : 'Could not save settings.') }
       finally { setPending(false) }
     }
-    const row = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24 }
+    const row: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24 }
     const off = !state.writable || pending
-    const outfitSwitch = ([field, label]) => React.createElement('label', { key: field, style: row },
+    const outfitSwitch = ([field, label]: string[]) => React.createElement('label', { key: field, style: row },
       React.createElement('span', null, label),
       React.createElement('input', { type: 'checkbox', checked: state.value?.[field] === true, disabled: off, onChange: (event) => change(field, event.target.checked) }))
     const bodyType = state.value?.bodyType || 'default'
@@ -724,7 +788,7 @@ function settingsPage(ctx, form, updater, keys, link) {
           placeholder: 'Ctrl+Shift+D',
           ariaLabel: ko ? '캐릭터와 말풍선 설정 토글 단축키 입력' : 'Record character and speech bubbles toggle shortcut',
           ko, disabled: off,
-          onChange: (combo) => change('characterToggleKey', combo),
+          onChange: (combo: string) => change('characterToggleKey', combo),
         }),
         React.createElement(DragKeyField, {
           label: ko ? '캐릭터 이동 키 (누른 채 끌기)' : 'Move character key (hold while dragging)',
@@ -736,7 +800,7 @@ function settingsPage(ctx, form, updater, keys, link) {
           value: dragKey,
           ariaLabel: ko ? '캐릭터 이동 키 입력' : 'Record drag key',
           ko, disabled: off || !characterOn, inactive: !characterOn,
-          onChange: (key) => change('dragKey', key),
+          onChange: (key: string) => change('dragKey', key),
         }),
         // 캔버스만 숨김/표시: 캐릭터 설정을 끄는 것이 아니라 그리기만 멈춘다. 스위치를 단축키 칸 바로 왼쪽에 둔다.
         React.createElement(ShortcutField, {
@@ -758,7 +822,7 @@ function settingsPage(ctx, form, updater, keys, link) {
           placeholder: 'Ctrl+Shift+H',
           ariaLabel: ko ? '캔버스 숨김/표시 단축키 입력' : 'Record canvas hide/show shortcut',
           ko, disabled: off || !canvasToggle || !characterOn, inactive: !canvasToggle || !characterOn,
-          onChange: (combo) => change('canvasToggleKey', combo),
+          onChange: (combo: string) => change('canvasToggleKey', combo),
         }),
         React.createElement(CanvasHiddenNotice, { ko, link }),
         React.createElement(ShortcutField, {
@@ -772,7 +836,7 @@ function settingsPage(ctx, form, updater, keys, link) {
           placeholder: 'Ctrl+Shift+P',
           ariaLabel: ko ? '펫 창 단축키 입력' : 'Record pet window shortcut',
           ko, disabled: off || !characterOn, inactive: !characterOn,
-          onChange: (combo) => change('petToggleKey', combo),
+          onChange: (combo: string) => change('petToggleKey', combo),
         })),
       error ? React.createElement('p', { role: 'alert' }, error) : null,
       React.createElement(TtsSection, { form, keys, ko, writable: state.writable, tts: state.value?.tts }),
@@ -780,16 +844,16 @@ function settingsPage(ctx, form, updater, keys, link) {
   }
 }
 
-function apply(ctx) {
+function apply(ctx: DshContext) {
   window[SLOT]?.()
   const life = createLifetime()
-  const features = new Map()
+  const features = new Map<string, Lifetime>()
   const reconcile = (name: string, enabled: boolean, mount?: (feature: ReturnType<typeof createLifetime>) => void) => {
     if (enabled === features.has(name)) return
-    if (!enabled) { features.get(name).dispose(); features.delete(name); return }
+    if (!enabled) { features.get(name)!.dispose(); features.delete(name); return }
     const feature = createLifetime()
     features.set(name, feature)
-    try { mount(feature) } catch (error) { feature.dispose(); features.delete(name); throw error }
+    try { mount!(feature) } catch (error) { feature.dispose(); features.delete(name); throw error }
   }
   life.add(() => { for (const feature of [...features.values()].reverse()) feature.dispose(); features.clear() })
   const dispose = () => {
@@ -800,14 +864,14 @@ function apply(ctx) {
   window[SLOT] = dispose
   ctx.effect(() => dispose, 'deepseek-harness-kr: client')
   try {
-    const form = ctx.configForms.get(ENTRY_ID)
+    const form: ConfigForm<PluginSettings> = ctx.configForms.get(ENTRY_ID)
     const updater = createUpdater()
     const keys = createKeyStore()
     const link = createCharacterLink()
     links.set(ctx, link)
     // 바깥 펫 창의 우클릭 메뉴·설정 패널이 보내는 값을 설정에 반영한다. 이 플러그인이 아는 키만 받는다.
     const PET_CONFIG_KEYS = new Set([...OUTFIT_FIELDS.map(([field]) => field), 'bodyType', 'character'])
-    const applyPetConfig = (key: string, value: string) => {
+    const applyPetConfig = (key: string, value: unknown) => {
       if (typeof key !== 'string' || !PET_CONFIG_KEYS.has(key)) return
       const next = key === 'bodyType'
         ? (BODY_TYPES.some(([type]) => type === value) ? value : null)
@@ -820,7 +884,7 @@ function apply(ctx) {
     }
     // 플러그인/자동화 패널에서 창 안 캐릭터만 숨긴다. 바깥 펫 창에는 hide/leave 같은 명령을 보내지 않는다.
     // 숨김 상태는 이 apply의 link가 들고 있어, 다른 플러그인 인스턴스의 정리가 이 인스턴스 상태를 지우지 못한다.
-    let panelOwner = null
+    let panelOwner: object | null = null
     if (typeof ctx.inject === 'function') {
       ctx.inject(['layout'], (scope) => {
         const panelInfo = scope.layout?.panelInfo
@@ -857,8 +921,8 @@ function apply(ctx) {
     }
     life.add(() => updater.detach())
     life.add(() => keys.detach())
-    let ttsKey = null
-    const syncTts = (value) => {
+    let ttsKey: string | null = null
+    const syncTts = (value: PluginSettings) => {
       const next = ttsSignature(value)
       if (next === ttsKey) return
       ttsKey = next
@@ -868,7 +932,7 @@ function apply(ctx) {
     const sync = () => {
       const snapshot = form.getSnapshot()
       if (snapshot.status !== 'ready') return
-      const value = snapshot.value ?? {}
+      const value: PluginSettings = snapshot.value ?? {}
       reconcile('translation', value.translation !== false, (feature) => mountTranslation(ctx, feature))
       reconcile('layout', value.character !== false || value.theme !== false, mountLayout)
       reconcile('theme', value.theme !== false, (feature) => mountTheme(ctx, feature))
@@ -884,13 +948,13 @@ function apply(ctx) {
     // 단축키로 캐릭터 토글: 설정의 character 스위치를 뒤집는다 (설정 화면과 같은 저장소·같은 마운트/정리 경로)
     // 키를 떼는 이벤트를 놓쳐도 다음 누름이 막히지 않도록, 누른 시각 기준으로만 연타를 막는다.
     let lastToggleAt = -Infinity, togglePending = false
-    const toggleListener = async (event) => {
+    const toggleListener = async (event: KeyboardEvent) => {
       if (event.repeat) return
       const snapshot = form.getSnapshot()
       const combo = snapshot.value?.characterToggleKey ?? 'Ctrl+Shift+D'
       if (!parseShortcut(combo)) return
       // 텍스트 입력 중엔 발동하지 않게 (글자를 지우는 Shift+화살표 같은 조합 보호)
-      const el = event.target
+      const el = event.target as HTMLElement | null
       if (el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName))) return
       if (!matchesShortcut(combo, event)) return
       event.preventDefault()
@@ -907,14 +971,14 @@ function apply(ctx) {
     life.listen(window, 'keydown', toggleListener)
     // 단축키로 바깥 펫 창으로 내보내기·돌아오기 (창 안 캐릭터가 노출한 토글을 부른다)
     let lastPetToggleAt = -Infinity
-    const petToggleListener = (event) => {
+    const petToggleListener = (event: KeyboardEvent) => {
       if (event.repeat) return
       const snapshot = form.getSnapshot()
       const combo = snapshot.value?.petToggleKey ?? 'Ctrl+Shift+P'
       const toggle = link.character?.togglePet
       if (!toggle || !parseShortcut(combo)) return
       // 텍스트 입력 중엔 발동하지 않게 (글자를 지우는 Shift+화살표 같은 조합 보호)
-      const el = event.target
+      const el = event.target as HTMLElement | null
       if (el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName))) return
       if (!matchesShortcut(combo, event)) return
       event.preventDefault()
@@ -928,7 +992,7 @@ function apply(ctx) {
     // 캔버스만 숨김/표시 단축키: 설정에서 켠 사람만 동작한다. 입력창에 포커스가 있어도 수식 키 조합이면 실행한다(글자를 쓰지 않음).
     // 키를 떼는 이벤트(keyup)를 놓쳐도 다음 누름이 막히지 않도록, 누른 시각 기준으로만 연타를 막는다.
     let lastCanvasToggleAt = -Infinity
-    const canvasToggleListener = (event) => {
+    const canvasToggleListener = (event: KeyboardEvent) => {
       if (event.repeat) return
       const snapshot = form.getSnapshot()
       if (snapshot.status !== 'ready' || snapshot.value?.canvasToggle !== true) return
@@ -937,7 +1001,7 @@ function apply(ctx) {
       const parsed = parseShortcut(combo)
       if (!toggle || !parsed) return
       if (!matchesShortcut(combo, event)) return
-      const el = event.target
+      const el = event.target as HTMLElement | null
       const inInput = el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName))
       if (inInput && !(parsed.ctrl || parsed.alt || parsed.meta)) return
       event.preventDefault()
@@ -955,9 +1019,9 @@ function apply(ctx) {
 }
 
 // apply(ctx)마다 만든 캐릭터 연결 (테스트가 ctx로 찾아 상태를 확인하거나 가짜 캐릭터를 붙인다)
-const links = new WeakMap()
+const links = new WeakMap<DshContext, CharacterLink>()
 
 export const inject = ['locale', 'theme', 'configForms', 'slots']
 export { apply }
 // 테스트용
-export const internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter, characterPrefs, linkOf: (ctx) => links.get(ctx) }
+export const internals = { githubSource, compareVersions, createUpdater, createKeyStore, ttsSignature, parseJsonObject, parseShortcut, shortcutFromEvent, shortcutKeyDown, dragKeyDown, matchesShortcut, panelHidesInWindowCharacter, characterPrefs, linkOf: (ctx: DshContext) => links.get(ctx) }
