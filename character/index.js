@@ -10,6 +10,7 @@
 import { OUTFIT_ITEMS, BODY_TYPES } from "../shared/settings.js";
 import { HOME_GAP, SHOW_K, MIN_SHOW_K, homeLayout, bubbleLayout, bubbleTail, tailRight, tailLeft } from "./layout.js";
 import { chordDown, chordWithinGrace, chordUp } from "./chord.js";
+import { clamp, noise, S, spring, sstep, addGesture, blinkClose, seg, coverForearm } from "./motion.js";
 import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-signals.js";
 import { createPetLink } from "./pet-link.js";
 
@@ -890,15 +891,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       let mx = innerWidth / 2, my = innerHeight / 2, lastMove = 0;
       addEventListener("mousemove", (e) => { mx = e.clientX; my = e.clientY; lastMove = performance.now(); }, { passive: true });
 
-      // 부드러운 잡음: 정수점마다 무작위 값을 두고 매끄럽게 잇기 (두 겹)
-      const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
-      const vnoise = (t) => { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return (hash(i) * (1 - u) + hash(i + 1) * u) * 2 - 1; };
-      const noise = (t, seed) => vnoise(t + seed * 17.31) * 0.72 + vnoise(t * 2.3 + seed * 5.17) * 0.28;
-      // 스프링: 목표를 살짝 넘었다 돌아오며 따라감 (k 클수록 빠름, d 클수록 덜 출렁임)
-      const S = () => ({ x: 0, v: 0 });
-      // 프레임 간격이 길어도 흔들리지 않게 8ms 단위로 잘게 나눠 계산 (한 번에 계산하면 30fps 이하에서 눈동자가 매 프레임 튐)
-      const spring = (s, target, dt, k, d) => { const n = Math.max(1, Math.ceil(dt / 0.008)), h = dt / n; for (let i = 0; i < n; i++) { s.v += ((target - s.x) * k - s.v * d) * h; s.x += s.v * h; } return s.x; };
-      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+      // 잡음·스프링·곡선 같은 순수 계산은 character/motion.js
       const hx = S(), hy = S(), ex = S(), ey = S();
       // 몸 위아래 튕김: 통통·웃음·끄덕임 몸짓을 시작할 때 살짝 차 주면 스프링이 출렁이며 돌아오고, 물리 엔진이 가슴을 한 박자 늦게 흔든다
       // (말할 때는 차지 않음: 몸 위아래 값은 머리도 함께 움직여 글자마다 얼굴이 떨려 보임)
@@ -968,300 +961,335 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         smile: [40, 12.6], eyeSmile: [40, 12.6], eyeClose: [40, 12.6], mouth: [40, 12.6],   // 팔·표정: 약 0.65초
       };
       for (const ch in GEST_K) gestS[ch] = { x: 0, v: 0 };
-      // 몸짓 곡선: 천천히 들어가서(0~35%) 머물렀다가(~70%) 천천히 돌아옴
-      const sstep = (x) => { x = Math.max(0, Math.min(1, x)); return x * x * x * (x * (x * 6 - 15) + 10); };
-      const holdCurve = (p, a = 0.35, b = 0.7) => (p < a ? sstep(p / a) : p > b ? sstep((1 - p) / (1 - b)) : 1);
       let blink = { next: performance.now() + 2000, start: -1e9, double: false }, lastT = performance.now();
+
+      // ---------- 한 프레임의 절차 애니메이션 ----------
+      // 표정 매니저 자리(모션 뒤·물리 앞)에서 불린다. 아래 단계들은 이 순서대로 돌고, 단계의 순서와
+      // 난수(Math.random)를 쓰는 순서가 곧 동작이므로 바꾸지 않는다 (plugin/test/character-trace.test.js가 프레임마다 확인).
+      // 고개·몸 값은 m(yaw·pitch·roll·bodyX/Y/Z·lean·smile·eyeSmileAdd·eyeClose·mouthAdd)에 모았다가 한 번에 쓴다.
+
+      // 가슴 끌기: 끄는 동안 민첩하게 따라가고, 놓으면 출렁이며 잦아듦
+      const updateChestDrag = (now, dt) => {
+        spring(dragLift, chestDragging ? chestTarget : 0, dt, chestDragging ? 820 : 200, chestDragging ? 40 : 6);   // 끄는 동안 민첩하게, 놓으면 출렁이며 잦아듦
+        spring(dragShift, chestDragging ? chestShiftTarget : 0, dt, chestDragging ? 700 : 220, chestDragging ? 42 : 7);   // 좌우로 끌면 그 방향으로 따라가고, 놓으면 제자리로 출렁
+        if (!chestDragging && Math.abs(dragShift.x) < 0.0001 && Math.abs(dragShift.v) < 0.001) dragShift.x = dragShift.v = 0;
+        if (!chestDragging && Math.abs(dragLift.x) < 0.0001 && Math.abs(dragLift.v) < 0.001) dragLift.x = dragLift.v = 0;
+        if (chestDragging) {
+          flashExp("squint", 400); flashExp("blush", 400);
+          walk.lastTouch = now;
+        }
+      };
+      // 이 프레임에 여러 단계가 같이 쓰는 값
+      const frameContext = (now, dt) => {
+        const introCalm = intro.phase !== "done";   // 시작 화면(가운데에 크게): 눈·눈썹·귀를 차분하게
+        const T = now / 1000;
+        if (voiceState && voiceState.until && now > voiceState.until) voiceState = null;   // 만료된 음성 상태 비우기
+        const talking = (voiceState?.speaking === true) || (bubble.classList.contains("show") && fleeX === 0);
+        const muttering = talking && bubble.classList.contains("mutter");
+        if (moodUntil && now > moodUntil) { mood = "idle"; moodUntil = 0; }
+        const laughing = gest.name === "laugh";
+        return { now, dt, T, introCalm, talking, muttering, laughing };
+      };
+      // 움직임 크기: 대기 < 작업 < 말하기, 웃을 땐 크게, 시무룩하면 작게
+      const updateEnergy = ({ dt, talking, muttering, laughing }) => {
+        const eTarget = (mood === "sad" ? 0.35 : mood === "wait" ? 0.55 : mood === "work" ? 0.75 : 0.6) + (talking && !muttering ? 0.35 : 0) + (laughing ? 0.5 : 0);
+        energy += (eTarget - energy) * Math.min(1, dt * 1.5);
+      };
+      // ---- 바라보는 곳 ----
+      const updateGaze = ({ now, dt, introCalm, talking, muttering }) => {
+        let tx, ty;
+        if (now < stareUntil) { tx = 0; ty = 0.05; }                // 삐짐이 풀리며 한마디: 고개 고정, 눈 맞춤
+        else if (muttering) { tx = 0.4; ty = 0.38; }                    // 혼잣말: 옆 위를 보며 생각
+        else if (talking && introCalm) { tx = attn.x * 0.25; ty = 0.05 + attn.y * 0.2; }   // 시작 화면에서 말할 땐 보는 사람을 봄 (마우스·딴 곳을 따라가지 않음)
+        else if (now - lastMove < 2500 && !talking) {             // 마우스를 움직이면 눈은 커서를, 고개는 반쯤
+          const r = canvas.getBoundingClientRect();
+          tx = clamp((mx - (r.left + r.width / 2)) / 600, -1, 1);
+          ty = clamp(((r.top + r.height * 0.25) - my) / 500, -1, 1);
+        } else {
+          if (now > attn.next || (!introCalm && talking && Math.abs(attn.x) > 0.3 && Math.random() < dt * 2)) pickAttention(now, talking);
+          tx = attn.x; ty = attn.y;
+        }
+        // 눈은 빠르게(휙), 고개는 천천히 따라감 → 눈이 먼저 가고 고개가 뒤따르는 버튜버 느낌
+        const eyeK = introCalm ? 420 : 900, eyeD = introCalm ? 42 : 55;   // 시작 화면(크게 보일 때)은 눈이 튀지 않게 조금 부드럽게
+        spring(ex, tx, dt, eyeK, eyeD); spring(ey, ty, dt, eyeK, eyeD);
+        spring(hx, tx * 0.85, dt, 38, 9.5); spring(hy, ty * 0.8, dt, 38, 9.5);
+        look.x = hx.x; look.y = hy.x;
+      };
+      // ---- 말하기 (입 모양 · 고개 끄덕 · 눈썹) ----
+      const updateSpeech = ({ now, dt, introCalm }) => {
+        let open = 0;
+        for (const k of VOW) vowel[k] *= Math.max(0, 1 - dt * 14);
+        if (talk) {
+          let t = (now - talk.t0) / 1000;
+          if (t >= talk.total) talk = null;
+          else {
+            let i = 0; while (i < talk.syl.length && t > talk.syl[i].d) { t -= talk.syl[i].d; i++; }
+            const s = talk.syl[i];
+            if (s && s.v) {
+              const p = t / s.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
+              open = env * s.amp * (talk.quiet ? 0.3 : 1);
+              vowel[s.v] = Math.max(vowel[s.v], open);
+              if (s.stress && i !== lastStressIdx) {               // 낱말 첫소리: 눈썹 살짝(귀 쫑긋) + 가끔 끄덕
+                lastStressIdx = i;
+                if (!talk.quiet) { if (!introCalm) browKick = Math.max(browKick, 0.35 + Math.random() * 0.35); else if (Math.random() < 0.35) browKick = Math.max(browKick, 0.2 + Math.random() * 0.15); if (Math.random() < 0.45) nodKick = Math.max(nodKick, 0.6 + Math.random() * 0.5); }
+              }
+            }
+          }
+        }
+        if (voiceState?.speaking) {   // 실제 재생 중이면 오디오 레벨·모음이 입 모양을 덮어쓴다
+          open = clamp(voiceState.level, 0, 1) * 0.9;
+          if (voiceState.vowels) for (const k of VOW) vowel[k] = Math.max(vowel[k] * 0.4, clamp(voiceState.vowels[k] || 0, 0, 1));
+        }
+        mouthOpen += (open - mouthOpen) * Math.min(1, dt * 16);   // 입은 조금 부드럽게 따라감 (너무 파닥거리지 않게)
+        browKick *= Math.max(0, 1 - dt * (introCalm ? 2 : 3.5));
+        browVal = introCalm ? browVal + (browKick - browVal) * Math.min(1, dt * 5) : browKick;   // 시작 화면에선 눈썹·귀가 툭 튀지 않고 부드럽게 오르내림
+        nodKick *= Math.max(0, 1 - dt * 5);
+      };
+      // ---- 상태별 자세 (작업 중 = 살짝 앞으로, 대기 = 숙이고 갸웃, 실패 = 고개 숙임) ----
+      const updateMoodPose = (dt) => {
+        const goal = { lean: 0, headZ: 0, headY: 0, bodyY: 0 };
+        if (mood === "work") { goal.lean = -7; goal.headY = -5; }          // 작업 중: 상체를 조금 내밀고 화면을 내려다봄
+        if (mood === "wait") { goal.lean = -9; goal.headZ = 8; goal.headY = 3; }   // 대기: 다가와 갸웃하며 사용자를 올려다봄
+        if (mood === "sad") { goal.headY = -10; goal.bodyY = -5; }
+        const pk = Math.min(1, dt * 2.2);   // 두 단계로 따라가서 S자 곡선 (툭 끊기지 않게)
+        for (const key in goal) { pose1[key] += (goal[key] - pose1[key]) * pk; pose[key] += (pose1[key] - pose[key]) * pk; }
+      };
+      // ---- 고개 (AngleX/Y/Z): 시선 + 잔잔한 흔들림 + 말할 때 끄덕 / 몸: 숨쉬기 + 튕김 ----
+      const baseMotion = ({ now, dt, T, talking, muttering }) => {
+        const m = { yaw: hx.x * 22 + noise(T * 0.33, 1) * 6 * energy };
+        m.pitch = hy.x * 13 + noise(T * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
+        m.roll = noise(T * 0.27, 3) * 7.5 * energy - hx.x * hy.x * 7 + pose.headZ;
+        // 말하는 동안 고개를 천천히 좌우로 기울이고 살짝 돌림 (입만 움직이고 얼굴이 굳어 보이지 않게)
+        stareW += ((now < stareUntil ? 1 : 0) - stareW) * Math.min(1, dt * 6);
+        talkSway += ((talking && !muttering && now >= stareUntil ? 1 : 0) - talkSway) * Math.min(1, dt * 2.5);
+        m.swayYaw = Math.sin(T * Math.PI * 2 * 0.31 + 1.3) * 4.5 * talkSway; m.swayPitch = Math.sin(T * Math.PI * 2 * 0.47 + 0.6) * 1.5 * talkSway;
+        if (talkSway > 0.01) { m.roll += Math.sin(T * Math.PI * 2 * 0.55) * 4 * talkSway; m.yaw += m.swayYaw; m.pitch += m.swayPitch; }
+        // ---- 몸 (PositionX/Y/Z·LeanInput → 물리가 몸통을 늦게 따라 움직임) ----
+        m.bodyX = hx.x * 8 + noise(T * 0.17, 4) * 5 * energy;
+        m.bodyZ = m.roll * 0.5 + noise(T * 0.21, 5) * 3 * energy;
+        spring(bob, 0, dt, 70, 6);   // 살짝 덜 감쇠: 한두 번 출렁이다 멈춤
+        m.bodyY = pose.bodyY + Math.sin(T * 2 * Math.PI / 3.6) * 1.8 + clamp(bob.x, -14, 14);   // 숨쉬기 + 튕김
+        m.lean = pose.lean; m.smile = 0; m.eyeSmileAdd = 0; m.eyeClose = 0; m.mouthAdd = 0;
+        if (mood === "work") m.bodyZ += Math.sin(T * 2.1) * 1.2;        // 작업 중엔 리듬 타기
+        return m;
+      };
+      // 몸짓: 출력은 바로 더하지 않고 채널별 스프링을 거쳐 더한다.
+      //   반응이 끝나거나 다른 반응으로 바뀌어도 그 순간의 자세·속도에서 이어지고, 0.5~0.8초에 걸쳐 대기 자세로 풀린다.
+      const applyGesture = (m, { now, dt }) => {
+        const GO = { yaw: 0, pitch: 0, roll: 0, bodyX: 0, bodyY: 0, bodyZ: 0, lean: 0, smile: 0, eyeSmile: 0, eyeClose: 0, mouth: 0 };
+        if (gest.name) {
+          const p = (now - gest.start) / gest.dur;
+          if (p >= 1) {
+            gest.name = null;
+            nextIdleGesture = Math.max(nextIdleGesture, now + 2500 + Math.random() * 3500);   // 복귀 직후 대기 몸짓이 곧바로 붙어 다시 움직이지 않게
+          } else addGesture(GO, gest.name, p, gest.dir);
+        }
+        // 스프링을 거친 게스처 출력을 더한다 (게스처가 없을 땐 목표가 0이라 현재 속도에서 감속하며 대기 자세로 돌아간다)
+        for (const ch in GO) { const gk = GEST_K[ch]; spring(gestS[ch], GO[ch], dt, gk[0], gk[1]); }
+        m.yaw += gestS.yaw.x; m.pitch += gestS.pitch.x; m.roll += gestS.roll.x;
+        m.bodyX += gestS.bodyX.x; m.bodyY += gestS.bodyY.x; m.bodyZ += gestS.bodyZ.x; m.lean += gestS.lean.x;
+        m.smile += gestS.smile.x; m.eyeSmileAdd += gestS.eyeSmile.x; m.eyeClose += gestS.eyeClose.x; m.mouthAdd += gestS.mouth.x;
+        if (!gest.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {   // 가만히 있을 때 가끔 몸짓 (삐진 동안은 안 함)
+          const r = Math.random();
+          const pick = r < 0.3 ? "tilt" : r < 0.5 ? "sway" : r < 0.72 ? "lean" : r < 0.88 ? "nod" : "laugh";
+          play(pick, pick === "lean" ? 2600 : pick === "sway" ? 2300 : pick === "laugh" ? 1500 : 1800);
+          nextIdleGesture = now + 7000 + Math.random() * 9000;
+        }
+      };
+      // 가슴 터치 때 가끔 앞으로 숙임 + 부끄러워 떨기 (5초에 걸쳐 잦아듦)
+      const applyTouchAndShiver = (m, { now, dt }) => {
+        touchLean += ((now < touchLeanUntil ? -30 : 0) - touchLean) * Math.min(1, dt * 4);
+        m.lean += touchLean;
+        const se = (now - shiverStarted) / 1000;
+        if (se >= 0 && se < 5) {
+          const tr = Math.sin(se * Math.PI * 2 * 8) * Math.min(1, se / 0.2) * Math.pow(1 - se / 5, 1.5);
+          m.bodyZ -= tr * 3; m.roll += tr * 2;
+          // 떨림은 너무 빨라 가슴 물리가 따라오지 못하므로, 0.2초 안팎으로 몸을 위아래로 툭툭 쳐서 가슴이 그 박자에 출렁이게 함 (잦아들면 같이 약해짐)
+          if (now > shiverBobAt) { bobKick((shiverBobSign = -shiverBobSign) * 40 * Math.pow(1 - se / 5, 1.5)); shiverBobAt = now + 170 + Math.random() * 90; }
+        }
+      };
+      // 도망가며 종종걸음, 산책: 걸어가는 쪽으로 몸을 돌리고 통통 걸음 (walk.face: -1 = 왼쪽을 봄, 1 = 오른쪽을 봄). 돌아올 땐 반대쪽을 봄
+      const applyWalk = (m, { now, dt, T }) => {
+        if (fleeX !== 0 && !walk.phase) m.bodyZ += Math.sin(T * 16) * 8;
+        const faceTo = walk.phase === "out" ? walk.dir : walk.phase === "in" ? -walk.dir : 0;
+        walk.face += (faceTo - walk.face) * Math.min(1, dt * 5);
+        const wa = Math.abs(walk.face);
+        if (wa > 0.01) {
+          const ph = T * Math.PI * 2 * 1.8, wf = walk.face;
+          m.yaw = m.yaw * (1 - wa) + 22 * wf; m.pitch -= 2 * wa; m.roll += Math.sin(ph) * 2.5 * wa;
+          m.bodyX += 6 * wf; m.bodyY += Math.abs(Math.sin(ph)) * 6 * wa; m.bodyZ += Math.sin(ph) * 4 * wa;
+        }
+        if (walkCheck) walkCheck(now);
+      };
+      // 끌기·던지기: 움직이는 반대쪽으로 몸이 쏠리고(관성) 머리카락·치마·리본은 물리로 따라 흔들림. 손을 멈추거나 놓으면 잦아듦
+      const applyCarry = (m, { now, dt }) => {
+        const lastSample = drag.samples.length ? drag.samples[drag.samples.length - 1][0] : 0;
+        if (!drag.on || now - lastSample > 60) { const f = Math.max(0, 1 - dt * 5); carry.vx *= f; carry.vy *= f; }
+        const cvx = clamp(carry.vx / 1600, -1, 1), cvy = clamp(carry.vy / 1600, -1, 1);
+        if (Math.abs(cvx) + Math.abs(cvy) > 0.002) {
+          m.bodyX -= cvx * 16; m.bodyZ -= cvx * 14; m.roll -= cvx * 12; m.yaw += cvx * 8;
+          m.bodyY -= cvy * 12; m.pitch += cvy * 10;
+        }
+      };
+      // 삐짐: 0.35초에 턱을 들고 고개를 홱 돌리고, 끝나기 1.2초 전부터 천천히 돌아옴. 돌려주는 값: sk(삐짐 정도), peek(몰래 보기 0~1), sulkEye(눈동자)
+      const applySulk = (m, { now, dt }) => {
+        const sk = now < sulkUntil ? Math.min(sstep((now - sulkStart) / 350), sstep((sulkUntil - now) / 1200)) : 0;
+        let peek = 0;   // 몰래 보기 정도 (0 = 외면, 1 = 사용자 쪽을 봄)
+        if (sk > 0) {
+          const ts = now - sulkStart;
+          for (const p of sulkPeeks) {
+            const u = ts - p.at;
+            if (u < 0 || u > PEEK_RISE + PEEK_HOLD + PEEK_SNAP) continue;
+            if (u >= PEEK_RISE + PEEK_HOLD && !p.done) { p.done = true; if (p.flip) sulkDir = -sulkDir; }   // 다시 외면할 때 60% 확률로 반대쪽으로
+            peek = u < PEEK_RISE ? sstep(u / PEEK_RISE) : u < PEEK_RISE + PEEK_HOLD ? 1 : 1 - sstep((u - PEEK_RISE - PEEK_HOLD) / PEEK_SNAP);
+          }
+          const away = 1 - 0.75 * peek, k = Math.min(1, dt * 14);   // 고개는 빠르게 따라가서 방향을 바꿀 때 홱 돌아감
+          sulkYaw += (-24 * sulkDir * away - sulkYaw) * k;
+          sulkRoll += (-8 * sulkDir * away - sulkRoll) * k;
+          m.yaw = m.yaw * (1 - sk) + sulkYaw * sk; m.roll = m.roll * (1 - sk) + sulkRoll * sk;
+          m.pitch = m.pitch * (1 - sk) + SULK_CHIN * (1 - 0.6 * peek) * sk;
+          m.bodyX = m.bodyX * (1 - sk) + sulkYaw / 6 * sk; m.smile *= 1 - sk; m.eyeSmileAdd *= 1 - sk;
+        }
+        const sulkEye = sulkDir * (-0.45 + 0.85 * Math.min(1, peek * 1.8));   // 외면할 땐 눈도 피하고, 몰래 볼 땐 눈이 먼저 사용자 쪽으로
+        return { sk, peek, sulkEye };
+      };
+      // 눈 맞춤 동안 얼굴·몸 흔들림을 거의 멈추고, 고개·몸 파라미터를 쓴다
+      const writeHeadBody = (m) => {
+        if (stareW > 0.01) { const k = 1 - stareW * 0.92; m.yaw = hx.x * 22 * (1 - stareW) + (m.yaw - hx.x * 22) * k; m.pitch *= k; m.roll *= k; m.bodyX *= k; m.bodyZ *= k; }
+        m.yaw = clamp(m.yaw, -30, 30); m.pitch = clamp(m.pitch, -30, 30); m.roll = clamp(m.roll, -30, 30);
+        for (const [id, v] of [["AngleX", m.yaw], ["AngleY", m.pitch], ["AngleZ", m.roll], ["ParamAngleX", m.yaw], ["ParamAngleY", m.pitch], ["ParamAngleZ", m.roll],
+          ["PositionX", clamp(m.bodyX, -30, 30)], ["PositionY", clamp(m.bodyY, -30, 30)], ["PositionZ", clamp(m.bodyZ, -30, 30)], ["LeanInput", clamp(m.lean, -30, 30)]]) core.addParameterValueById(id, v);
+      };
+      // ---- 눈: 눈동자는 고개보다 먼저 (머리 기준 상대 위치), 숨쉬기 ----
+      const writeEyes = (m, { T }, { sk, sulkEye }) => {
+        // 눈동자는 작게만 (크게 움직이면 흰자가 드러나 곁눈질처럼 보임)
+        core.addParameterValueById("ParamEyeBallX", clamp(((ex.x - hx.x) * 0.9 + hx.x * 0.2) * 0.6, -0.45, 0.45) * (1 - sk) + sulkEye * sk - m.swayYaw / 30 * (1 - sk));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
+        core.addParameterValueById("ParamEyeBallY", clamp(((ey.x - hy.x) * 0.9 + hy.x * 0.2) * 0.6 - m.swayPitch / 30, -0.3, 0.3));
+        core.setParameterValueById("ParamBreath", 0.5 + 0.5 * Math.sin(T * 2 * Math.PI / 3.6));
+      };
+      // ---- 눈썹 (귀가 따라 움직임) ----
+      const writeBrows = ({ T }) => {
+        const brow = browVal + noise(T * 0.5, 7) * 0.12 + (mood === "wait" ? 0.25 : mood === "sad" ? -0.3 : 0) - 0.15 * happyMouth;
+        if (happyMouth > 0.01) core.addParameterValueById("BrowInnerUp", 0.55 * happyMouth);   // 곤란한 눈썹 (안쪽 끝이 올라감)
+        core.addParameterValueById("ParamBrowLY", clamp(brow, -1, 1));
+        core.addParameterValueById("ParamBrowRY", clamp(brow + noise(T * 0.6, 8) * 0.06, -1, 1));
+        if (browVal > 0.15) core.addParameterValueById("BrowInnerUp", Math.min(1, browVal * 0.6));
+      };
+      // ---- 입: 모음 모양 + 늘 살짝 웃는 입꼬리 ----
+      const writeMouth = (m, { now, dt, T }, { sk, peek }) => {
+        const openNow = clamp(mouthOpen + m.mouthAdd + 0.14 * happyMouth, 0, 1);   // 살짝 벌린 입
+        if (openNow > 0.01) {
+          core.setParameterValueById("ParamMouthOpenY", openNow * 0.9);
+          core.addParameterValueById("JawOpen", openNow * 0.45);
+          core.setParameterValueById("ParamSilence", 1 - openNow);
+          for (const k of VOW) if (vowel[k] > 0.01) core.addParameterValueById("Param" + k, Math.min(1, vowel[k]) * (VOW_EYE_SAFE[k] || 1));
+          if (m.mouthAdd > 0.01) core.addParameterValueById("ParamA", m.mouthAdd * 0.8);
+        }
+        happyMouth += ((now < happyMouthUntil ? 1 : 0) - happyMouth) * Math.min(1, dt * 5);
+        const baseSmile = (mood === "sad" ? 0 : mood === "wait" ? 0.15 : 0.35) * (1 - sk) + 0.2 * happyMouth;   // 부끄럽지만 좋아서 입꼬리가 조금 올라감 (곤란함이 섞여 크게는 안 웃음)
+        if (sk > 0.01) for (const [id, eased] of [["CheeckPuff", 0.5], ["Mouthpucker", 0.3], ["Angry", 0.5], ["Angry2", 0.5]]) core.addParameterValueById(id, sk * (1 - eased * peek));   // 볼 부풀리기·입 삐죽·찡그린 눈썹 (몰래 볼 땐 조금 풀림)
+        core.addParameterValueById("ParamMouthForm", clamp(baseSmile + m.smile * 0.4, -1, 1));
+        core.addParameterValueById("MouthSmile_L", clamp(baseSmile + m.smile * 0.5 + 0.3 * happyMouth, 0, 1));   // 한쪽만 더 올라간 어색한 웃음
+        core.addParameterValueById("MouthSmile_R", clamp(baseSmile + m.smile * 0.5 + noise(T * 0.3, 9) * 0.05, 0, 1));
+        const eSmile = clamp((mood === "sad" ? 0 : 0.12) + m.smile * 0.35 + m.eyeSmileAdd, 0, 1);
+        if (eSmile > 0.01) core.addParameterValueById("EyeSmile", eSmile);
+      };
+      // ---- 눈 깜빡임: 2~6초 불규칙, 가끔 두 번 ----
+      const writeBlink = (m, { now, laughing }) => {
+        if (now >= blink.next && !laughing) {
+          blink.start = now;
+          blink.next = blink.double ? now + 2000 + Math.random() * 4000 : (Math.random() < 0.18 ? now + 260 : now + 2000 + Math.random() * 4000);
+          blink.double = !blink.double && blink.next - now < 400;
+        }
+        const bt = (now - blink.start) / 1000;
+        const eyeOpen = clamp((mood === "work" ? 0.92 : 0.97) * (1 - blinkClose(bt)) * (1 - m.eyeClose), 0, 1.2);
+        core.setParameterValueById("ParamEyeLOpen", eyeOpen); core.setParameterValueById("ParamEyeROpen", eyeOpen);
+      };
+      // 표정 파일(하트·눈물·땀 등)을 무게에 따라 섞는다
+      const writeExpressions = ({ now, dt }) => {
+        for (const [name, params] of Object.entries(exp)) {
+          const target = hold[name] || (until[name] || 0) > now ? 1 : 0;
+          // 하트·><·얄미운·빙글빙글 눈은 눈 그림 자체를 바꾸므로 한 번에 바꾸고, 그 순간 깜빡여 감춤
+          const EYE_SWAP = name === "heart" || name === "squint" || name === "smug" || name === "dizzy";
+          if (EYE_SWAP && (weight[name] > 0.5) !== (target > 0.5)) { blink.start = now - 0.07 * 1000; blink.next = Math.max(blink.next, now + 1500); }
+          const w = weight[name] = EYE_SWAP ? target : (weight[name] || 0) + (target - (weight[name] || 0)) * Math.min(1, dt * 6);
+          if (w < 0.01) continue;
+          for (const p of params) {
+            if (p.Blend === "Multiply") core.multiplyParameterValueById(p.Id, p.Value, w);
+            else if (p.Blend === "Add") core.addParameterValueById(p.Id, p.Value, w);
+            else core.setParameterValueById(p.Id, p.Value, w);
+          }
+        }
+      };
+      // ---- 왼손 가슴 가리기 (팔 궤적은 character/motion.js coverForearm). 내릴 땐 같은 길을 거꾸로 ----
+      const writeCoverChest = ({ now, dt, T }) => {
+        const leaning = now < touchLeanUntil || touchLean < -2;   // 앞으로 숙이는 동안엔 손을 움직이지 않음
+        const want = now >= cover.start && now < cover.until && bodyW < 0.5 && fleeX === 0 && !leaning;   // 꼬마·산책·도망 중에도 안 함
+        const q0 = cover.q;
+        cover.q = clamp(cover.q + (want ? 1 : -1) * dt / 0.38, 0, 1);   // 올리는 데 0.38초
+        if (cover.q > 0) {
+          const q = cover.q;
+          const fore = coverForearm(q);
+          const breath = Math.sin(T * Math.PI * 2 * 0.4) * 0.02 * sstep(seg(0.8, 1, q));   // 가린 채로도 미세하게 움직임
+          const vel = (cover.q - q0) / Math.max(dt, 1e-3);   // 움직이는 중에만 손목이 늦게 따라오며 꺾임
+          core.setParameterValueById("Movement2", 1);   // 몸 앞용 팔 그림 (손이 다 내려올 때까지 유지)
+          core.addParameterValueById("Param62", 0.034 * sstep(q));
+          core.addParameterValueById("Param59", 0.48 * sstep(seg(0, 0.6, q)));   // 위팔 원근은 아래팔보다 먼저
+          core.addParameterValueById("Param60", fore + breath);
+          core.addParameterValueById("Param61", clamp(vel * 0.06, -0.2, 0.2) * Math.sin(Math.PI * q));
+        }
+      };
+      // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
+      const writeOutfit = ({ now, dt }) => {
+        const of = prefs.outfit || {};
+        for (const [key, id, v] of OUTFIT_PARAMS) {
+          const w = outfitW[key] = (outfitW[key] || 0) + ((of[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
+          if (w > 0.005) core.addParameterValueById(id, v * w);
+        }
+        // 동물귀 숨김: 파라미터가 아니라 귀 파트(Part159)의 opacity를 보간한다. 파트가 없으면 no-op.
+        // (bbox·크기·다른 파트는 건드리지 않는다. 완전히 복구된 프레임에서만 opacity를 1로 되돌린다.)
+        const earWas = earW;
+        earW = earOpacityStep(earW, of.earHide === true, dt);
+        if (earPartIndex >= 0) {
+          if (earW > 0.005) applyEarOpacity(cm.parts, earPartIndex, earW);
+          else if (earWas > 0.005) cm.parts.opacities[earPartIndex] = 1;
+        }
+        const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
+        basinW += ((now < basinUntil ? 1 : 0) - basinW) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
+        if (basinW > 0.005) core.addParameterValueById("key10", basinW);
+        bodyW += ((walkingBody ? 1 : BODY_VALUE[of.bodyType] || 0) - bodyW) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
+        if (bodyW > 0.002) core.addParameterValueById("Clothes2", bodyW);
+        model.y = baseY + chibiDrop * clamp(bodyW, 0, 1);
+        if (outfitPrev && outfitTalk) {   // 켜는 순간 한마디 (처음 불러올 때는 말 안 함)
+          for (const [key] of OUTFIT_PARAMS) if (of[key] && !outfitPrev[key]) outfitTalk(OUTFIT_LINE[key]);
+          if ((of.bodyType || "default") !== (outfitPrev.bodyType || "default")) outfitTalk("body_" + (of.bodyType || "default"));
+        }
+        outfitPrev = { ...of };
+      };
       im.motionManager.expressionManager = {
         destroy() {},
         update() {
           const now = performance.now(), dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
-          spring(dragLift, chestDragging ? chestTarget : 0, dt, chestDragging ? 820 : 200, chestDragging ? 40 : 6);   // 끄는 동안 민첩하게, 놓으면 출렁이며 잦아듦
-          spring(dragShift, chestDragging ? chestShiftTarget : 0, dt, chestDragging ? 700 : 220, chestDragging ? 42 : 7);   // 좌우로 끌면 그 방향으로 따라가고, 놓으면 제자리로 출렁
-          if (!chestDragging && Math.abs(dragShift.x) < 0.0001 && Math.abs(dragShift.v) < 0.001) dragShift.x = dragShift.v = 0;
-          if (!chestDragging && Math.abs(dragLift.x) < 0.0001 && Math.abs(dragLift.v) < 0.001) dragLift.x = dragLift.v = 0;
-          if (chestDragging) {
-            flashExp("squint", 400); flashExp("blush", 400);
-            walk.lastTouch = now;
-          }
-          const introCalm = intro.phase !== "done";   // 시작 화면(가운데에 크게): 눈·눈썹·귀를 차분하게
-          const T = now / 1000;
-          if (voiceState && voiceState.until && now > voiceState.until) voiceState = null;   // 만료된 음성 상태 비우기
-          const talking = (voiceState?.speaking === true) || (bubble.classList.contains("show") && fleeX === 0);
-          const muttering = talking && bubble.classList.contains("mutter");
-          if (moodUntil && now > moodUntil) { mood = "idle"; moodUntil = 0; }
-
-          // 움직임 크기: 대기 < 작업 < 말하기, 웃을 땐 크게, 시무룩하면 작게
-          const laughing = gest.name === "laugh";
-          const eTarget = (mood === "sad" ? 0.35 : mood === "wait" ? 0.55 : mood === "work" ? 0.75 : 0.6) + (talking && !muttering ? 0.35 : 0) + (laughing ? 0.5 : 0);
-          energy += (eTarget - energy) * Math.min(1, dt * 1.5);
-
-          // ---- 바라보는 곳 ----
-          let tx, ty;
-          if (now < stareUntil) { tx = 0; ty = 0.05; }                // 삐짐이 풀리며 한마디: 고개 고정, 눈 맞춤
-          else if (muttering) { tx = 0.4; ty = 0.38; }                    // 혼잣말: 옆 위를 보며 생각
-          else if (talking && introCalm) { tx = attn.x * 0.25; ty = 0.05 + attn.y * 0.2; }   // 시작 화면에서 말할 땐 보는 사람을 봄 (마우스·딴 곳을 따라가지 않음)
-          else if (now - lastMove < 2500 && !talking) {             // 마우스를 움직이면 눈은 커서를, 고개는 반쯤
-            const r = canvas.getBoundingClientRect();
-            tx = clamp((mx - (r.left + r.width / 2)) / 600, -1, 1);
-            ty = clamp(((r.top + r.height * 0.25) - my) / 500, -1, 1);
-          } else {
-            if (now > attn.next || (!introCalm && talking && Math.abs(attn.x) > 0.3 && Math.random() < dt * 2)) pickAttention(now, talking);
-            tx = attn.x; ty = attn.y;
-          }
-          // 눈은 빠르게(휙), 고개는 천천히 따라감 → 눈이 먼저 가고 고개가 뒤따르는 버튜버 느낌
-          const eyeK = introCalm ? 420 : 900, eyeD = introCalm ? 42 : 55;   // 시작 화면(크게 보일 때)은 눈이 튀지 않게 조금 부드럽게
-          spring(ex, tx, dt, eyeK, eyeD); spring(ey, ty, dt, eyeK, eyeD);
-          spring(hx, tx * 0.85, dt, 38, 9.5); spring(hy, ty * 0.8, dt, 38, 9.5);
-          look.x = hx.x; look.y = hy.x;
-
-          // ---- 말하기 (입 모양 · 고개 끄덕 · 눈썹) ----
-          let open = 0;
-          for (const k of VOW) vowel[k] *= Math.max(0, 1 - dt * 14);
-          if (talk) {
-            let t = (now - talk.t0) / 1000;
-            if (t >= talk.total) talk = null;
-            else {
-              let i = 0; while (i < talk.syl.length && t > talk.syl[i].d) { t -= talk.syl[i].d; i++; }
-              const s = talk.syl[i];
-              if (s && s.v) {
-                const p = t / s.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
-                open = env * s.amp * (talk.quiet ? 0.3 : 1);
-                vowel[s.v] = Math.max(vowel[s.v], open);
-                if (s.stress && i !== lastStressIdx) {               // 낱말 첫소리: 눈썹 살짝(귀 쫑긋) + 가끔 끄덕
-                  lastStressIdx = i;
-                  if (!talk.quiet) { if (!introCalm) browKick = Math.max(browKick, 0.35 + Math.random() * 0.35); else if (Math.random() < 0.35) browKick = Math.max(browKick, 0.2 + Math.random() * 0.15); if (Math.random() < 0.45) nodKick = Math.max(nodKick, 0.6 + Math.random() * 0.5); }
-                }
-              }
-            }
-          }
-          if (voiceState?.speaking) {   // 실제 재생 중이면 오디오 레벨·모음이 입 모양을 덮어쓴다
-            open = clamp(voiceState.level, 0, 1) * 0.9;
-            if (voiceState.vowels) for (const k of VOW) vowel[k] = Math.max(vowel[k] * 0.4, clamp(voiceState.vowels[k] || 0, 0, 1));
-          }
-          mouthOpen += (open - mouthOpen) * Math.min(1, dt * 16);   // 입은 조금 부드럽게 따라감 (너무 파닥거리지 않게)
-          browKick *= Math.max(0, 1 - dt * (introCalm ? 2 : 3.5));
-          browVal = introCalm ? browVal + (browKick - browVal) * Math.min(1, dt * 5) : browKick;   // 시작 화면에선 눈썹·귀가 툭 튀지 않고 부드럽게 오르내림
-          nodKick *= Math.max(0, 1 - dt * 5);
-
-          // ---- 상태별 자세 (작업 중 = 살짝 앞으로, 대기 = 숙이고 갸웃, 실패 = 고개 숙임) ----
-          const goal = { lean: 0, headZ: 0, headY: 0, bodyY: 0 };
-          if (mood === "work") { goal.lean = -7; goal.headY = -5; }          // 작업 중: 상체를 조금 내밀고 화면을 내려다봄
-          if (mood === "wait") { goal.lean = -9; goal.headZ = 8; goal.headY = 3; }   // 대기: 다가와 갸웃하며 사용자를 올려다봄
-          if (mood === "sad") { goal.headY = -10; goal.bodyY = -5; }
-          const pk = Math.min(1, dt * 2.2);   // 두 단계로 따라가서 S자 곡선 (툭 끊기지 않게)
-          for (const key in goal) { pose1[key] += (goal[key] - pose1[key]) * pk; pose[key] += (pose1[key] - pose[key]) * pk; }
-
-          // ---- 고개 (AngleX/Y/Z): 시선 + 잔잔한 흔들림 + 말할 때 끄덕 ----
-          let yaw = hx.x * 22 + noise(T * 0.33, 1) * 6 * energy;
-          let pitch = hy.x * 13 + noise(T * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
-          let roll = noise(T * 0.27, 3) * 7.5 * energy - hx.x * hy.x * 7 + pose.headZ;
-          // 말하는 동안 고개를 천천히 좌우로 기울이고 살짝 돌림 (입만 움직이고 얼굴이 굳어 보이지 않게)
-          stareW += ((now < stareUntil ? 1 : 0) - stareW) * Math.min(1, dt * 6);
-          talkSway += ((talking && !muttering && now >= stareUntil ? 1 : 0) - talkSway) * Math.min(1, dt * 2.5);
-          const swayYaw = Math.sin(T * Math.PI * 2 * 0.31 + 1.3) * 4.5 * talkSway, swayPitch = Math.sin(T * Math.PI * 2 * 0.47 + 0.6) * 1.5 * talkSway;
-          if (talkSway > 0.01) { roll += Math.sin(T * Math.PI * 2 * 0.55) * 4 * talkSway; yaw += swayYaw; pitch += swayPitch; }
-          // ---- 몸 (PositionX/Y/Z·LeanInput → 물리가 몸통을 늦게 따라 움직임) ----
-          let bodyX = hx.x * 8 + noise(T * 0.17, 4) * 5 * energy;
-          let bodyZ = roll * 0.5 + noise(T * 0.21, 5) * 3 * energy;
-          spring(bob, 0, dt, 70, 6);   // 살짝 덜 감쇠: 한두 번 출렁이다 멈춤
-          let bodyY = pose.bodyY + Math.sin(T * 2 * Math.PI / 3.6) * 1.8 + clamp(bob.x, -14, 14);   // 숨쉬기 + 튕김
-          let lean = pose.lean, smile = 0, eyeSmileAdd = 0, eyeClose = 0, mouthAdd = 0;
-          if (mood === "work") bodyZ += Math.sin(T * 2.1) * 1.2;        // 작업 중엔 리듬 타기
-
-          // 제스처 출력은 바로 더하지 않고 채널별 스프링을 거쳐 더한다.
-          //   반응이 끝나거나 다른 반응으로 바뀌어도 그 순간의 자세·속도에서 이어지고, 0.5~0.8초에 걸쳐 대기 자세로 풀린다.
-          const GO = { yaw: 0, pitch: 0, roll: 0, bodyX: 0, bodyY: 0, bodyZ: 0, lean: 0, smile: 0, eyeSmile: 0, eyeClose: 0, mouth: 0 };
-          if (gest.name) {
-            const p = (now - gest.start) / gest.dur;
-            if (p >= 1) {
-              gest.name = null;
-              nextIdleGesture = Math.max(nextIdleGesture, now + 2500 + Math.random() * 3500);   // 복귀 직후 대기 몸짓이 곧바로 붙어 다시 움직이지 않게
-            } else {
-              const env = Math.sin(Math.PI * p), d = gest.dir;
-              switch (gest.name) {
-                case "nod": GO.pitch -= Math.abs(Math.sin(p * Math.PI * 4)) * 11 * env; GO.bodyY -= Math.abs(Math.sin(p * Math.PI * 4)) * 3 * env; break;   // 끄덕끄덕 (몸도 살짝 따라 숙임)
-                case "tilt": GO.roll += 15 * env * d; GO.bodyZ += 6 * env * d; GO.smile += env; break;                    // 고개 갸웃
-                case "lean": { const h = holdCurve(p, 0.3, 0.72); GO.lean -= 12 * h; GO.pitch += 4 * h; GO.roll += 8 * h * d; GO.bodyX += 4 * h * d; GO.smile += 0.7 * h; break; }   // 다가와 들여다보기: 몸은 앞으로, 턱은 살짝 들어 화면을 봄
-                case "sway": GO.bodyZ += Math.sin(p * Math.PI * 6) * 9 * env; GO.roll += Math.sin(p * Math.PI * 6) * 6 * env; GO.bodyX += Math.sin(p * Math.PI * 6) * 5 * env; GO.smile += env; break;   // 흔들흔들 (몸도 좌우로 → 가슴·머리카락 좌우 출렁임)
-                case "bounce": GO.bodyY += Math.abs(Math.sin(p * Math.PI * 4)) * 8 * env; GO.bodyZ += Math.sin(p * Math.PI * 4) * 6 * env; GO.smile += env; break;   // 신나서 통통
-                case "droop": GO.pitch -= 14 * env; GO.bodyY -= 6 * env; break;
-                case "flinch": { const k = p < 0.15 ? p / 0.15 : 1 - (p - 0.15) / 0.85; GO.pitch -= 7 * k; GO.bodyY -= 3 * k; break; }   // 움찔
-                case "bonk": { const k = p < 0.08 ? p / 0.08 : Math.pow(1 - (p - 0.08) / 0.92, 2); GO.pitch -= 22 * k; GO.bodyY -= 9 * k; GO.roll += 7 * k * d; GO.eyeClose += 0.6 * k; break; }   // 냄비에 맞음: 순간 푹 숙였다가 천천히 고개를 듦
-                case "laugh":                                                                                      // ^^ 눈웃음 + 어깨 들썩
-                  GO.eyeSmile += env; GO.eyeClose += env * 0.85; GO.smile += env;
-                  { const hb = holdCurve(p, 0.25, 0.65), hh = holdCurve(Math.max(0, p - 0.08) / 0.92, 0.3, 0.6);   // 몸이 먼저, 고개가 조금 늦게
-                    GO.lean -= 10 * hb; GO.pitch -= 9 * hh - (p > 0.7 ? 3 * Math.sin(Math.PI * (p - 0.7) / 0.3) : 0); GO.roll += 7 * hb * d; }
-                  GO.bodyY += Math.abs(Math.sin(p * Math.PI * 7)) * 7 * env; GO.mouth += 0.45 * env;   // 어깨 들썩 (가슴도 같이 출렁)
-                  break;
-              }
-            }
-          }
-          // 스프링을 거친 게스처 출력을 더한다 (게스처가 없을 땐 목표가 0이라 현재 속도에서 감속하며 대기 자세로 돌아간다)
-          for (const ch in GO) { const gk = GEST_K[ch]; spring(gestS[ch], GO[ch], dt, gk[0], gk[1]); }
-          yaw += gestS.yaw.x; pitch += gestS.pitch.x; roll += gestS.roll.x;
-          bodyX += gestS.bodyX.x; bodyY += gestS.bodyY.x; bodyZ += gestS.bodyZ.x; lean += gestS.lean.x;
-          smile += gestS.smile.x; eyeSmileAdd += gestS.eyeSmile.x; eyeClose += gestS.eyeClose.x; mouthAdd += gestS.mouth.x;
-          if (!gest.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {   // 가만히 있을 때 가끔 몸짓 (삐진 동안은 안 함)
-            const r = Math.random();
-            const pick = r < 0.3 ? "tilt" : r < 0.5 ? "sway" : r < 0.72 ? "lean" : r < 0.88 ? "nod" : "laugh";
-            play(pick, pick === "lean" ? 2600 : pick === "sway" ? 2300 : pick === "laugh" ? 1500 : 1800);
-            nextIdleGesture = now + 7000 + Math.random() * 9000;
-          }
-          touchLean += ((now < touchLeanUntil ? -30 : 0) - touchLean) * Math.min(1, dt * 4);   // 가슴 터치 때 가끔 앞으로 숙임
-          lean += touchLean;
-          const se = (now - shiverStarted) / 1000;                   // 부끄러워 떨기 (5초에 걸쳐 잦아듦)
-          if (se >= 0 && se < 5) {
-            const tr = Math.sin(se * Math.PI * 2 * 8) * Math.min(1, se / 0.2) * Math.pow(1 - se / 5, 1.5);
-            bodyZ -= tr * 3; roll += tr * 2;
-            // 떨림은 너무 빨라 가슴 물리가 따라오지 못하므로, 0.2초 안팎으로 몸을 위아래로 툭툭 쳐서 가슴이 그 박자에 출렁이게 함 (잦아들면 같이 약해짐)
-            if (now > shiverBobAt) { bobKick((shiverBobSign = -shiverBobSign) * 40 * Math.pow(1 - se / 5, 1.5)); shiverBobAt = now + 170 + Math.random() * 90; }
-          }
-          if (fleeX !== 0 && !walk.phase) bodyZ += Math.sin(T * 16) * 8;   // 도망가며 종종걸음
-          // 산책: 걸어가는 쪽으로 몸을 돌리고 통통 걸음 (walk.face: -1 = 왼쪽을 봄, 1 = 오른쪽을 봄). 돌아올 땐 반대쪽을 봄
-          const faceTo = walk.phase === "out" ? walk.dir : walk.phase === "in" ? -walk.dir : 0;
-          walk.face += (faceTo - walk.face) * Math.min(1, dt * 5);
-          const wa = Math.abs(walk.face);
-          if (wa > 0.01) {
-            const ph = T * Math.PI * 2 * 1.8, wf = walk.face;
-            yaw = yaw * (1 - wa) + 22 * wf; pitch -= 2 * wa; roll += Math.sin(ph) * 2.5 * wa;
-            bodyX += 6 * wf; bodyY += Math.abs(Math.sin(ph)) * 6 * wa; bodyZ += Math.sin(ph) * 4 * wa;
-          }
-          if (walkCheck) walkCheck(now);
-          // 끌기·던지기: 움직이는 반대쪽으로 몸이 쏠리고(관성) 머리카락·치마·리본은 물리로 따라 흔들림. 손을 멈추거나 놓으면 잦아듦
-          const lastSample = drag.samples.length ? drag.samples[drag.samples.length - 1][0] : 0;
-          if (!drag.on || now - lastSample > 60) { const f = Math.max(0, 1 - dt * 5); carry.vx *= f; carry.vy *= f; }
-          const cvx = clamp(carry.vx / 1600, -1, 1), cvy = clamp(carry.vy / 1600, -1, 1);
-          if (Math.abs(cvx) + Math.abs(cvy) > 0.002) {
-            bodyX -= cvx * 16; bodyZ -= cvx * 14; roll -= cvx * 12; yaw += cvx * 8;
-            bodyY -= cvy * 12; pitch += cvy * 10;
-          }
-          // 삐짐: 0.35초에 턱을 들고 고개를 홱 돌리고, 끝나기 1.2초 전부터 천천히 돌아옴
-          const sk = now < sulkUntil ? Math.min(sstep((now - sulkStart) / 350), sstep((sulkUntil - now) / 1200)) : 0;
-          let peek = 0;   // 몰래 보기 정도 (0 = 외면, 1 = 사용자 쪽을 봄)
-          if (sk > 0) {
-            const ts = now - sulkStart;
-            for (const p of sulkPeeks) {
-              const u = ts - p.at;
-              if (u < 0 || u > PEEK_RISE + PEEK_HOLD + PEEK_SNAP) continue;
-              if (u >= PEEK_RISE + PEEK_HOLD && !p.done) { p.done = true; if (p.flip) sulkDir = -sulkDir; }   // 다시 외면할 때 60% 확률로 반대쪽으로
-              peek = u < PEEK_RISE ? sstep(u / PEEK_RISE) : u < PEEK_RISE + PEEK_HOLD ? 1 : 1 - sstep((u - PEEK_RISE - PEEK_HOLD) / PEEK_SNAP);
-            }
-            const away = 1 - 0.75 * peek, k = Math.min(1, dt * 14);   // 고개는 빠르게 따라가서 방향을 바꿀 때 홱 돌아감
-            sulkYaw += (-24 * sulkDir * away - sulkYaw) * k;
-            sulkRoll += (-8 * sulkDir * away - sulkRoll) * k;
-            yaw = yaw * (1 - sk) + sulkYaw * sk; roll = roll * (1 - sk) + sulkRoll * sk;
-            pitch = pitch * (1 - sk) + SULK_CHIN * (1 - 0.6 * peek) * sk;
-            bodyX = bodyX * (1 - sk) + sulkYaw / 6 * sk; smile *= 1 - sk; eyeSmileAdd *= 1 - sk;
-          }
-          const sulkEye = sulkDir * (-0.45 + 0.85 * Math.min(1, peek * 1.8));   // 외면할 땐 눈도 피하고, 몰래 볼 땐 눈이 먼저 사용자 쪽으로
-
-          if (stareW > 0.01) { const k = 1 - stareW * 0.92; yaw = hx.x * 22 * (1 - stareW) + (yaw - hx.x * 22) * k; pitch *= k; roll *= k; bodyX *= k; bodyZ *= k; }   // 눈 맞춤 동안 얼굴·몸 흔들림을 거의 멈춤
-          yaw = clamp(yaw, -30, 30); pitch = clamp(pitch, -30, 30); roll = clamp(roll, -30, 30);
-          for (const [id, v] of [["AngleX", yaw], ["AngleY", pitch], ["AngleZ", roll], ["ParamAngleX", yaw], ["ParamAngleY", pitch], ["ParamAngleZ", roll],
-            ["PositionX", clamp(bodyX, -30, 30)], ["PositionY", clamp(bodyY, -30, 30)], ["PositionZ", clamp(bodyZ, -30, 30)], ["LeanInput", clamp(lean, -30, 30)]]) core.addParameterValueById(id, v);
-
-          // ---- 눈: 눈동자는 고개보다 먼저 (머리 기준 상대 위치) ----
-          // 눈동자는 작게만 (크게 움직이면 흰자가 드러나 곁눈질처럼 보임)
-          core.addParameterValueById("ParamEyeBallX", clamp(((ex.x - hx.x) * 0.9 + hx.x * 0.2) * 0.6, -0.45, 0.45) * (1 - sk) + sulkEye * sk - swayYaw / 30 * (1 - sk));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
-          core.addParameterValueById("ParamEyeBallY", clamp(((ey.x - hy.x) * 0.9 + hy.x * 0.2) * 0.6 - swayPitch / 30, -0.3, 0.3));
-          core.setParameterValueById("ParamBreath", 0.5 + 0.5 * Math.sin(T * 2 * Math.PI / 3.6));
-
-          // ---- 눈썹 (귀가 따라 움직임) ----
-          const brow = browVal + noise(T * 0.5, 7) * 0.12 + (mood === "wait" ? 0.25 : mood === "sad" ? -0.3 : 0) - 0.15 * happyMouth;
-          if (happyMouth > 0.01) core.addParameterValueById("BrowInnerUp", 0.55 * happyMouth);   // 곤란한 눈썹 (안쪽 끝이 올라감)
-          core.addParameterValueById("ParamBrowLY", clamp(brow, -1, 1));
-          core.addParameterValueById("ParamBrowRY", clamp(brow + noise(T * 0.6, 8) * 0.06, -1, 1));
-          if (browVal > 0.15) core.addParameterValueById("BrowInnerUp", Math.min(1, browVal * 0.6));
-
-          // ---- 입: 모음 모양 + 늘 살짝 웃는 입꼬리 ----
-          const openNow = clamp(mouthOpen + mouthAdd + 0.14 * happyMouth, 0, 1);   // 살짝 벌린 입
-          if (openNow > 0.01) {
-            core.setParameterValueById("ParamMouthOpenY", openNow * 0.9);
-            core.addParameterValueById("JawOpen", openNow * 0.45);
-            core.setParameterValueById("ParamSilence", 1 - openNow);
-            for (const k of VOW) if (vowel[k] > 0.01) core.addParameterValueById("Param" + k, Math.min(1, vowel[k]) * (VOW_EYE_SAFE[k] || 1));
-            if (mouthAdd > 0.01) core.addParameterValueById("ParamA", mouthAdd * 0.8);
-          }
-          happyMouth += ((now < happyMouthUntil ? 1 : 0) - happyMouth) * Math.min(1, dt * 5);
-          const baseSmile = (mood === "sad" ? 0 : mood === "wait" ? 0.15 : 0.35) * (1 - sk) + 0.2 * happyMouth;   // 부끄럽지만 좋아서 입꼬리가 조금 올라감 (곤란함이 섞여 크게는 안 웃음)
-          if (sk > 0.01) for (const [id, eased] of [["CheeckPuff", 0.5], ["Mouthpucker", 0.3], ["Angry", 0.5], ["Angry2", 0.5]]) core.addParameterValueById(id, sk * (1 - eased * peek));   // 볼 부풀리기·입 삐죽·찡그린 눈썹 (몰래 볼 땐 조금 풀림)
-          core.addParameterValueById("ParamMouthForm", clamp(baseSmile + smile * 0.4, -1, 1));
-          core.addParameterValueById("MouthSmile_L", clamp(baseSmile + smile * 0.5 + 0.3 * happyMouth, 0, 1));   // 한쪽만 더 올라간 어색한 웃음
-          core.addParameterValueById("MouthSmile_R", clamp(baseSmile + smile * 0.5 + noise(T * 0.3, 9) * 0.05, 0, 1));
-          const eSmile = clamp((mood === "sad" ? 0 : 0.12) + smile * 0.35 + eyeSmileAdd, 0, 1);
-          if (eSmile > 0.01) core.addParameterValueById("EyeSmile", eSmile);
-
-          // ---- 눈 깜빡임: 2~6초 불규칙, 가끔 두 번 ----
-          if (now >= blink.next && !laughing) {
-            blink.start = now;
-            blink.next = blink.double ? now + 2000 + Math.random() * 4000 : (Math.random() < 0.18 ? now + 260 : now + 2000 + Math.random() * 4000);
-            blink.double = !blink.double && blink.next - now < 400;
-          }
-          const bt = (now - blink.start) / 1000;
-          const blinkClose = bt < 0.07 ? bt / 0.07 : bt < 0.1 ? 1 : bt < 0.22 ? 1 - (bt - 0.1) / 0.12 : 0;
-          const eyeOpen = clamp((mood === "work" ? 0.92 : 0.97) * (1 - blinkClose) * (1 - eyeClose), 0, 1.2);
-          core.setParameterValueById("ParamEyeLOpen", eyeOpen); core.setParameterValueById("ParamEyeROpen", eyeOpen);
-
-          for (const [name, params] of Object.entries(exp)) {
-            const target = hold[name] || (until[name] || 0) > now ? 1 : 0;
-            // 하트·><·얄미운·빙글빙글 눈은 눈 그림 자체를 바꾸므로 한 번에 바꾸고, 그 순간 깜빡여 감춤
-            const EYE_SWAP = name === "heart" || name === "squint" || name === "smug" || name === "dizzy";
-            if (EYE_SWAP && (weight[name] > 0.5) !== (target > 0.5)) { blink.start = now - 0.07 * 1000; blink.next = Math.max(blink.next, now + 1500); }
-            const w = weight[name] = EYE_SWAP ? target : (weight[name] || 0) + (target - (weight[name] || 0)) * Math.min(1, dt * 6);
-            if (w < 0.01) continue;
-            for (const p of params) {
-              if (p.Blend === "Multiply") core.multiplyParameterValueById(p.Id, p.Value, w);
-              else if (p.Blend === "Add") core.addParameterValueById(p.Id, p.Value, w);
-              else core.setParameterValueById(p.Id, p.Value, w);
-            }
-          }
-          // ---- 왼손 가슴 가리기 ----
-          // 몸 앞 팔 그림은 아래팔 0.15~0.7 구간에서 손이 몸 바깥으로 크게 돌아 나가게 그려져 있어,
-          // 그 구간은 짧게(전체의 20%) 지나가고 가슴 근처(0.7 이후)에서 천천히 다가가 살짝 넘쳤다 자리 잡게 한다. 내릴 땐 같은 길을 거꾸로
-          {
-            const leaning = now < touchLeanUntil || touchLean < -2;   // 앞으로 숙이는 동안엔 손을 움직이지 않음
-            const want = now >= cover.start && now < cover.until && bodyW < 0.5 && fleeX === 0 && !leaning;   // 꼬마·산책·도망 중에도 안 함
-            const q0 = cover.q;
-            cover.q = clamp(cover.q + (want ? 1 : -1) * dt / 0.38, 0, 1);   // 올리는 데 0.38초
-            if (cover.q > 0) {
-              const q = cover.q, seg = (a, b, x) => clamp((x - a) / (b - a), 0, 1);
-              // 아래팔: 0~25% 살짝 들기(→0.15), 25~45% 바깥 구간 빠르게(→0.7), 45~80% 가슴으로(→0.89), 80~100% 자리 잡기(→0.86)
-              const fore = q < 0.25 ? 0.15 * sstep(q / 0.25) : q < 0.45 ? 0.15 + 0.55 * seg(0.25, 0.45, q) : q < 0.8 ? 0.7 + 0.19 * sstep(seg(0.45, 0.8, q)) : 0.89 - 0.03 * sstep(seg(0.8, 1, q));
-              const breath = Math.sin(T * Math.PI * 2 * 0.4) * 0.02 * sstep(seg(0.8, 1, q));   // 가린 채로도 미세하게 움직임
-              const vel = (cover.q - q0) / Math.max(dt, 1e-3);   // 움직이는 중에만 손목이 늦게 따라오며 꺾임
-              core.setParameterValueById("Movement2", 1);   // 몸 앞용 팔 그림 (손이 다 내려올 때까지 유지)
-              core.addParameterValueById("Param62", 0.034 * sstep(q));
-              core.addParameterValueById("Param59", 0.48 * sstep(seg(0, 0.6, q)));   // 위팔 원근은 아래팔보다 먼저
-              core.addParameterValueById("Param60", fore + breath);
-              core.addParameterValueById("Param61", clamp(vel * 0.06, -0.2, 0.2) * Math.sin(Math.PI * q));
-            }
-          }
-          // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
-          const of = prefs.outfit || {};
-          for (const [key, id, v] of OUTFIT_PARAMS) {
-            const w = outfitW[key] = (outfitW[key] || 0) + ((of[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
-            if (w > 0.005) core.addParameterValueById(id, v * w);
-          }
-          // 동물귀 숨김: 파라미터가 아니라 귀 파트(Part159)의 opacity를 보간한다. 파트가 없으면 no-op.
-          // (bbox·크기·다른 파트는 건드리지 않는다. 완전히 복구된 프레임에서만 opacity를 1로 되돌린다.)
-          const earWas = earW;
-          earW = earOpacityStep(earW, of.earHide === true, dt);
-          if (earPartIndex >= 0) {
-            if (earW > 0.005) applyEarOpacity(cm.parts, earPartIndex, earW);
-            else if (earWas > 0.005) cm.parts.opacities[earPartIndex] = 1;
-          }
-          const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
-          basinW += ((now < basinUntil ? 1 : 0) - basinW) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
-          if (basinW > 0.005) core.addParameterValueById("key10", basinW);
-          bodyW += ((walkingBody ? 1 : BODY_VALUE[of.bodyType] || 0) - bodyW) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
-          if (bodyW > 0.002) core.addParameterValueById("Clothes2", bodyW);
-          model.y = baseY + chibiDrop * clamp(bodyW, 0, 1);
-          if (outfitPrev && outfitTalk) {   // 켜는 순간 한마디 (처음 불러올 때는 말 안 함)
-            for (const [key] of OUTFIT_PARAMS) if (of[key] && !outfitPrev[key]) outfitTalk(OUTFIT_LINE[key]);
-            if ((of.bodyType || "default") !== (outfitPrev.bodyType || "default")) outfitTalk("body_" + (of.bodyType || "default"));
-          }
-          outfitPrev = { ...of };
+          updateChestDrag(now, dt);
+          const f = frameContext(now, dt);
+          updateEnergy(f);
+          updateGaze(f);
+          updateSpeech(f);
+          updateMoodPose(dt);
+          const m = baseMotion(f);
+          applyGesture(m, f);
+          applyTouchAndShiver(m, f);
+          applyWalk(m, f);
+          applyCarry(m, f);
+          const sulk = applySulk(m, f);
+          writeHeadBody(m);
+          writeEyes(m, f, sulk);
+          writeBrows(f);
+          writeMouth(m, f, sulk);
+          writeBlink(m, f);
+          writeExpressions(f);
+          writeCoverChest(f);
+          writeOutfit(f);
         },
       };
 
