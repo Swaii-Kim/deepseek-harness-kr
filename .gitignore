@@ -1,4 +1,3 @@
-harness/tools/node_modules/
 *.asar
 *.zip
 *.mp4
@@ -8,9 +7,6 @@ harness/tools/node_modules/
 대사/
 대사_검사결과.txt
 /dist/
-
-# 실행기 빌드 결과물
-harness/tools/launcher/*.exe
 
 # Development dependencies and package archives
 /node_modules/
