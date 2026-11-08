@@ -2755,7 +2755,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return false;
       };
       // ---- 포인터 누르기: 오른쪽 버튼 → 캐릭터 위인지 → 머리·가슴 제스처 예약 → 집기 예약 순서 ----
-      // 오른쪽 버튼 (단독으로는 다른 동작 없음)
+      /**
+       * 왼쪽이 아닌 버튼의 pointerdown 처리. 오른쪽 버튼 단독으로는 다른 동작 없음
+       * @param nowDown 누른 시각(performance.now(), ms)
+       */
       const rightButtonDown = (e: PointerEvent, nowDown: number) => {
         if (e.button === 2) {
           rightPress = rightStart(e);
@@ -2765,14 +2768,18 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         // 집기 예약을 되살린다. (두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 처리한다.)
         if ((e.buttons & 1) && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e, nowDown);
       };
-      // 머리를 누르면 쓰다듬기, 가슴을 누르면 위로 끄는지 지켜봄 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김). 머리였으면 true
+      /**
+       * 머리면 쓰다듬기 예약, 가슴이면 위로 끄는지 지켜보기 예약 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김)
+       * @param h 누른 자리의 hitAt 결과(그림 위가 아니면 null)
+       * @returns 머리였으면 true
+       */
       const armHeadOrChest = (e: PointerEvent, h: number[] | null) => {
         const head = !!h && performance.now() >= inputLockedUntil && touchRegion(h[0], h[1], h[2]) === "head";
         if (head) strokeFrom = { x: e.clientX, y: e.clientY, t: performance.now(), h };
         else if (h && canPullChest(performance.now()) && touchRegion(h[0], h[1], h[2]) === "chest") chestFrom = { x: e.clientX, y: e.clientY, id: e.pointerId, h };
         return head;
       };
-      // 터치 화면에는 오른쪽 버튼이 없으니, 길게 누르면 집기 모드로 바꾼다 (그 뒤 움직이면 옮겨짐, 그냥 떼면 터치 반응)
+      /** 터치 길게 누르기의 집기 모드 전환 예약. 터치 화면에는 오른쪽 버튼이 없기 때문 (그 뒤 움직이면 옮겨짐, 그냥 떼면 터치 반응) */
       const armTouchHold = (e: PointerEvent) => {
         clearTimeout(touchHold);
         touchHold = setTimeout(() => {
@@ -2782,7 +2789,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           if (PET) PET.press(true);
         }, TOUCH.grabMs);
       };
-      // 끌 수도 있으니 누르는 순간 펫 창을 숨긴 채 미리 띄움. 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김
+      /** 누르는 순간 펫 창을 숨긴 채 미리 띄우기(끌 수도 있으므로). 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김 */
       const preparePetOnPress = () => {
         if (link.supported && link.petState === "none") link.post("warm");
         else if (!PET && link.petState === "shown" && !link.open && !link.follow) link.post("hide");
@@ -2834,16 +2841,25 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
       }, true);
       life.listen(document, "mouseup", (e) => { if (e.button === 2) rightPress = null; }, true);
-      // 빠르면 냄비, 느리면 세숫대야 (확실히 빠르게 쓸어야 냄비, 짧고 조금 비스듬해도 세숫대야)
-      const strokeKind = (st: { x: number; y: number; t: number }, e: PointerEvent) => {
-        const dy = e.clientY - st.y, dx = Math.abs(e.clientX - st.x);
-        if (performance.now() - st.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
+      /**
+       * 머리 쓸기 종류 판정: 빠르면 냄비, 느리면 세숫대야 (확실히 빠르게 쓸어야 냄비, 짧고 조금 비스듬해도 세숫대야)
+       * @param stroke 쓸기를 시작한 자리와 시각(strokeFrom)
+       * @returns "pot"·"basin", 아직 어느 쪽도 아니면 null
+       */
+      const strokeKind = (stroke: { x: number; y: number; t: number }, e: PointerEvent) => {
+        const dy = e.clientY - stroke.y, dx = Math.abs(e.clientX - stroke.x);
+        if (performance.now() - stroke.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
         return dy > 40 && dy > dx * 0.8 ? "basin" : null;
       };
       // 집어 옮기기 키: 설정(prefs.drag.key)을 누른 채 왼쪽 버튼으로 끌면 옮길 수 있다.
       // 수식 키(Alt·Ctrl·Shift·Cmd)는 포인터 이벤트의 상태로, 그 밖의 키 하나는 keydown/keyup으로 기억한다.
       // 기존처럼 왼쪽·오른쪽 버튼을 함께 누르는 방식도 그대로 동작한다.
-      const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();   // 빈 문자열은 '이동 키 없음'으로 유지한다
+      /** 설정의 이동 키 원문(기본 "Alt"). 빈 문자열은 '이동 키 없음'으로 유지 */
+      const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();
+      /**
+       * 이동 키 설정을 비교용 토큰으로 정규화
+       * @returns 수식 키면 "alt"·"ctrl"·"shift"·"meta", 그 밖은 소문자 KeyboardEvent.key 값, 이동 키 없음이면 ""
+       */
       const dragKeyToken = () => {
         const text = dragKeyRaw().toLowerCase();
         if (!text || text === "none") return "";
@@ -2857,11 +2873,20 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 펫 창은 별도 창이라 키 입력을 직접 못 받을 수 있다(창에 포커스가 없음). 창 안 캐릭터가 키 상태를 대신 전달한다.
       // 수식 키는 포인터 이벤트의 상태로 알 수 있어, 일반 키만 전달하면 된다.
       const DRAG_MODIFIER_TOKENS = new Set(["alt", "ctrl", "shift", "meta"]);
+      /**
+       * 일반 이동 키의 눌림 상태를 열린 펫 창에 전달 (창 안 캐릭터에서만)
+       * @param token 정규화한 키 토큰
+       * @param on true면 눌림, false면 뗌
+       */
       const relayDragKey = (token: string, on: boolean) => {
         if (PET || !link.open || !token || DRAG_MODIFIER_TOKENS.has(token)) return;
         if (dragKeyToken() !== token) return;
         try { link.post("send", { list: [["dragheld", [token, on]]] }); } catch {}
       };
+      /**
+       * 키 눌림 상태 기억과 펫 창 전달
+       * @param on true면 keydown, false면 keyup
+       */
       const rememberKey = (e: KeyboardEvent, on: boolean) => {
         const token = String((e && e.key) || "").toLowerCase();
         if (!token) return;
@@ -2871,6 +2896,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       addEventListener("keydown", (e) => rememberKey(e, true));
       addEventListener("keyup", (e) => rememberKey(e, false));
       addEventListener("blur", () => pressedKeys.clear());
+      /** 왼쪽 버튼과 함께 설정한 이동 키를 누르고 있는지 여부 */
       const dragKeyHeld = (e: MouseEvent) => {
         if ((e.buttons & 1) !== 1) return false;
         const token = dragKeyToken();
@@ -2884,13 +2910,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 터치 제스처 판정: 움직인 방향으로 쓰다듬기/끌기를 정하고, 가만히 길게 누르면 집기로 본다.
       // 세로로 임계(8px) 이상 움직이면 쓰다듬기로 보고 길게 누르기 타이머를 취소한다(느린 스트로크가 집기로 바뀌지 않게).
       const TOUCH = { grabMs: 320, movePx: 14, verticalPx: 8 };
+      /**
+       * 터치 이동량·누른 시간으로 제스처 판정
+       * @returns "grab"(집기), "stroke"(쓰다듬기), "wait"(아직 판단 보류)
+       */
       const touchGesture = ({ dx = 0, dy = 0, heldMs = 0, grabMs = TOUCH.grabMs, movePx = TOUCH.movePx, verticalPx = TOUCH.verticalPx }) => {
         if (Math.hypot(dx, dy) > movePx && Math.abs(dx) > Math.abs(dy) * 1.2) return "grab";
         if (Math.abs(dy) > verticalPx || Math.hypot(dx, dy) > movePx) return "stroke";
         return heldMs >= grabMs ? "grab" : "wait";
       };
       // ---- 포인터 이동: 터치 제스처 판정 → 가슴 끌기 → 쓰다듬기 → 집어 옮기기 순서로 넘긴다 ----
-      // 터치: 가로로 끌면 길게 누르기를 기다리지 않고 바로 집기, 세로로 움직이면 쓰다듬기로 남긴다.
+      /** 터치 이동 분류: 가로로 끌면 길게 누르기를 기다리지 않고 바로 집기, 세로로 움직이면 쓰다듬기로 남김 */
       const classifyTouchMove = (e: PointerEvent) => {
         if (!(e.pointerType === "touch" && drag.pending && !drag.pending.touchGrab && !drag.pending.touchStroke && e.pointerId === drag.pending.id)) return;
         const dx = e.clientX - drag.pending.sx, dy = e.clientY - drag.pending.sy;
@@ -2900,9 +2930,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (gesture === "grab") drag.pending.touchGrab = true;
         else drag.pending.touchStroke = true;   // 세로 쓰다듬기: 타이머가 뒤늦게 집기로 바꾸지 않게
       };
-      // 가슴을 누른 채 움직임: 위로 끌면 가슴 끌기, 다른 쪽이면 평소 끌기로 넘긴다. 이 이동을 여기서 끝냈으면 true
+      /**
+       * 가슴을 누른 채 움직임 처리: 위로 끌면 가슴 끌기, 다른 쪽이면 평소 끌기로 넘김. chestFrom이 있을 때만 호출
+       * @returns 이 이동을 여기서 끝냈으면 true
+       */
       const chestMove = (e: PointerEvent) => {
-        const dy = e.clientY - chestFrom!.y, dx = e.clientX - chestFrom!.x, now = performance.now();   // chestFrom이 있을 때만 부른다
+        const dy = e.clientY - chestFrom!.y, dx = e.clientX - chestFrom!.x, now = performance.now();
         if (!chestDragging) {
           if (dy < -12 && Math.abs(dy) > Math.abs(dx) && canPullChest(now)) {
             chestDragging = true; shy.count = 0; headClicks = []; clicks = [];
@@ -2926,41 +2959,52 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         e.preventDefault(); e.stopPropagation(); swallowClick = true;
         return true;
       };
-      // 머리를 누른 채 움직임: 빠르게 쓸면 냄비, 천천히 쓸면 세숫대야. 아직 판단을 미뤄야 해도 true (끌기 시작 안 함)
+      /**
+       * 머리를 누른 채 움직임 처리: 빠르게 쓸면 냄비, 천천히 쓸면 세숫대야. strokeFrom이 있을 때만 호출
+       * @returns 이 이동을 여기서 끝냈거나 아직 판단을 미뤄야 하면 true (끌기 시작 안 함)
+       */
       const strokeMove = (e: PointerEvent) => {
-        const st = strokeFrom!, kind = strokeKind(st, e);   // strokeFrom이 있을 때만 부른다
+        const stroke = strokeFrom!, kind = strokeKind(stroke, e);
         if (kind) {
           strokeFrom = null; if (drag.pending) { drag.pending = null; if (PET) PET.press(false); }
-          if (kind === "pot") potHit(st.x, st.y); else putBasin();
+          if (kind === "pot") potHit(stroke.x, stroke.y); else putBasin();
           return true;
         }
-        const dy = e.clientY - st.y, dx = Math.abs(e.clientX - st.x);
+        const dy = e.clientY - stroke.y, dx = Math.abs(e.clientX - stroke.x);
         // 아직 6px 안 움직였거나 아래로 쓸어내리는 중일 수 있으면 끌기 시작을 미룸, 끌 수 없는 때(시작 연출·도망 중)는 떼는 순간 터치
         if (!drag.pending || Math.hypot(dx, dy) < 6 || (dy > 0 && dy > dx * 0.8)) return true;
         strokeFrom = null;
         return false;
       };
-      // 집어 옮기기를 시작한다 (들고 있는 동안 식은땀, 펫 창이면 창 이동을 펫 프로세스에 맡김)
-      const beginCarry = (e: PointerEvent, p: DragPending, px: number, py: number, now: number) => {
+      /**
+       * 집어 옮기기 시작 (들고 있는 동안 식은땀, 펫 창이면 창 이동을 펫 프로세스에 맡김)
+       * @param pending 누를 때 만든 끌기 예약
+       * @param px 커서 x (창 안 = 창 좌표, 펫 창 = 화면 좌표)
+       * @param py 커서 y (창 안 = 창 좌표, 펫 창 = 화면 좌표)
+       */
+      const beginCarry = (e: PointerEvent, pending: DragPending, px: number, py: number, now: number) => {
         cancelWalk();   // 산책 가려고 말하던 중이면 취소
-        drag.on = true; drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false;
+        drag.on = true; drag.touch = e.pointerType === "touch" || !!(pending && pending.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false;
         try { document.documentElement.setPointerCapture(e.pointerId); } catch {}
         document.documentElement.classList.add("dsc-grabbing");
         until.sweat = Infinity;   // 들고 있는 동안 식은땀
         walk.lastTouch = now;
         if (PET) {   // 펫 창을 직접 끌 때도 창은 펫 프로세스가 커서를 읽는 즉시 옮김 (이벤트 → 페이지 계산 → 되돌려 받는 왕복은 몇 프레임 늦고 끊김)
-          petGrab = { x: p.ox, y: p.oy }; petTracking = true;
-          drag.x = px - p.ox; drag.y = py - p.oy; drag.samples = [[now, px, py]];
+          petGrab = { x: pending.ox, y: pending.oy }; petTracking = true;
+          drag.x = px - pending.ox; drag.y = py - pending.oy; drag.samples = [[now, px, py]];
           PET.send({ type: "track", on: true, grab: petGrab, off: { x: (innerWidth - W * free.k) / 2, y: innerHeight - H * free.k } });
         }
       };
-      // 들고 움직이는 중: 위치와 던질 속도를 갱신하고, 창 밖으로 나가면 펫 창이 따라오게 한다
-      const carryMove = (e: PointerEvent, p: DragPending) => {
+      /**
+       * 들고 움직이는 중 처리: 위치와 던질 속도 갱신, 창 밖으로 나가면 펫 창이 따라오게 함
+       * @param pending 누를 때 만든 끌기 예약
+       */
+      const carryMove = (e: PointerEvent, pending: DragPending) => {
         strokeFrom = null; chestFrom = null;   // 좌우 함께 = 무조건 집어 옮기기 (남아 있던 제스처 예약을 버림)
         const [px, py] = pt(e), now = performance.now();
-        if (!drag.on) beginCarry(e, p, px, py, now);
+        if (!drag.on) beginCarry(e, pending, px, py, now);
         if (PET && petTracking) { e.preventDefault(); return; }   // 이후 위치·속도는 펫 프로세스가 보내는 cursor 메시지로 갱신
-        drag.x = px - p.ox; drag.y = py - p.oy;
+        drag.x = px - pending.ox; drag.y = py - pending.oy;
         drag.samples.push([now, px, py]);
         while (drag.samples.length > 2 && now - drag.samples[0][0] > 100) drag.samples.shift();
         const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1000;
@@ -2968,8 +3012,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!PET) followPet(now);
         e.preventDefault();
       };
-      // 왼쪽·오른쪽을 함께 누르거나, 보조 키(기본 Alt)를 누른 채 움직이면 곧바로 집어 옮긴다 (머리 쓰다듬기·가슴 끌기 판정과 6px 기준을 거치지 않음).
-      // 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급한다
+      /**
+       * 곧바로 집어 옮길 조건 여부: 왼쪽·오른쪽을 함께 누르거나, 보조 키(기본 Alt)를 누른 채 움직임 (머리 쓰다듬기·가슴 끌기 판정과 6px 기준을 거치지 않음)
+       * 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급
+       */
       const carryHeld = (e: PointerEvent) => {
         const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
         const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
@@ -2983,22 +3029,25 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const both = carryHeld(e);
         if (chestFrom && !both && e.pointerId === chestFrom.id && chestMove(e)) return;
         if (strokeFrom && !both && strokeMove(e)) return;
-        const p = drag.pending;
-        if (!p || e.pointerId !== p.id) return;
+        const pending = drag.pending;
+        if (!pending || e.pointerId !== pending.id) return;
         // 손을 뗀 이벤트(pointerup)를 놓쳤으면 버튼 상태로 알아채고 그 자리에서 놓음 (펫 창이 커서 아래로 따라오며 다시 그려질 때 등)
         if (e.buttons === 0) return endDrag(e, false);
         // 집어 옮기기는 왼쪽·오른쪽 버튼을 함께 눌렀을 때만. 한쪽만 누른 채 끌면 예전처럼 터치·머리 쓰다듬기·가슴 끌기로 남는다
         if (!both) { if (drag.on) endDrag(e, false); return; }
-        carryMove(e, p);
+        carryMove(e, pending);
       }, true);
-      // 끄는 도중 몸이 창 밖으로 나가면 같은 자리에 펫 창을 띄워 커서를 따라오게 함 (창 안 그림은 창 경계에서 잘리므로)
-      // 펫 창이 준비된 뒤에만 따라붙고, 위치는 한 번에 하나만 보냄 (여러 요청이 겹치면 도착 순서가 뒤섞여 예전 자리로 튐)
+      /**
+       * 끄는 도중 몸이 창 밖으로 나가면 같은 자리에 펫 창을 띄워 커서를 따라오게 함 (창 안 그림은 창 경계에서 잘리므로)
+       * 펫 창이 준비된 뒤에만 따라붙고, 위치는 한 번에 하나만 보냄 (여러 요청이 겹치면 도착 순서가 뒤섞여 예전 자리로 튐)
+       * @param now 현재 시각(performance.now(), ms)
+       */
       const followPet = (now: number) => {
         if (!link.supported || link.open) return;
         const k = free.k;
         // 몸의 15% 넘게 창 밖으로 나가야 넘김 (제자리는 창 오른쪽 끝에서 4px 안쪽이라 살짝만 끌어도 넘어가던 것 방지)
         const out = bodyOut({ k, x: drag.x, y: drag.y });
-        const s = screenOf(drag.x, drag.y), pose = { k, x: s.x, y: s.y };
+        const screenPos = screenOf(drag.x, drag.y), pose = { k, x: screenPos.x, y: screenPos.y };
         if (!link.follow) {
           if (!out) return;
           if (link.petState !== "hidden") {   // 아직 준비 중이면 상태만 다시 확인 (그동안은 창 안에서 끄는 그대로)
@@ -3010,24 +3059,33 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
         // 열린 뒤 위치는 보내지 않음: 펫 프로세스가 커서를 직접 읽어 따라옴 (HTTP 왕복은 수십~수백 ms 걸려 끌 때 끊김)
       };
-      // 손을 놓을 때 펫 창이 따라오던 중이면: 창 밖이면 펫 창이 이어받고, 창 안으로 돌아왔으면 펫 창을 숨기고 창 안에서 이어 감
+      /**
+       * 손을 놓을 때 펫 창이 따라오던 중이면 마무리: 창 밖이면 펫 창이 이어받고, 창 안으로 돌아왔으면 펫 창을 숨기고 창 안에서 이어 감. link.follow가 있을 때만 호출
+       * @param vx 던질 속도 x(px/s)
+       * @param vy 던질 속도 y(px/s)
+       * @returns 펫 창이 이어받았으면 true, 평소처럼 놓아야 하면 false
+       */
       const finishFollow = (vx: number, vy: number) => {
-        const f = link.follow;
+        const follow = link.follow;
         link.follow = null; link.queue = []; lastPlaceKey = "";   // 숨김으로 끝날 수도 있으니 이번 회차 반응은 버림 (이어받으면 link.enter가 표정·자세를 다시 맞춤)
         // 놓을 때도 끌어낼 때와 같은 기준 (몸 가운데로 보면 일부만 밖으로 끌고 놓았을 때 창 안으로 처리돼 다시 붙었음)
         // 미끄러진 뒤 자리 기준. 펫 창이 이미 보이면 나올 때 기준, 아직 안 떴으면 release와 같은 넘어갈 때 기준 (둘 사이에서 놓쳐 둘로 보이지 않게)
-        const outside = bodyOut({ k: free.k, x: drag.x + vx * GLIDE, y: drag.y + vy * GLIDE }, !f!.shown);   // link.follow가 있을 때만 부른다
-        if (outside && f!.shown) { link.post("send", { list: [["release", [vx, vy]]] }); link.enter(); return true; }
+        const outside = bodyOut({ k: free.k, x: drag.x + vx * GLIDE, y: drag.y + vy * GLIDE }, !follow!.shown);
+        if (outside && follow!.shown) { link.post("send", { list: [["release", [vx, vy]]] }); link.enter(); return true; }
         if (!outside) link.post("hide");
         return false;   // 아직 안 떴으면 평소처럼 놓기 (창 밖이면 펫 창을 다시 열어 미끄러짐)
       };
+      /**
+       * 누름·끌기 끝내기: 끌지 않고 뗐으면 터치 반응, 들고 있었으면 놓기(던지기·펫 창 이어받기)
+       * @param cancel true면 취소(pointercancel·포커스 잃음)라 터치 반응 없음
+       */
       const endDrag = (e: PointerEvent, cancel: boolean) => {
-        const p = drag.pending;
-        if (!p || e.pointerId !== p.id) return;   // 다른 손가락의 이벤트가 첫 손가락의 길게 누르기를 취소하지 않게 함
+        const pending = drag.pending;
+        if (!pending || e.pointerId !== pending.id) return;   // 다른 손가락의 이벤트가 첫 손가락의 길게 누르기를 취소하지 않게 함
         clearTimeout(touchHold);
         drag.pending = null; strokeFrom = null;
         if (PET) PET.press(false);
-        if (!drag.on) { if (!cancel && p.h) onTouch(p.h[0], p.h[1], p.h[2]); return; }   // 끌지 않고 뗌 = 터치 (그림 위에서 눌렀을 때만)
+        if (!drag.on) { if (!cancel && pending.h) onTouch(pending.h[0], pending.h[1], pending.h[2]); return; }   // 끌지 않고 뗌 = 터치 (그림 위에서 눌렀을 때만)
         drag.on = false;
         if (PET && petTracking) { petTracking = false; petGrab = null; PET.send({ type: "track", on: false }); }   // 이제부터 창 이동은 다시 페이지가 맡음 (놓은 뒤 미끄러짐·붙기)
         try { document.documentElement.releasePointerCapture(e.pointerId); } catch {}
@@ -3047,14 +3105,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           releaseChest();
           if (dragged) { if (PET) PET.press(false); return; }   // 끌지 않고 뗐으면 아래 endDrag가 원래 가슴 터치 반응
         }
-        const st = strokeFrom; strokeFrom = null;
+        const stroke = strokeFrom; strokeFrom = null;
         if (drag.pending) return endDrag(e, false);
-        if (st) onTouch(st.h[0], st.h[1], st.h[2]);   // 쓸어내리지 않고 떼면 원래 머리 터치 반응
+        if (stroke) onTouch(stroke.h[0], stroke.h[1], stroke.h[2]);   // 쓸어내리지 않고 떼면 원래 머리 터치 반응
       }, true);
       addEventListener("blur", () => { mouseButtons = 0; chord = chordUp(chord, 0); rightPress = null; releaseChest(); if (drag.pending) endDrag({ pointerId: drag.pending.id } as PointerEvent, !drag.on); });   // 창 포커스를 잃으면 끄기를 끝냄
       life.listen(document, "pointercancel", (e) => {
         mouseButtons = 0; chord = chordUp(chord, e.buttons); rightPress = null;
-        if (chestFrom && e.pointerId === chestFrom.id) { const d = chestDragging; releaseChest(); if (d && PET) PET.press(false); }
+        if (chestFrom && e.pointerId === chestFrom.id) { const wasDragging = chestDragging; releaseChest(); if (wasDragging && PET) PET.press(false); }
         endDrag(e, true);
       }, true);
       for (const type of ["pointerup", "mousedown", "mouseup", "click", "dblclick"]) {
@@ -3085,6 +3143,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       }, true);
       // 터치에서 캐릭터를 잡고 있는 동안 손가락 움직임이 페이지 스크롤로 해석되면 pointercancel이 와서 집기가 풀린다.
       // touch-action 대신 터치 이벤트에서 직접 기본 동작을 막는다 (스크롤이 시작되기 전에 취소해야 함)
+      /** 터치가 창 안 캐릭터 그림 위에서 시작했는지 여부 (펫 창은 제외) */
       const touchOnBody = (e: TouchEvent) => {
         const t = e.touches && e.touches[0];
         return !!t && !PET && hitAt(t.clientX, t.clientY) !== null;
@@ -3097,7 +3156,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 휠로 크기 조절: 몸 위에서 올리면 커지고 내리면 작아짐 (몸 아래 가운데를 기준으로). 들고 있을 때·움직이는 중·산책·도망 중엔 무시
       //   펫 창 = 0.45배 ~ 화면에 들어가는 크기 (넘겨받을 때는 HEAD_GAIN으로 머리 크기를 창 안과 맞춤)
       //   창 안 = 자유 위치일 때만 0.42배~그 창에 들어가는 최대치. 제자리에 붙어 있으면 크기는 자동이라 휠은 대화 스크롤 그대로
-      // 휠이 캐릭터 크기를 바꾸는 때: 모바일이 아니고(캐릭터 위 휠이 대화 스크롤을 막지 않게), 지금 입력 모드의 자유 위치이고, 몸 위일 때
+      /** 휠이 캐릭터 크기를 바꾸는 때 여부: 모바일이 아니고(캐릭터 위 휠이 대화 스크롤을 막지 않게), 지금 입력 모드의 자유 위치이고, 몸 위일 때 */
       const wheelResizes = (e: WheelEvent) => (PET || !coarsePointer()) && free.applied && intro.phase === "done" && free.on && overBody(e.clientX, e.clientY);
       life.listen(document, "wheel", (e) => {
         if (hidden) return;
@@ -3106,9 +3165,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         e.preventDefault(); e.stopPropagation();   // 캐릭터 위에서는 대화 스크롤 대신 크기 조절
         if (drag.on || free.anim || walk.phase || fleeX !== 0) return;
         const kMin = PET ? PET_K_MIN : SHOW_K, kMax = PET ? PET_K_MAX : Math.min(1.25, (innerHeight * 0.45) / visH);
-        const k0 = Math.min(free.k, kMax), k = Math.min(kMax, Math.max(kMin, k0 * Math.exp(-e.deltaY * 0.0012)));
-        if (k === k0) return;
-        if (PET) { free.x += W * (k0 - k) / 2; free.y += H * (k0 - k); }   // 창 안은 비율 자리(몸 가운데·아래 끝)라 그대로 둬도 아래 가운데 기준
+        const fromK = Math.min(free.k, kMax), k = Math.min(kMax, Math.max(kMin, fromK * Math.exp(-e.deltaY * 0.0012)));
+        if (k === fromK) return;
+        if (PET) { free.x += W * (fromK - k) / 2; free.y += H * (fromK - k); }   // 창 안은 비율 자리(몸 가운데·아래 끝)라 그대로 둬도 아래 가운데 기준
         free.k = k;
         if (!PET) saveFree(false);
         else { petRememberRatio(petRatio()); petSyncMenu(); renderPetPanel(); }   // 펫 창: 메뉴·패널과 같은 배율을 함께 쓴다
@@ -3119,18 +3178,32 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // place()가 hitbox에 패널 사각형을 더하고, 패널이 들어갈 만큼 창도 키운다.
       const PET_OUTFIT_ROWS = OUTFIT_ITEMS.map((item) => [item.key, item.ko]);
       const PET_BODY_ROWS = BODY_TYPES.map((body) => [body.key, body.ko]);
-      function petKFit() {   // 펫 창이 화면에 들어가며 그릴 수 있는 최대 배율
+      /** 펫 창이 화면에 들어가며 그릴 수 있는 최대 배율 */
+      function petKFit() {
         return Math.min(PET_K_MAX, (screen.availHeight - PET_BUBBLE) / H, (screen.availWidth - 40) / W);
       }
+      /**
+       * 펫 창 배율을 최소 배율~화면에 들어가는 최대 배율로 제한
+       * @returns 유한한 수가 아니면 null
+       */
       function petClampK(k: number) {
         const n = Number(k);
         return Number.isFinite(n) ? Math.min(petKFit(), Math.max(PET_K_MIN, n)) : null;
       }
-      function petRatio() { return petBaseK > 0 ? free.k / petBaseK : 1; }   // 기본(머리 맞춤) 크기 대비 배율
+      /** 기본(머리 맞춤) 크기 대비 지금 펫 창 배율 */
+      function petRatio() { return petBaseK > 0 ? free.k / petBaseK : 1; }
+      /**
+       * 기본 크기 대비 배율로 고를 수 있는 범위
+       * @returns minR·maxR (기본 대비 배율, maxR은 minR보다 최소 0.01 큼)
+       */
       function petRatioBounds() {
         const minR = Math.max(0.05, PET_K_MIN / petBaseK);
         return { minR, maxR: Math.max(minR + 0.01, petKFit() / petBaseK) };
       }
+      /**
+       * localStorage에 기억해 둔 펫 창 크기(기본 대비 배율) 읽기
+       * @returns 0.1~8 범위의 저장값, 없거나 범위 밖이거나 펫 창이 아니면 1
+       */
       function petLoadRatio() {
         if (!PET) return 1;
         try {
@@ -3138,18 +3211,28 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           return Number.isFinite(n) && n >= 0.1 && n <= 8 ? n : 1;
         } catch { return 1; }
       }
-      function petRememberRatio(r: number) {
-        if (!PET || !Number.isFinite(r) || r <= 0) return;
+      /**
+       * 펫 창 크기(기본 대비 배율) 저장. 연속 변경을 250ms 뒤 한 번으로 묶음
+       * @param ratio 기본(머리 맞춤) 크기 대비 배율
+       */
+      function petRememberRatio(ratio: number) {
+        if (!PET || !Number.isFinite(ratio) || ratio <= 0) return;
         clearTimeout(petSizeTimer);
-        petSizeTimer = setTimeout(() => { try { localStorage.setItem(PET_SIZE_KEY, String(+r.toFixed(3))); } catch {} }, 250);
+        petSizeTimer = setTimeout(() => { try { localStorage.setItem(PET_SIZE_KEY, String(+ratio.toFixed(3))); } catch {} }, 250);
       }
-      function petSizedPose(pose: Pose, fromK: number, ratio: number) {   // 아래 가운데를 기준으로 크기만 바꾼 자리
+      /**
+       * 아래 가운데를 기준으로 크기만 바꾼 자리
+       * @param fromK pose의 지금 배율
+       * @param ratio 기본(머리 맞춤) 크기 대비 목표 배율, null이면 pose 그대로
+       */
+      function petSizedPose(pose: Pose, fromK: number, ratio: number) {
         if (ratio == null) return pose;
         const k = petClampK(petBaseK * ratio);
         if (k == null || Math.abs(k - fromK) < 1e-3) return pose;
         return { k, x: pose.x + W * (fromK - k) / 2, y: pose.y + H * (fromK - k) };
       }
-      function petSyncMenu() {   // 우클릭 메뉴 체크 표시용 상태 (펫 프로세스가 메뉴를 만들 때 씀)
+      /** 우클릭 메뉴 체크 표시용 상태(크기·소품) 전송. 펫 프로세스가 메뉴를 만들 때 씀, 바뀌었을 때만 보냄 */
+      function petSyncMenu() {
         if (!PET) return;
         const outfit = prefs.outfit || {};
         const sig = JSON.stringify([+petRatio().toFixed(3), outfit]);
@@ -3157,13 +3240,23 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         petMenuSig = sig;
         PET.send({ type: "state", value: { size: +petRatio().toFixed(3), outfit } });
       }
+      /**
+       * 클릭을 받을 영역에 열린 설정 패널 사각형을 더함 (창 좌표)
+       * @param body 몸의 클릭 영역, 없으면 null
+       * @returns 패널이 닫혀 있으면 body 그대로
+       */
       function petPanelBox(body: PetBox | null) {
         if (!PET || !petPanelOpen || !petPanel) return body;
-        const r = petPanel.getBoundingClientRect();
-        const box = { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) };
+        const rect = petPanel.getBoundingClientRect();
+        const box = { l: Math.round(rect.left), t: Math.round(rect.top), r: Math.round(rect.right), b: Math.round(rect.bottom) };
         return body ? { l: Math.min(body.l, box.l), t: Math.min(body.t, box.t), r: Math.max(body.r, box.r), b: Math.max(body.b, box.b) } : box;
       }
-      function petSetRatio(ratio: number, ms: number) {   // 메뉴·슬라이더에서 크기 변경 (아래 가운데 기준)
+      /**
+       * 메뉴·슬라이더에서 펫 창 크기 변경 (아래 가운데 기준)
+       * @param ratio 기본(머리 맞춤) 크기 대비 배율
+       * @param ms 크기 애니메이션 시간, 0이면 바로 적용
+       */
+      function petSetRatio(ratio: number, ms: number) {
         const k = petClampK(petBaseK * ratio);
         if (k == null || drag.on) return;
         const from = free.on && shown.k ? { k: shown.k, x: shown.x, y: shown.y } : { k: free.k, x: free.x, y: free.y };
@@ -3178,24 +3271,26 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         petSyncMenu();
         renderPetPanel();
       }
+      /** 설정 패널의 크기 슬라이더·소품·체형 표시를 지금 상태로 갱신 */
       function renderPetPanel() {
         if (!petPanel) return;
         const { minR, maxR } = petRatioBounds();
-        const minPct = Math.max(5, Math.ceil(minR * 100)), maxPct = Math.max(minPct + 1, Math.floor(maxR * 100));
-        const pct = Math.min(maxPct, Math.max(minPct, Math.round(petRatio() * 100)));
+        const minPercent = Math.max(5, Math.ceil(minR * 100)), maxPercent = Math.max(minPercent + 1, Math.floor(maxR * 100));
+        const percent = Math.min(maxPercent, Math.max(minPercent, Math.round(petRatio() * 100)));
         const slider = petPanel.querySelector<HTMLInputElement>("[data-size-slider]");
         if (slider) {
-          if (slider.min !== String(minPct)) slider.min = String(minPct);
-          if (slider.max !== String(maxPct)) slider.max = String(maxPct);
-          if (slider.value !== String(pct)) slider.value = String(pct);
+          if (slider.min !== String(minPercent)) slider.min = String(minPercent);
+          if (slider.max !== String(maxPercent)) slider.max = String(maxPercent);
+          if (slider.value !== String(percent)) slider.value = String(percent);
         }
         const out = petPanel.querySelector("[data-size-value]");
-        if (out) out.textContent = pct + "%";
+        if (out) out.textContent = percent + "%";
         const outfit = prefs.outfit || {};
         for (const input of petPanel.querySelectorAll<HTMLInputElement>("[data-outfit]")) input.checked = outfit[input.dataset.outfit!] === true;
         const body = outfit.bodyType || "default";
         for (const input of petPanel.querySelectorAll<HTMLInputElement>("[data-body]")) input.checked = input.value === body;
       }
+      /** 펫 창 설정 패널 DOM 생성과 조작 연결 */
       function createPetPanel() {
         const root = life.own(document.createElement("div"), (node) => node.remove());
         root.id = "dsc-pet-panel";
@@ -3222,19 +3317,24 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         root.querySelector("[data-hide]")!.addEventListener("click", () => { closePetPanel(); PET!.send({ type: "config", list: [["character", false]] }); });
         return root;
       }
-      function fitPetPanel() {   // 창이 화면 밖으로 걸쳐 있어도 패널은 보이는 화면 안에 놓는다
+      /** 창이 화면 밖으로 걸쳐 있어도 설정 패널을 보이는 화면 안에 놓기. 펫 창(Chromium)에서만 호출 */
+      function fitPetPanel() {
         if (!petPanel) return;
-        const r = petPanel.getBoundingClientRect();
-        if (!r.width || !r.height) return;
-        const l = Math.max(0, screen.availLeft! - screenX), t = Math.max(0, screen.availTop! - screenY);   // 펫 창(Chromium)에서만 부른다
-        const rr = Math.min(innerWidth, screen.availLeft! + screen.availWidth - screenX);
-        const bb = Math.min(innerHeight, screen.availTop! + screen.availHeight - screenY);
-        const x = Math.max(l + 4, Math.min(rr - r.width - 4, (l + rr - r.width) / 2));
-        const y = Math.max(t + 4, Math.min(bb - r.height - 4, (t + bb - r.height) / 2));
+        const rect = petPanel.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const left = Math.max(0, screen.availLeft! - screenX), top = Math.max(0, screen.availTop! - screenY);
+        const right = Math.min(innerWidth, screen.availLeft! + screen.availWidth - screenX);
+        const bottom = Math.min(innerHeight, screen.availTop! + screen.availHeight - screenY);
+        const x = Math.max(left + 4, Math.min(right - rect.width - 4, (left + right - rect.width) / 2));
+        const y = Math.max(top + 4, Math.min(bottom - rect.height - 4, (top + bottom - rect.height) / 2));
         petPanel.style.left = Math.round(x) + "px";
         petPanel.style.top = Math.round(y) + "px";
         petPanel.style.transform = "none";
       }
+      /**
+       * 펫 창 설정 패널 열기 (처음이면 만듦)
+       * @param focus "size"면 크기 슬라이더에 포커스
+       */
       function openPetPanel(focus: string) {
         if (!PET) return;
         if (!petPanel) petPanel = createPetPanel();
@@ -3250,6 +3350,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (slider) slider.focus({ preventScroll: true });
         petSyncMenu();
       }
+      /** 펫 창 설정 패널 닫기 */
       function closePetPanel() {
         if (!petPanel) return;
         petPanelOpen = false;
@@ -3258,13 +3359,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       }
 
       // ---------- Harness 상태 → 반응 ----------
+      /** 도구 실행 상태 문구 말하기. 대기 중이거나 직전 말한 지 1.5초 안이면 건너뜀 */
       listeners.tool = (text: string) => {
         const now = performance.now();
         if (waitingKind || now - lastToolSay < 1500) return;
         lastToolSay = now; say(text, 0, false, "status");
       };
-      // 추론 혼잣말: 작업 중 화면의 추론 요약 줄(방금 끝난 문단의 첫 줄)이 바뀌면, 한국어·영어 문장을 가끔 중얼거림
       let lastThought = "", lastMutterAt = 0;
+      /**
+       * 추론 혼잣말: 작업 중 화면의 추론 요약 줄(방금 끝난 문단의 첫 줄)이 바뀌면, 한국어·영어 문장을 가끔 중얼거림
+       * 혼잣말 사이 6초, 다른 말 뒤 2.5초 간격 유지
+       */
       const mutterCheck = () => {
         const raw = readThought(document);
         if (!raw || raw === lastThought) return;
@@ -3281,56 +3386,79 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 시작 인사 (가운데 연출 중): 0.7초 뒤 5.8초 동안
       if (!PET) setTimeout(() => { if (!link.open) { say(TEXT.hello, 5800, false, "reaction"); play("sway", 2300); } }, 700);
       if (life.stopped) return;
-      window.__dsc = { say, play, setMood, flashExp, sulking: () => performance.now() < sulkUntil, sulkPeeks: () => sulkPeeks.map((p: { at: number; flip: boolean }) => ({ at: Math.round(p.at), flip: p.flip })), walk: () => { if (!walk.phase && fleeX === 0) startWalk(); return walk.phase; }, walking: () => walk.phase, sleep: () => SLEEP.state, regionAt: (cx: number, cy: number) => { const h = hitAt(cx, cy); return h && touchRegion(h[0], h[1], h[2]); }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s: VoiceState | null) => { voiceState = s && s.speaking !== false ? s : null; } };   // 확인용
+      window.__dsc = {   // 확인용
+        say, play, setMood, flashExp,
+        /** 삐침 중 여부 */
+        sulking: () => performance.now() < sulkUntil,
+        /** 삐친 동안 몰래 보기 예정(삐친 뒤 시각 ms 반올림·flip 여부) */
+        sulkPeeks: () => sulkPeeks.map((peek: { at: number; flip: boolean }) => ({ at: Math.round(peek.at), flip: peek.flip })),
+        /** 산책 시작(산책·도망 중이 아니면) 후 산책 단계 */
+        walk: () => { if (!walk.phase && fleeX === 0) startWalk(); return walk.phase; },
+        /** 지금 산책 단계 */
+        walking: () => walk.phase,
+        /** 절전 상태 */
+        sleep: () => SLEEP.state,
+        /** 창 좌표 자리의 몸 부위 이름, 그림 밖이면 null */
+        regionAt: (cx: number, cy: number) => { const h = hitAt(cx, cy); return h && touchRegion(h[0], h[1], h[2]); },
+        /** 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽) */
+        fleeX: () => fleeX,
+        /** 보이는 말풍선 문구, 없으면 빈 문자열 */
+        bubble: () => bubble.classList.contains("show") ? bubble.textContent : "",
+        lines: TEXT,
+        /** 외부 음성 상태 설정. speaking이 false거나 null이면 해제 */
+        voice: (state: VoiceState | null) => { voiceState = state && state.speaking !== false ? state : null; },
+      };
 
       // ---------- 바깥 펫 창 연결 (창 안 캐릭터 쪽) ----------
       // 연결 상태·송수신·알림 처리·동기화 주기·미리 띄우기·토글은 character/pet-link.js. 여기는 연결이 부르는 캐릭터 동작만 둔다.
-      // 펫 창이 보이기 시작함 → 창 안 캐릭터는 숨기고 그리기를 멈춤
+      /** 펫 창이 보이기 시작할 때 처리: 창 안 캐릭터는 숨기고 그리기를 멈춤 */
       const petLinkEnter = () => { skipIntro(); free.anim = null; drag.pending = null; drag.on = false; setRender(false); };
-      // 펫 창이 제자리에 붙었거나 닫힘 → 창 안 제자리로 (창이 좁으면 구석, 매 프레임 다시 계산)
+      /** 펫 창이 제자리에 붙었거나 닫혔을 때 처리: 창 안 제자리로 (창이 좁으면 구석, 매 프레임 다시 계산) */
       const petLinkLeave = () => {
         wakeRaf();
         SLEEP.state = "active"; SLEEP.lastActive = performance.now();
         free.on = false; free.anim = null; saveFree(); lastPlaceKey = "";
         if (!hidden) setRender(true);
       };
-      // 펫 창이 보이기 시작할 때 지금 표정·자세를 한 번에 맞춤 (따라오는 동안·숨어 있는 동안 바뀐 것, 예: 작업이 끝나 로딩 표정이 꺼짐)
+      /**
+       * 펫 창이 보이기 시작할 때 지금 표정·자세를 한 번에 맞추는 메시지 목록 (따라오는 동안·숨어 있는 동안 바뀐 것, 예: 작업이 끝나 로딩 표정이 꺼짐)
+       */
       const petLinkSnapshot = () => {
         const left = moodUntil ? Math.max(1, moodUntil - performance.now()) : 0;
         const list: PetMessage[] = [...Object.keys(hold).map((name): PetMessage => ["setExp", [name, !!hold[name]]]), ["setMood", [mood, left]]];
         if (!bubble.classList.contains("show")) list.push(["hush", []]);
         return list;
       };
-      // 펫 창 안에서도 같은 이동 키로 옮길 수 있게 (일반 키는 포커스 없는 펫 창에 눌림 상태도 전달)
+      /** 펫 창 안에서도 같은 이동 키로 옮길 수 있게 보내는 메시지 목록 (일반 키는 포커스 없는 펫 창에 눌림 상태도 전달) */
       const petLinkDragMessages = () => {
         const list: PetMessage[] = [["drag", [dragKeyRaw()]]];
         const dragToken = dragKeyToken();
         if (dragToken && !DRAG_MODIFIER_TOKENS.has(dragToken)) list.push(["dragheld", [dragToken, pressedKeys.has(dragToken)]]);
         return list;
       };
-      // 붙을 자리(DSH 창의 제자리, 창이 좁으면 구석, 화면 좌표)와 소품·옷
+      /** 펫 창이 붙을 자리(DSH 창의 제자리, 창이 좁으면 구석, 화면 좌표)와 소품·옷 */
       const petLinkDock = () => {
-        const h = dockTarget(homePose()), d = screenOf(h.x - fleeX, h.y);
+        const dockSpot = dockTarget(homePose()), dockSpotScreen = screenOf(dockSpot.x - fleeX, dockSpot.y);
         // 붙는 순간 창 안 상반신 그림과 정확히 겹치도록, 허리(잘린 단면)와 가슴 중심을 기준으로 자리를 잡는다.
         //  · 창 안: 허리는 캔버스 y = WAIST_WIN, 상반신 가로 중심은 캔버스 가운데
         //  · 펫 창: 같은 허리·중심이 그 지점에 오도록 배율(PET_HEAD_RATIO)과 위치를 역산
-        const k2 = h.k * PET_HEAD_RATIO;
-        const wx = d.x + W * h.k / 2;              // 창 안 상반신 가로 중심 (화면)
-        const wy = d.y + h.k * WAIST_WIN;          // 창 안 허리 (화면)
-        const tl = screenOf(0, 0), br = screenOf(innerWidth, innerHeight);   // DSH 창 영역 (펫 창이 다시 붙을지 판단)
+        const petK = dockSpot.k * PET_HEAD_RATIO;
+        const bustCenterX = dockSpotScreen.x + W * dockSpot.k / 2;   // 창 안 상반신 가로 중심 (화면)
+        const waistY = dockSpotScreen.y + dockSpot.k * WAIST_WIN;    // 창 안 허리 (화면)
+        const topLeft = screenOf(0, 0), bottomRight = screenOf(innerWidth, innerHeight);   // DSH 창 영역 (펫 창이 다시 붙을지 판단)
         const dock = {
-          k: +k2.toFixed(3),
-          x: Math.round(wx - k2 * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
-          y: Math.round(wy - k2 * WAIST_PET),
-          win: { l: Math.round(tl.x), t: Math.round(tl.y), r: Math.round(br.x), b: Math.round(br.y) },
+          k: +petK.toFixed(3),
+          x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
+          y: Math.round(waistY - petK * WAIST_PET),
+          win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) },
         };
         return { dock, outfit: prefs.outfit || {} };
       };
-      // 단축키로 펫 창을 열 자리: 지금 그린 자리 (잠들었거나 그린 적이 없으면 제자리), 화면 좌표
+      /** 단축키로 펫 창을 열 자리: 지금 그린 자리 (잠들었거나 그린 적이 없으면 제자리), 화면 좌표 */
       const petOpenScreenPose = () => {
         const pose = SLEEP.state === "active" && shown.k > 0 ? { k: shown.k, x: shown.x, y: shown.y } : dockTarget(homePose());
-        const s = screenOf(pose.x, pose.y);
-        return { k: pose.k, x: s.x, y: s.y };
+        const screenPos = screenOf(pose.x, pose.y);
+        return { k: pose.k, x: screenPos.x, y: screenPos.y };
       };
       link.start();   // 펫 경로가 없으면(펫 창 자신·ASAR) 아무것도 하지 않는다
       // 단축키: 바깥 펫 창으로 내보내기 / 돌아오기 (창 안 캐릭터만)
@@ -3338,25 +3466,25 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // ---------- 펫 창 쪽: 창 안 캐릭터가 보낸 반응을 그대로 재생 ----------
       if (PET) {
         const local: Record<string, (...args: any[]) => void> = { say, play, setMood, flashExp, setExp, hush };
-        // 따라오는 중 커서 (화면 좌표). 몸 위치 = 커서 − 잡은 자리
-        const onPetCursor = (m: PetMsg) => {
+        /** 따라오는 중 커서 처리 (화면 좌표). 몸 위치 = 커서 − 잡은 자리 */
+        const onPetCursor = (message: PetMsg) => {
           if (!drag.on || !petGrab) return;
           const now = performance.now();
-          drag.x = m.x - petGrab.x; drag.y = m.y - petGrab.y;
-          drag.samples.push([now, m.x, m.y]);
+          drag.x = message.x - petGrab.x; drag.y = message.y - petGrab.y;
+          drag.samples.push([now, message.x, message.y]);
           while (drag.samples.length > 2 && now - drag.samples[0][0] > 100) drag.samples.shift();
           const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1000;
-          carry.vx += ((m.x - x0) / dt - carry.vx) * 0.5; carry.vy += ((m.y - y0) / dt - carry.vy) * 0.5;
+          carry.vx += ((message.x - x0) / dt - carry.vx) * 0.5; carry.vy += ((message.y - y0) / dt - carry.vy) * 0.5;
         };
-        // 창이 숨으면 그리기를 멈춰 CPU·GPU를 쓰지 않음 (숨은 창도 백그라운드 제한이 꺼져 있어 계속 그려짐)
-        const onPetPower = (m: PetMsg) => {
-          if (!m.on) { petTracking = false; petGrab = null; closePetPanel(); }
-          petPower = !!m.on;
+        /** 펫 창 보임·숨김 처리. 창이 숨으면 그리기를 멈춰 CPU·GPU를 쓰지 않음 (숨은 창도 백그라운드 제한이 꺼져 있어 계속 그려짐) */
+        const onPetPower = (message: PetMsg) => {
+          if (!message.on) { petTracking = false; petGrab = null; closePetPanel(); }
+          petPower = !!message.on;
           setRender(petPower);
           if (petPower) wakeRaf();
         };
-        // 창 밖으로 던진 자리에서 나타나 남은 거리만큼 미끄러짐. follow면 놓을 때까지 창 안 커서를 따라옴
-        const onPetOpen = (m: PetMsg) => {
+        /** 펫 창 열기 처리: 창 밖으로 던진 자리에서 나타나 남은 거리만큼 미끄러짐. follow면 놓을 때까지 창 안 커서를 따라옴 */
+        const onPetOpen = (message: PetMsg) => {
           petPower = true;
           setRender(true);
           wakeRaf();
@@ -3364,79 +3492,95 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           for (const t of walk.timers) clearTimeout(t);
           walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; drag.pending = null; PET.press(false);
           closePetPanel();
-          petDocked = false; free.on = true; Object.assign(free, m.from);
-          petGrab = m.follow ? (m.grab || { x: 0, y: 0 }) : null; petTracking = !!m.follow;
+          petDocked = false; free.on = true; Object.assign(free, message.from);
+          petGrab = message.follow ? (message.grab || { x: 0, y: 0 }) : null; petTracking = !!message.follow;
           // 펫 창은 전신이라 같은 배율이면 머리가 작아진다. 창 안 배율과의 비율(HEAD_GAIN)만큼 키워 머리 크기를 맞추고,
           // 창(과 화면)에 들어가는 크기로 자른다. 아래 가운데를 고정한 채 배율만 바꾼다
-          const kFrom = Number(m.from.k) || 1;
+          const kFrom = Number(message.from.k) || 1;
           const kBase = Math.min(petKFit(), Math.max(PET_K_MIN, kFrom * HEAD_GAIN));   // 기본(머리 맞춤) 크기
           petBaseK = kBase;
           // 기억해 둔 배율: 따라오는 중에는 놓을 때(release)에 맞추고, 바로 나타날 때는 미끄러지며 맞춘다
           const ratio = petLoadRatio();
-          petPendingRatio = m.follow ? ratio : null;
-          const kApply = m.follow ? kBase : petClampK(kBase * ratio)!;   // 유한한 값이면 null이 아님
+          petPendingRatio = message.follow ? ratio : null;
+          const kApply = message.follow ? kBase : petClampK(kBase * ratio)!;   // 유한한 값이면 null이 아님
           if (kApply !== kFrom) {
-            const dk = kFrom - kApply;
-            free.x += W * dk / 2; free.y += H * dk; free.k = kApply;
+            const kDelta = kFrom - kApply;
+            free.x += W * kDelta / 2; free.y += H * kDelta; free.k = kApply;
             if (petGrab) petGrab = { x: petGrab.x * kApply / kFrom, y: petGrab.y * kApply / kFrom };
           }
-          const pose = { k: free.k, x: free.x, y: free.y }, to = { k: kApply, x: m.to.x + W * (kFrom - kApply) / 2, y: m.to.y + H * (kFrom - kApply) };
-          PET.send({ type: "track", on: !!m.follow, grab: petGrab, off: { x: (innerWidth - W * pose.k) / 2, y: innerHeight - H * pose.k } });   // 따라오기: 펫 프로세스가 커서를 따라 창을 옮기고 커서를 보내 줌
-          drag.on = !!m.follow; drag.x = pose.x; drag.y = pose.y; drag.samples = [[performance.now(), pose.x + (petGrab?.x ?? 0), pose.y + (petGrab?.y ?? 0)]];
-          free.anim = m.follow ? null : { t0: performance.now(), ms: 300, from: pose, to: keepIn(to), snap: false };
-          until.sweat = m.follow ? Infinity : 0;
+          const pose = { k: free.k, x: free.x, y: free.y }, to = { k: kApply, x: message.to.x + W * (kFrom - kApply) / 2, y: message.to.y + H * (kFrom - kApply) };
+          PET.send({ type: "track", on: !!message.follow, grab: petGrab, off: { x: (innerWidth - W * pose.k) / 2, y: innerHeight - H * pose.k } });   // 따라오기: 펫 프로세스가 커서를 따라 창을 옮기고 커서를 보내 줌
+          drag.on = !!message.follow; drag.x = pose.x; drag.y = pose.y; drag.samples = [[performance.now(), pose.x + (petGrab?.x ?? 0), pose.y + (petGrab?.y ?? 0)]];
+          free.anim = message.follow ? null : { t0: performance.now(), ms: 300, from: pose, to: keepIn(to), snap: false };
+          until.sweat = message.follow ? Infinity : 0;
           movePet(pose); PET.send({ type: "placed" });
           petSyncMenu();
         };
-        // 우클릭 메뉴: 창으로 돌아가기
+        /** 우클릭 메뉴의 창으로 돌아가기 처리 */
         const onPetHome = () => {
           closePetPanel();   // 붙을 자리(원래 크기)로 애니메이션되고 펫 창은 닫힌다
           if (petDock) free.anim = { t0: performance.now(), ms: 650, from: { ...shown }, to: null, snap: true };
           else PET.send({ type: "attach" });
         };
-        // 창 밖에서 놓음 → 여기서 이어서 미끄러지거나 붙음
+        /**
+         * 창 안 캐릭터가 창 밖에서 놓았을 때 처리: 여기서 이어서 미끄러지거나 붙음
+         * @param vx 던질 속도 x(px/s)
+         * @param vy 던질 속도 y(px/s)
+         */
         const releaseFromHost = (vx: number, vy: number) => {
           petGrab = null; petTracking = false; PET.send({ type: "track", on: false });
           drag.on = false; until.sweat = performance.now() + 400; release(vx, vy);
         };
         // 창 안 캐릭터가 보낸 명령 하나 (펫 창 쪽 상태 갱신, 아니면 반응 재생)
-        const PET_COMMANDS: Record<string, (a: any[]) => void> = {
-          outfit: (a: any[]) => { prefs.outfit = a[0]; renderPetPanel(); petSyncMenu(); },
-          dock: (a: any[]) => { petDock = a[0]; },
-          voice: (a: any[]) => { voiceState = a[0]; },
-          drag: (a: any[]) => { prefs.drag = { key: a[0] }; },   // 창 안 캐릭터와 같은 이동 키
-          dragheld: (a: any[]) => { if (a[1]) pressedKeys.add(a[0]); else pressedKeys.delete(a[0]); },   // 포커스 없는 펫 창에 키 상태 전달
-          release: (a: number[]) => { if (drag.on) releaseFromHost(a[0], a[1]); },
+        const PET_COMMANDS: Record<string, (args: any[]) => void> = {
+          /** 소품·옷 설정 반영 */
+          outfit: (args: any[]) => { prefs.outfit = args[0]; renderPetPanel(); petSyncMenu(); },
+          /** 붙을 자리 갱신 */
+          dock: (args: any[]) => { petDock = args[0]; },
+          /** 외부 음성 상태 반영 */
+          voice: (args: any[]) => { voiceState = args[0]; },
+          /** 창 안 캐릭터와 같은 이동 키 설정 */
+          drag: (args: any[]) => { prefs.drag = { key: args[0] }; },
+          /** 포커스 없는 펫 창에 일반 이동 키의 눌림 상태 전달 */
+          dragheld: (args: any[]) => { if (args[1]) pressedKeys.add(args[0]); else pressedKeys.delete(args[0]); },
+          /** 창 안 캐릭터가 창 밖에서 놓음(던질 속도 vx·vy) */
+          release: (args: number[]) => { if (drag.on) releaseFromHost(args[0], args[1]); },
         };
-        const onPetCommands = (m: PetMsg) => {
-          for (const [fn, a] of m.list || []) {
-            if (Object.hasOwn(PET_COMMANDS, fn)) PET_COMMANDS[fn](a);
-            else if (Object.hasOwn(local, fn) && Array.isArray(a)) local[fn](...a);
+        /** 명령 목록 메시지 처리: PET_COMMANDS에 있으면 펫 창 쪽 상태 갱신, 아니면 반응 함수 재생 */
+        const onPetCommands = (message: PetMsg) => {
+          for (const [fn, args] of message.list || []) {
+            if (Object.hasOwn(PET_COMMANDS, fn)) PET_COMMANDS[fn](args);
+            else if (Object.hasOwn(local, fn) && Array.isArray(args)) local[fn](...args);
           }
         };
-        const PET_MESSAGES: Record<string, (m: PetMsg) => void> = {
+        const PET_MESSAGES: Record<string, (message: PetMsg) => void> = {
           cursor: onPetCursor,
           power: onPetPower,
-          panel: (m: PetMsg) => openPetPanel(m.focus),          // 우클릭 메뉴: 설정(또는 크기) 패널 열기
-          size: (m: PetMsg) => petSetRatio(Number(m.ratio), 220),   // 우클릭 메뉴: 정해진 배율로 (기본 대비)
+          /** 우클릭 메뉴: 설정(또는 크기) 패널 열기 */
+          panel: (message: PetMsg) => openPetPanel(message.focus),
+          /** 우클릭 메뉴: 정해진 배율로 (기본 대비) */
+          size: (message: PetMsg) => petSetRatio(Number(message.ratio), 220),
           open: onPetOpen,
           home: onPetHome,
           cmd: onPetCommands,
         };
-        PET.on((m: PetMsg) => { if (Object.hasOwn(PET_MESSAGES, m.type)) PET_MESSAGES[m.type](m); });
+        PET.on((message: PetMsg) => { if (Object.hasOwn(PET_MESSAGES, message.type)) PET_MESSAGES[message.type](message); });
         petPower = false;
         setRender(false);   // 처음엔 숨은 채 대기 (open 이 오면 그리기 시작)
         PET.send({ type: "ready" });
       }
       // ---- 400ms마다: DSH 작업 상태 → 반응, 절전 판정 ----
-      // 절전 설정을 읽는다 (0.5~60분)
+      /** 절전 설정 읽기 (0.5~60분, 기본 1분) */
       const readSleepPrefs = () => {
-        const cfg = prefs.sleep || {};
-        SLEEP.enabled = !PET && cfg.enabled !== false;
-        const cfgMin = Number(cfg.minutes);
-        SLEEP.minutes = Number.isFinite(cfgMin) ? Math.min(60, Math.max(0.5, cfgMin)) : 1;
+        const sleepPrefs = prefs.sleep || {};
+        SLEEP.enabled = !PET && sleepPrefs.enabled !== false;
+        const minutes = Number(sleepPrefs.minutes);
+        SLEEP.minutes = Number.isFinite(minutes) ? Math.min(60, Math.max(0.5, minutes)) : 1;
       };
-      // 승인·질문 대기가 생기거나 풀릴 때
+      /**
+       * 승인·질문 대기가 생기거나 풀릴 때 반응
+       * @param kind 지금 대기 종류, 대기가 없으면 null
+       */
       const reactToWaiting = (kind: "approval" | "question" | null) => {
         if (kind === waitingKind) return;
         waitingKind = kind;
@@ -3445,13 +3589,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (kind) { say(TEXT[kind], 0, false, "reaction"); setMood("wait"); play("tilt", 1800); }
         else { setMood(running ? "work" : "idle"); if (running) hush(); }
       };
-      // 작업이 끝났을 때: 실패 문구가 보였으면 시무룩, 아니면 칭찬해 달라고 함
+      /** 작업이 끝났을 때 반응: 실패 문구가 8초 안에 보였으면 시무룩, 아니면 칭찬해 달라고 함 */
       const reactToFinish = () => {
         if (running) return;
         if (performance.now() - lastError < 8000) { flashExp("tears", 5000); flashExp("dizzy", 2500); say(TEXT.error, 5000, false, "reaction"); setMood("sad", 5000); play("droop", 2000); }
         else { flashExp("heart", 4000); flashExp("blush", 4000); say(TEXT.done, 4000, false, "reaction"); setMood("idle"); play("laugh", 1700); }
       };
-      // 작업이 시작되거나 끝날 때
+      /**
+       * 작업이 시작되거나 끝날 때 반응
+       * @param nowRunning 이번 확인에서 작업 중이면 true
+       */
       const reactToRunning = (nowRunning: boolean) => {
         if (nowRunning && !running) {
           running = true; lastError = -1e9;
@@ -3463,7 +3610,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           setTimeout(reactToFinish, 600);   // 실패 문구가 늦게 그려질 수 있어 잠깐 기다림
         }
       };
-      // 절전 판정: 설정된 시간 동안 입력·작업·대기·화면 전환이 없으면 잠시 쉬러 감
+      /** 절전 판정: 설정된 시간 동안 입력·작업·대기·화면 전환이 없으면(말한 뒤 5초, 말풍선 없음 포함) 잠시 쉬러 갈 때 여부 */
       const sleepDue = () => SLEEP.enabled && SLEEP.state === "active" && !running && !waitingKind && !document.hidden &&
         performance.now() - SLEEP.lastActive > SLEEP.minutes * 60000 &&
         performance.now() - lastSayAt > 5000 && !bubble.classList.contains("show");
@@ -3481,15 +3628,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
     })().catch((e) => console.warn("DeepSeek짱 캐릭터 로드 실패:", e));
   });
   return {
-    // 플러그인 설정이 바뀌면 부른다. 패널 숨김(pageHidden)이 바뀌면 바로 숨김/복구를 반영한다
+    /** 플러그인 설정 변경 반영. 패널 숨김(pageHidden)이 바뀌면 바로 숨김/복구 */
     setPrefs(next) {
       const pageChanged = "pageHidden" in next && next.pageHidden !== prefs.pageHidden;
       Object.assign(prefs, next);
       if (pageChanged) hooks.syncPageHidden?.();
     },
-    // 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않는다)
+    /** 펫 창 토글 함수. 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않음) */
     get togglePet() { return hooks.togglePet || null; },
+    /** 창 안 캐릭터 숨기기·보이기 토글 함수. 모델이 준비되기 전과 펫 창에서는 null */
     get toggleCanvas() { return hooks.toggleCanvas || null; },
+    /** 창 안 캐릭터 숨김 여부 */
     canvasHidden: () => hooks.canvasHidden?.() === true,
   };
 }

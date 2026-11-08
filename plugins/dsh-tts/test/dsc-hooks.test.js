@@ -63,8 +63,8 @@ test("__dsc.voice 훅 + lines 매니페스트", () => {
   assert.ok(SRC.includes("lines: TEXT"), "lines 매니페스트");
   assert.match(
     SRC,
-    /voice: \(s\) => \{ voiceState = s && s\.speaking !== false \? s : null; \}/,
-    "voice(s) 구현",
+    /voice: \(state\) => \{ voiceState = state && state\.speaking !== false \? state : null; \}/,
+    "voice(state) 구현",
   );
   assert.ok((SRC.match(/voiceState = null/g) || []).length >= 2, "voiceState 선언/만료 정리");
 });

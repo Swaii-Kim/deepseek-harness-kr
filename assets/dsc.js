@@ -3264,9 +3264,9 @@
         life.listen(document, "mouseup", (e) => {
           if (e.button === 2) rightPress = null;
         }, true);
-        const strokeKind = (st, e) => {
-          const dy = e.clientY - st.y, dx = Math.abs(e.clientX - st.x);
-          if (performance.now() - st.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
+        const strokeKind = (stroke, e) => {
+          const dy = e.clientY - stroke.y, dx = Math.abs(e.clientX - stroke.x);
+          if (performance.now() - stroke.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
           return dy > 40 && dy > dx * 0.8 ? "basin" : null;
         };
         const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();
@@ -3362,26 +3362,26 @@
           return true;
         };
         const strokeMove = (e) => {
-          const st = strokeFrom, kind = strokeKind(st, e);
+          const stroke = strokeFrom, kind = strokeKind(stroke, e);
           if (kind) {
             strokeFrom = null;
             if (drag.pending) {
               drag.pending = null;
               if (PET) PET.press(false);
             }
-            if (kind === "pot") potHit(st.x, st.y);
+            if (kind === "pot") potHit(stroke.x, stroke.y);
             else putBasin();
             return true;
           }
-          const dy = e.clientY - st.y, dx = Math.abs(e.clientX - st.x);
+          const dy = e.clientY - stroke.y, dx = Math.abs(e.clientX - stroke.x);
           if (!drag.pending || Math.hypot(dx, dy) < 6 || dy > 0 && dy > dx * 0.8) return true;
           strokeFrom = null;
           return false;
         };
-        const beginCarry = (e, p, px, py, now) => {
+        const beginCarry = (e, pending, px, py, now) => {
           cancelWalk();
           drag.on = true;
-          drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab);
+          drag.touch = e.pointerType === "touch" || !!(pending && pending.touchGrab);
           drag.samples = [];
           free.anim = null;
           free.k = shown.k;
@@ -3396,25 +3396,25 @@
           until.sweat = Infinity;
           walk.lastTouch = now;
           if (PET) {
-            petGrab = { x: p.ox, y: p.oy };
+            petGrab = { x: pending.ox, y: pending.oy };
             petTracking = true;
-            drag.x = px - p.ox;
-            drag.y = py - p.oy;
+            drag.x = px - pending.ox;
+            drag.y = py - pending.oy;
             drag.samples = [[now, px, py]];
             PET.send({ type: "track", on: true, grab: petGrab, off: { x: (innerWidth - W * free.k) / 2, y: innerHeight - H * free.k } });
           }
         };
-        const carryMove = (e, p) => {
+        const carryMove = (e, pending) => {
           strokeFrom = null;
           chestFrom = null;
           const [px, py] = pt(e), now = performance.now();
-          if (!drag.on) beginCarry(e, p, px, py, now);
+          if (!drag.on) beginCarry(e, pending, px, py, now);
           if (PET && petTracking) {
             e.preventDefault();
             return;
           }
-          drag.x = px - p.ox;
-          drag.y = py - p.oy;
+          drag.x = px - pending.ox;
+          drag.y = py - pending.oy;
           drag.samples.push([now, px, py]);
           while (drag.samples.length > 2 && now - drag.samples[0][0] > 100) drag.samples.shift();
           const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1e3;
@@ -3436,20 +3436,20 @@
           const both = carryHeld(e);
           if (chestFrom && !both && e.pointerId === chestFrom.id && chestMove(e)) return;
           if (strokeFrom && !both && strokeMove(e)) return;
-          const p = drag.pending;
-          if (!p || e.pointerId !== p.id) return;
+          const pending = drag.pending;
+          if (!pending || e.pointerId !== pending.id) return;
           if (e.buttons === 0) return endDrag(e, false);
           if (!both) {
             if (drag.on) endDrag(e, false);
             return;
           }
-          carryMove(e, p);
+          carryMove(e, pending);
         }, true);
         const followPet = (now) => {
           if (!link.supported || link.open) return;
           const k = free.k;
           const out = bodyOut({ k, x: drag.x, y: drag.y });
-          const s = screenOf(drag.x, drag.y), pose2 = { k, x: s.x, y: s.y };
+          const screenPos = screenOf(drag.x, drag.y), pose2 = { k, x: screenPos.x, y: screenPos.y };
           if (!link.follow) {
             if (!out) return;
             if (link.petState !== "hidden") {
@@ -3466,12 +3466,12 @@
           }
         };
         const finishFollow = (vx, vy) => {
-          const f = link.follow;
+          const follow = link.follow;
           link.follow = null;
           link.queue = [];
           lastPlaceKey = "";
-          const outside = bodyOut({ k: free.k, x: drag.x + vx * GLIDE, y: drag.y + vy * GLIDE }, !f.shown);
-          if (outside && f.shown) {
+          const outside = bodyOut({ k: free.k, x: drag.x + vx * GLIDE, y: drag.y + vy * GLIDE }, !follow.shown);
+          if (outside && follow.shown) {
             link.post("send", { list: [["release", [vx, vy]]] });
             link.enter();
             return true;
@@ -3480,14 +3480,14 @@
           return false;
         };
         const endDrag = (e, cancel) => {
-          const p = drag.pending;
-          if (!p || e.pointerId !== p.id) return;
+          const pending = drag.pending;
+          if (!pending || e.pointerId !== pending.id) return;
           clearTimeout(touchHold);
           drag.pending = null;
           strokeFrom = null;
           if (PET) PET.press(false);
           if (!drag.on) {
-            if (!cancel && p.h) onTouch(p.h[0], p.h[1], p.h[2]);
+            if (!cancel && pending.h) onTouch(pending.h[0], pending.h[1], pending.h[2]);
             return;
           }
           drag.on = false;
@@ -3519,10 +3519,10 @@
               return;
             }
           }
-          const st = strokeFrom;
+          const stroke = strokeFrom;
           strokeFrom = null;
           if (drag.pending) return endDrag(e, false);
-          if (st) onTouch(st.h[0], st.h[1], st.h[2]);
+          if (stroke) onTouch(stroke.h[0], stroke.h[1], stroke.h[2]);
         }, true);
         addEventListener("blur", () => {
           mouseButtons = 0;
@@ -3536,9 +3536,9 @@
           chord = chordUp(chord, e.buttons);
           rightPress = null;
           if (chestFrom && e.pointerId === chestFrom.id) {
-            const d = chestDragging;
+            const wasDragging = chestDragging;
             releaseChest();
-            if (d && PET) PET.press(false);
+            if (wasDragging && PET) PET.press(false);
           }
           endDrag(e, true);
         }, true);
@@ -3601,11 +3601,11 @@
           e.stopPropagation();
           if (drag.on || free.anim || walk.phase || fleeX !== 0) return;
           const kMin = PET ? PET_K_MIN : SHOW_K, kMax = PET ? PET_K_MAX : Math.min(1.25, innerHeight * 0.45 / visH);
-          const k0 = Math.min(free.k, kMax), k = Math.min(kMax, Math.max(kMin, k0 * Math.exp(-e.deltaY * 12e-4)));
-          if (k === k0) return;
+          const fromK = Math.min(free.k, kMax), k = Math.min(kMax, Math.max(kMin, fromK * Math.exp(-e.deltaY * 12e-4)));
+          if (k === fromK) return;
           if (PET) {
-            free.x += W * (k0 - k) / 2;
-            free.y += H * (k0 - k);
+            free.x += W * (fromK - k) / 2;
+            free.y += H * (fromK - k);
           }
           free.k = k;
           if (!PET) saveFree(false);
@@ -3640,12 +3640,12 @@
             return 1;
           }
         }
-        function petRememberRatio(r) {
-          if (!PET || !Number.isFinite(r) || r <= 0) return;
+        function petRememberRatio(ratio) {
+          if (!PET || !Number.isFinite(ratio) || ratio <= 0) return;
           clearTimeout(petSizeTimer);
           petSizeTimer = setTimeout(() => {
             try {
-              localStorage.setItem(PET_SIZE_KEY, String(+r.toFixed(3)));
+              localStorage.setItem(PET_SIZE_KEY, String(+ratio.toFixed(3)));
             } catch {
             }
           }, 250);
@@ -3666,8 +3666,8 @@
         }
         function petPanelBox(body) {
           if (!PET || !petPanelOpen || !petPanel) return body;
-          const r = petPanel.getBoundingClientRect();
-          const box = { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) };
+          const rect = petPanel.getBoundingClientRect();
+          const box = { l: Math.round(rect.left), t: Math.round(rect.top), r: Math.round(rect.right), b: Math.round(rect.bottom) };
           return body ? { l: Math.min(body.l, box.l), t: Math.min(body.t, box.t), r: Math.max(body.r, box.r), b: Math.max(body.b, box.b) } : box;
         }
         function petSetRatio(ratio, ms) {
@@ -3693,16 +3693,16 @@
         function renderPetPanel() {
           if (!petPanel) return;
           const { minR, maxR } = petRatioBounds();
-          const minPct = Math.max(5, Math.ceil(minR * 100)), maxPct = Math.max(minPct + 1, Math.floor(maxR * 100));
-          const pct = Math.min(maxPct, Math.max(minPct, Math.round(petRatio() * 100)));
+          const minPercent = Math.max(5, Math.ceil(minR * 100)), maxPercent = Math.max(minPercent + 1, Math.floor(maxR * 100));
+          const percent = Math.min(maxPercent, Math.max(minPercent, Math.round(petRatio() * 100)));
           const slider = petPanel.querySelector("[data-size-slider]");
           if (slider) {
-            if (slider.min !== String(minPct)) slider.min = String(minPct);
-            if (slider.max !== String(maxPct)) slider.max = String(maxPct);
-            if (slider.value !== String(pct)) slider.value = String(pct);
+            if (slider.min !== String(minPercent)) slider.min = String(minPercent);
+            if (slider.max !== String(maxPercent)) slider.max = String(maxPercent);
+            if (slider.value !== String(percent)) slider.value = String(percent);
           }
           const out = petPanel.querySelector("[data-size-value]");
-          if (out) out.textContent = pct + "%";
+          if (out) out.textContent = percent + "%";
           const outfit = prefs.outfit || {};
           for (const input of petPanel.querySelectorAll("[data-outfit]")) input.checked = outfit[input.dataset.outfit] === true;
           const body = outfit.bodyType || "default";
@@ -3743,13 +3743,13 @@
         }
         function fitPetPanel() {
           if (!petPanel) return;
-          const r = petPanel.getBoundingClientRect();
-          if (!r.width || !r.height) return;
-          const l = Math.max(0, screen.availLeft - screenX), t = Math.max(0, screen.availTop - screenY);
-          const rr = Math.min(innerWidth, screen.availLeft + screen.availWidth - screenX);
-          const bb = Math.min(innerHeight, screen.availTop + screen.availHeight - screenY);
-          const x = Math.max(l + 4, Math.min(rr - r.width - 4, (l + rr - r.width) / 2));
-          const y = Math.max(t + 4, Math.min(bb - r.height - 4, (t + bb - r.height) / 2));
+          const rect = petPanel.getBoundingClientRect();
+          if (!rect.width || !rect.height) return;
+          const left = Math.max(0, screen.availLeft - screenX), top = Math.max(0, screen.availTop - screenY);
+          const right = Math.min(innerWidth, screen.availLeft + screen.availWidth - screenX);
+          const bottom = Math.min(innerHeight, screen.availTop + screen.availHeight - screenY);
+          const x = Math.max(left + 4, Math.min(right - rect.width - 4, (left + right - rect.width) / 2));
+          const y = Math.max(top + 4, Math.min(bottom - rect.height - 4, (top + bottom - rect.height) / 2));
           petPanel.style.left = Math.round(x) + "px";
           petPanel.style.top = Math.round(y) + "px";
           petPanel.style.transform = "none";
@@ -3800,15 +3800,40 @@
           }
         }, 700);
         if (life.stopped) return;
-        window.__dsc = { say, play, setMood, flashExp, sulking: () => performance.now() < sulkUntil, sulkPeeks: () => sulkPeeks.map((p) => ({ at: Math.round(p.at), flip: p.flip })), walk: () => {
-          if (!walk.phase && fleeX === 0) startWalk();
-          return walk.phase;
-        }, walking: () => walk.phase, sleep: () => SLEEP.state, regionAt: (cx, cy) => {
-          const h = hitAt(cx, cy);
-          return h && touchRegion(h[0], h[1], h[2]);
-        }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s) => {
-          voiceState = s && s.speaking !== false ? s : null;
-        } };
+        window.__dsc = {
+          // 확인용
+          say,
+          play,
+          setMood,
+          flashExp,
+          /** 삐침 중 여부 */
+          sulking: () => performance.now() < sulkUntil,
+          /** 삐친 동안 몰래 보기 예정(삐친 뒤 시각 ms 반올림·flip 여부) */
+          sulkPeeks: () => sulkPeeks.map((peek) => ({ at: Math.round(peek.at), flip: peek.flip })),
+          /** 산책 시작(산책·도망 중이 아니면) 후 산책 단계 */
+          walk: () => {
+            if (!walk.phase && fleeX === 0) startWalk();
+            return walk.phase;
+          },
+          /** 지금 산책 단계 */
+          walking: () => walk.phase,
+          /** 절전 상태 */
+          sleep: () => SLEEP.state,
+          /** 창 좌표 자리의 몸 부위 이름, 그림 밖이면 null */
+          regionAt: (cx, cy) => {
+            const h = hitAt(cx, cy);
+            return h && touchRegion(h[0], h[1], h[2]);
+          },
+          /** 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽) */
+          fleeX: () => fleeX,
+          /** 보이는 말풍선 문구, 없으면 빈 문자열 */
+          bubble: () => bubble.classList.contains("show") ? bubble.textContent : "",
+          lines: TEXT,
+          /** 외부 음성 상태 설정. speaking이 false거나 null이면 해제 */
+          voice: (state) => {
+            voiceState = state && state.speaking !== false ? state : null;
+          }
+        };
         const petLinkEnter = () => {
           skipIntro();
           free.anim = null;
@@ -3839,50 +3864,50 @@
           return list;
         };
         const petLinkDock = () => {
-          const h = dockTarget(homePose()), d = screenOf(h.x - fleeX, h.y);
-          const k2 = h.k * PET_HEAD_RATIO;
-          const wx = d.x + W * h.k / 2;
-          const wy = d.y + h.k * WAIST_WIN;
-          const tl = screenOf(0, 0), br = screenOf(innerWidth, innerHeight);
+          const dockSpot = dockTarget(homePose()), dockSpotScreen = screenOf(dockSpot.x - fleeX, dockSpot.y);
+          const petK = dockSpot.k * PET_HEAD_RATIO;
+          const bustCenterX = dockSpotScreen.x + W * dockSpot.k / 2;
+          const waistY = dockSpotScreen.y + dockSpot.k * WAIST_WIN;
+          const topLeft = screenOf(0, 0), bottomRight = screenOf(innerWidth, innerHeight);
           const dock = {
-            k: +k2.toFixed(3),
-            x: Math.round(wx - k2 * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
-            y: Math.round(wy - k2 * WAIST_PET),
-            win: { l: Math.round(tl.x), t: Math.round(tl.y), r: Math.round(br.x), b: Math.round(br.y) }
+            k: +petK.toFixed(3),
+            x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
+            y: Math.round(waistY - petK * WAIST_PET),
+            win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) }
           };
           return { dock, outfit: prefs.outfit || {} };
         };
         const petOpenScreenPose = () => {
           const pose2 = SLEEP.state === "active" && shown.k > 0 ? { k: shown.k, x: shown.x, y: shown.y } : dockTarget(homePose());
-          const s = screenOf(pose2.x, pose2.y);
-          return { k: pose2.k, x: s.x, y: s.y };
+          const screenPos = screenOf(pose2.x, pose2.y);
+          return { k: pose2.k, x: screenPos.x, y: screenPos.y };
         };
         link.start();
         if (!PET) hooks.togglePet = link.toggle;
         if (PET) {
           const local = { say, play, setMood, flashExp, setExp, hush };
-          const onPetCursor = (m) => {
+          const onPetCursor = (message) => {
             if (!drag.on || !petGrab) return;
             const now = performance.now();
-            drag.x = m.x - petGrab.x;
-            drag.y = m.y - petGrab.y;
-            drag.samples.push([now, m.x, m.y]);
+            drag.x = message.x - petGrab.x;
+            drag.y = message.y - petGrab.y;
+            drag.samples.push([now, message.x, message.y]);
             while (drag.samples.length > 2 && now - drag.samples[0][0] > 100) drag.samples.shift();
             const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1e3;
-            carry.vx += ((m.x - x0) / dt - carry.vx) * 0.5;
-            carry.vy += ((m.y - y0) / dt - carry.vy) * 0.5;
+            carry.vx += ((message.x - x0) / dt - carry.vx) * 0.5;
+            carry.vy += ((message.y - y0) / dt - carry.vy) * 0.5;
           };
-          const onPetPower = (m) => {
-            if (!m.on) {
+          const onPetPower = (message) => {
+            if (!message.on) {
               petTracking = false;
               petGrab = null;
               closePetPanel();
             }
-            petPower = !!m.on;
+            petPower = !!message.on;
             setRender(petPower);
             if (petPower) wakeRaf();
           };
-          const onPetOpen = (m) => {
+          const onPetOpen = (message) => {
             petPower = true;
             setRender(true);
             wakeRaf();
@@ -3896,30 +3921,30 @@
             closePetPanel();
             petDocked = false;
             free.on = true;
-            Object.assign(free, m.from);
-            petGrab = m.follow ? m.grab || { x: 0, y: 0 } : null;
-            petTracking = !!m.follow;
-            const kFrom = Number(m.from.k) || 1;
+            Object.assign(free, message.from);
+            petGrab = message.follow ? message.grab || { x: 0, y: 0 } : null;
+            petTracking = !!message.follow;
+            const kFrom = Number(message.from.k) || 1;
             const kBase = Math.min(petKFit(), Math.max(PET_K_MIN, kFrom * HEAD_GAIN));
             petBaseK = kBase;
             const ratio = petLoadRatio();
-            petPendingRatio = m.follow ? ratio : null;
-            const kApply = m.follow ? kBase : petClampK(kBase * ratio);
+            petPendingRatio = message.follow ? ratio : null;
+            const kApply = message.follow ? kBase : petClampK(kBase * ratio);
             if (kApply !== kFrom) {
-              const dk = kFrom - kApply;
-              free.x += W * dk / 2;
-              free.y += H * dk;
+              const kDelta = kFrom - kApply;
+              free.x += W * kDelta / 2;
+              free.y += H * kDelta;
               free.k = kApply;
               if (petGrab) petGrab = { x: petGrab.x * kApply / kFrom, y: petGrab.y * kApply / kFrom };
             }
-            const pose2 = { k: free.k, x: free.x, y: free.y }, to = { k: kApply, x: m.to.x + W * (kFrom - kApply) / 2, y: m.to.y + H * (kFrom - kApply) };
-            PET.send({ type: "track", on: !!m.follow, grab: petGrab, off: { x: (innerWidth - W * pose2.k) / 2, y: innerHeight - H * pose2.k } });
-            drag.on = !!m.follow;
+            const pose2 = { k: free.k, x: free.x, y: free.y }, to = { k: kApply, x: message.to.x + W * (kFrom - kApply) / 2, y: message.to.y + H * (kFrom - kApply) };
+            PET.send({ type: "track", on: !!message.follow, grab: petGrab, off: { x: (innerWidth - W * pose2.k) / 2, y: innerHeight - H * pose2.k } });
+            drag.on = !!message.follow;
             drag.x = pose2.x;
             drag.y = pose2.y;
             drag.samples = [[performance.now(), pose2.x + (petGrab?.x ?? 0), pose2.y + (petGrab?.y ?? 0)]];
-            free.anim = m.follow ? null : { t0: performance.now(), ms: 300, from: pose2, to: keepIn(to), snap: false };
-            until.sweat = m.follow ? Infinity : 0;
+            free.anim = message.follow ? null : { t0: performance.now(), ms: 300, from: pose2, to: keepIn(to), snap: false };
+            until.sweat = message.follow ? Infinity : 0;
             movePet(pose2);
             PET.send({ type: "placed" });
             petSyncMenu();
@@ -3938,59 +3963,63 @@
             release(vx, vy);
           };
           const PET_COMMANDS = {
-            outfit: (a) => {
-              prefs.outfit = a[0];
+            /** 소품·옷 설정 반영 */
+            outfit: (args) => {
+              prefs.outfit = args[0];
               renderPetPanel();
               petSyncMenu();
             },
-            dock: (a) => {
-              petDock = a[0];
+            /** 붙을 자리 갱신 */
+            dock: (args) => {
+              petDock = args[0];
             },
-            voice: (a) => {
-              voiceState = a[0];
+            /** 외부 음성 상태 반영 */
+            voice: (args) => {
+              voiceState = args[0];
             },
-            drag: (a) => {
-              prefs.drag = { key: a[0] };
+            /** 창 안 캐릭터와 같은 이동 키 설정 */
+            drag: (args) => {
+              prefs.drag = { key: args[0] };
             },
-            // 창 안 캐릭터와 같은 이동 키
-            dragheld: (a) => {
-              if (a[1]) pressedKeys.add(a[0]);
-              else pressedKeys.delete(a[0]);
+            /** 포커스 없는 펫 창에 일반 이동 키의 눌림 상태 전달 */
+            dragheld: (args) => {
+              if (args[1]) pressedKeys.add(args[0]);
+              else pressedKeys.delete(args[0]);
             },
-            // 포커스 없는 펫 창에 키 상태 전달
-            release: (a) => {
-              if (drag.on) releaseFromHost(a[0], a[1]);
+            /** 창 안 캐릭터가 창 밖에서 놓음(던질 속도 vx·vy) */
+            release: (args) => {
+              if (drag.on) releaseFromHost(args[0], args[1]);
             }
           };
-          const onPetCommands = (m) => {
-            for (const [fn, a] of m.list || []) {
-              if (Object.hasOwn(PET_COMMANDS, fn)) PET_COMMANDS[fn](a);
-              else if (Object.hasOwn(local, fn) && Array.isArray(a)) local[fn](...a);
+          const onPetCommands = (message) => {
+            for (const [fn, args] of message.list || []) {
+              if (Object.hasOwn(PET_COMMANDS, fn)) PET_COMMANDS[fn](args);
+              else if (Object.hasOwn(local, fn) && Array.isArray(args)) local[fn](...args);
             }
           };
           const PET_MESSAGES = {
             cursor: onPetCursor,
             power: onPetPower,
-            panel: (m) => openPetPanel(m.focus),
-            // 우클릭 메뉴: 설정(또는 크기) 패널 열기
-            size: (m) => petSetRatio(Number(m.ratio), 220),
-            // 우클릭 메뉴: 정해진 배율로 (기본 대비)
+            /** 우클릭 메뉴: 설정(또는 크기) 패널 열기 */
+            panel: (message) => openPetPanel(message.focus),
+            /** 우클릭 메뉴: 정해진 배율로 (기본 대비) */
+            size: (message) => petSetRatio(Number(message.ratio), 220),
             open: onPetOpen,
             home: onPetHome,
             cmd: onPetCommands
           };
-          PET.on((m) => {
-            if (Object.hasOwn(PET_MESSAGES, m.type)) PET_MESSAGES[m.type](m);
+          PET.on((message) => {
+            if (Object.hasOwn(PET_MESSAGES, message.type)) PET_MESSAGES[message.type](message);
           });
           petPower = false;
           setRender(false);
           PET.send({ type: "ready" });
         }
         const readSleepPrefs = () => {
-          const cfg = prefs.sleep || {};
-          SLEEP.enabled = !PET && cfg.enabled !== false;
-          const cfgMin = Number(cfg.minutes);
-          SLEEP.minutes = Number.isFinite(cfgMin) ? Math.min(60, Math.max(0.5, cfgMin)) : 1;
+          const sleepPrefs = prefs.sleep || {};
+          SLEEP.enabled = !PET && sleepPrefs.enabled !== false;
+          const minutes = Number(sleepPrefs.minutes);
+          SLEEP.minutes = Number.isFinite(minutes) ? Math.min(60, Math.max(0.5, minutes)) : 1;
         };
         const reactToWaiting = (kind) => {
           if (kind === waitingKind) return;
@@ -4052,19 +4081,21 @@
       })().catch((e) => console.warn("DeepSeek짱 캐릭터 로드 실패:", e));
     });
     return {
-      // 플러그인 설정이 바뀌면 부른다. 패널 숨김(pageHidden)이 바뀌면 바로 숨김/복구를 반영한다
+      /** 플러그인 설정 변경 반영. 패널 숨김(pageHidden)이 바뀌면 바로 숨김/복구 */
       setPrefs(next) {
         const pageChanged = "pageHidden" in next && next.pageHidden !== prefs.pageHidden;
         Object.assign(prefs, next);
         if (pageChanged) hooks.syncPageHidden?.();
       },
-      // 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않는다)
+      /** 펫 창 토글 함수. 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않음) */
       get togglePet() {
         return hooks.togglePet || null;
       },
+      /** 창 안 캐릭터 숨기기·보이기 토글 함수. 모델이 준비되기 전과 펫 창에서는 null */
       get toggleCanvas() {
         return hooks.toggleCanvas || null;
       },
+      /** 창 안 캐릭터 숨김 여부 */
       canvasHidden: () => hooks.canvasHidden?.() === true
     };
   }

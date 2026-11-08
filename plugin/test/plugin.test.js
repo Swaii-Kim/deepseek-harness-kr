@@ -555,8 +555,8 @@ test('character source supports modifier drag and a pet window toggle', async ()
     assert.match(code, /id = "dsc-hide-chip"/)
   }
   // 펫 창은 창 안 캐릭터가 보낸 이동 키와 키 눌림 상태를 받는다 (번들은 esbuild가 줄을 바꿔 찍어 소스로 확인)
-  assert.match(source, /drag: \(a\) => \{ prefs\.drag = \{ key: a\[0\] \}; \}/)
-  assert.match(source, /dragheld: \(a\) =>/)
+  assert.match(source, /drag: \(args\) => \{ prefs\.drag = \{ key: args\[0\] \}; \}/)
+  assert.match(source, /dragheld: \(args\) =>/)
   // 펫 창 설정 패널 항목은 공용 정의에서 만든다
   assert.match(source, /const PET_OUTFIT_ROWS = OUTFIT_ITEMS\.map\(/)
 })

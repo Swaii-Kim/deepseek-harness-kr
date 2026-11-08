@@ -331,8 +331,8 @@ test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마�
   // 숨은 펫(petPower=false)은 루프를 다음 프레임에 이어 가지 않는다
   assert.match(dsc, /if \(PET \? !petPower : link\.open\) \{ rafIdle = true; systemTicker\(false\); return; \}\n\s*requestAnimationFrame\(raf\);/)
   // power on·open 은 루프를 다시 깨운다
-  assert.match(dsc, /petPower = !!m\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
-  assert.match(dsc, /const onPetOpen = \(m\) => \{\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
+  assert.match(dsc, /petPower = !!message\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
+  assert.match(dsc, /const onPetOpen = \(message\) => \{\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
 })
 
 test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프를 쉬고, 붙을 자리는 150ms 틱이 직접 계산한다', async () => {
@@ -341,7 +341,7 @@ test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프�
   assert.ok(!dsc.includes('link.home'), '매 프레임 저장하던 link.home 이 남아 있으면 안 된다')
   assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*return false;/)   // placeBlocked()의 마지막 검사
   assert.match(dsc, /if \(placeBlocked\(\)\) return;\n\s*const now = performance\.now\(\);\n\s*const home = homePose\(\);/)
-  assert.match(dsc, /const h = dockTarget\(homePose\(\)\)/)
+  assert.match(dsc, /const dockSpot = dockTarget\(homePose\(\)\)/)
   // link.open 을 끄는 두 곳(연결의 leave, 캔버스 다시 표시)에서 루프를 깨운다
   const petLink = await readFile(new URL('../../character/pet-link.ts', import.meta.url), 'utf8')
   assert.match(petLink, /link\.open = false; link\.opening = 0; link\.queue = \[\];\n\s*deps\.onLeave\(\);/)
@@ -432,7 +432,7 @@ test('펫 창 크기: 기본(머리 맞춤) 대비 배율로 기억하고, 패�
   assert.match(dsc, /const PET_SIZE_KEY = "dsc-pet-size"/)
   assert.match(dsc, /function petClampK\(k\)/)
   assert.match(dsc, /Math\.min\(petKFit\(\), Math\.max\(PET_K_MIN, n\)\)/)
-  assert.match(dsc, /petPendingRatio = m\.follow \? ratio : null/)   // 따라오는 중엔 놓을 때 배율을 맞춤
+  assert.match(dsc, /petPendingRatio = message\.follow \? ratio : null/)   // 따라오는 중엔 놓을 때 배율을 맞춤
   assert.match(dsc, /petSetRatio\(Number\(slider\.value\) \/ 100, 0\)/)
   assert.match(dsc, /else \{ petRememberRatio\(petRatio\(\)\); petSyncMenu\(\); renderPetPanel\(\); \}/)
   assert.match(dsc, /function petPanelBox\(body\)/)   // 패널 영역도 클릭을 받도록 hitbox에 더함
