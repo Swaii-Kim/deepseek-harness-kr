@@ -1790,16 +1790,21 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       const EXP_NAME: Record<string, string> = { "홍조": "blush", "><": "squint", "하트": "heart", "얄미운": "smug", "식은땀": "sweat", "어두운": "dark", "눈물": "tears", "어지럼": "dizzy" };
       const lastLine: Record<string, number> = {};
+      /**
+       * 상황별 대사 중 하나를 골라 말풍선 표시. [표정] 꼬리표가 있으면 그 표정도 같은 시간 동안 켬
+       * @param key LINES의 상황 키
+       * @param ms 말풍선·표정 표시 시간
+       */
       const speak = (key: string, ms = 3500) => {
         const list = LINES[key]; if (!list) return;
         // 연속 터치에서 같은 대사가 또 나오지 않게: 화면에 떠 있던 직전 문장과 같은 후보는 뺀다
         const candidates = [];
         for (let i = 0; i < list.length; i++) {
           if (list.length > 1 && i === lastLine[key]) continue;   // 같은 상황의 직전 대사도 제외
-          const raw = list[i], m = raw.match(/^\[([^\]]+)\]\s*/);
-          const text = m ? raw.slice(m[0].length) : raw;
+          const raw = list[i], tagMatch = raw.match(/^\[([^\]]+)\]\s*/);
+          const text = tagMatch ? raw.slice(tagMatch[0].length) : raw;
           if (text === lastSayText) continue;                     // 방금 띄운 문장과 겹치면 제외
-          candidates.push({ i, text, exp: m ? m[1] : "" });
+          candidates.push({ i, text, exp: tagMatch ? tagMatch[1] : "" });
         }
         if (!candidates.length) return;                           // 새로 할 말이 없으면 조용히 넘어감 (같은 대사 반복 방지)
         const pick = candidates[Math.floor(Math.random() * candidates.length)];
@@ -1808,7 +1813,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const text = pick.text;
         say(text, ms);
       };
-      outfitTalk = (key: string) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };   // 도망·산책·삐진 중에는 말 안 함
+      /** 소품·옷·체형을 바꿨을 때의 대사. 도망·산책·삐진 중에는 말 안 함 */
+      outfitTalk = (key: string) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };
 
       const PART_REGION: Record<string, string> = {
         Part99: "head", Part47: "head", Part155: "head", Part156: "head", Part161: "head", Part64: "head", Part66: "head", Part10: "head", Part8: "head",
@@ -1816,104 +1822,142 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         Part114: "leg", Part97: "lower", Part107: "lower", Part125: "lower", Part126: "lower",
         Part89: "waist", Part85: "chestpart", Part88: "chestpart", Part136: "tail",
       };
-      const DR = cm.drawables, PT = cm.parts;
-      const drawRegion = Array.from({ length: DR.count }, (_, i) => {
-        for (let p = DR.parentPartIndices[i]; p >= 0; p = PT.parentIndices[p]) if (PART_REGION[PT.ids[p]]) return PART_REGION[PT.ids[p]];
+      const drawables = cm.drawables, parts = cm.parts;
+      const drawRegion = Array.from({ length: drawables.count }, (_, i) => {
+        for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PART_REGION[parts.ids[part]]) return PART_REGION[parts.ids[part]];
         return null;
       });
       const chestDraw: number[] = [];
-      for (let i = 0; i < DR.count; i++) for (let p = DR.parentPartIndices[i]; p >= 0; p = PT.parentIndices[p]) if (PT.ids[p] === "Part88" || PT.ids[p] === "Part86") { chestDraw.push(i); break; }
+      for (let i = 0; i < drawables.count; i++) for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (parts.ids[part] === "Part88" || parts.ids[part] === "Part86") { chestDraw.push(i); break; }
+      /** 지금 보이는 가슴 메시들의 가운데(모델 좌표). 다 숨었으면 null */
       const chestCenter = () => {
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const i of chestDraw) {
-          if (DR.opacities[i] < 0.05) continue;
-          const v = im.getDrawableVertices(i);
-          for (let k = 0; k < v.length; k += 2) { x0 = Math.min(x0, v[k]); x1 = Math.max(x1, v[k]); y0 = Math.min(y0, v[k + 1]); y1 = Math.max(y1, v[k + 1]); }
+          if (drawables.opacities[i] < 0.05) continue;
+          const vertices = im.getDrawableVertices(i);
+          for (let j = 0; j < vertices.length; j += 2) { x0 = Math.min(x0, vertices[j]); x1 = Math.max(x1, vertices[j]); y0 = Math.min(y0, vertices[j + 1]); y1 = Math.max(y1, vertices[j + 1]); }
         }
         return x0 === Infinity ? null : { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
       };
       const chestBase = chestCenter();
-      const B = { minX, minY, w: maxX - minX, h: maxY - minY };   // 전신 그림 영역 (펫과 같은 기준)
-      const AN = 512;
+      const bodyBounds = { minX, minY, w: maxX - minX, h: maxY - minY };   // 전신 그림 영역 (펫과 같은 기준)
+      const ALPHA_SIZE = 512;
       let alphaMaps: (Uint8Array | null)[] | null = null;
+      /** 텍스처마다 ALPHA_SIZE×ALPHA_SIZE 알파 지도 생성. 읽지 못한 텍스처는 null */
       const buildAlpha = () => {
         alphaMaps = model.textures.map((t: any) => {
           try {
-            const c = life.own(document.createElement("canvas"), (node) => node.remove()); c.width = c.height = AN;
-            const g = c.getContext("2d", { willReadFrequently: true })!;   // 실패하면 아래에서 예외 → null
-            g.drawImage(t.baseTexture.resource.source, 0, 0, AN, AN);
-            const d = g.getImageData(0, 0, AN, AN).data, a = new Uint8Array(AN * AN);
-            for (let k = 0; k < a.length; k++) a[k] = d[k * 4 + 3];
-            return a;
+            const alphaCanvas = life.own(document.createElement("canvas"), (node) => node.remove()); alphaCanvas.width = alphaCanvas.height = ALPHA_SIZE;
+            const ctx = alphaCanvas.getContext("2d", { willReadFrequently: true })!;   // 실패하면 아래에서 예외 → null
+            ctx.drawImage(t.baseTexture.resource.source, 0, 0, ALPHA_SIZE, ALPHA_SIZE);
+            const pixels = ctx.getImageData(0, 0, ALPHA_SIZE, ALPHA_SIZE).data, alpha = new Uint8Array(ALPHA_SIZE * ALPHA_SIZE);
+            for (let i = 0; i < alpha.length; i++) alpha[i] = pixels[i * 4 + 3];
+            return alpha;
           } catch { return null; }
         });
       };
-      const alphaAt = (tex: number, u: number, v: number) => {
-        const a = alphaMaps![tex]; if (!a) return 255;   // pickDrawable이 먼저 만든다
-        return a[Math.min(AN - 1, Math.max(0, Math.floor((1 - v) * AN))) * AN + Math.min(AN - 1, Math.max(0, Math.floor(u * AN)))];
+      /**
+       * 텍스처 좌표 자리의 알파값(0~255). 알파 지도가 없는 텍스처는 255(불투명)로 취급
+       * @param textureIndex 텍스처 번호
+       * @param u 텍스처 가로 좌표(0~1)
+       * @param v 텍스처 세로 좌표(0~1, 아래가 0)
+       */
+      const alphaAt = (textureIndex: number, u: number, v: number) => {
+        const alphaMap = alphaMaps![textureIndex]; if (!alphaMap) return 255;   // pickDrawable이 먼저 만든다
+        return alphaMap[Math.min(ALPHA_SIZE - 1, Math.max(0, Math.floor((1 - v) * ALPHA_SIZE))) * ALPHA_SIZE + Math.min(ALPHA_SIZE - 1, Math.max(0, Math.floor(u * ALPHA_SIZE)))];
       };
-      // 터치를 받을 수 있는 drawable인지 (귀는 earHide 감쇠 전 가시성으로 터치 판정 유지)
-      const touchable = (i: number) => earSet.has(i) ? earHitVisible(i) : !(DR.opacities[i] < 0.05 || !(DR.dynamicFlags[i] & 1));
-      const pickDrawable = (x: number, y: number) => {   // x, y: 캔버스(배율 1) 좌표
+      /** 터치를 받을 수 있는 drawable 여부. 귀는 earHide 감쇠 전 가시성으로 터치 판정 유지 */
+      const touchable = (i: number) => earSet.has(i) ? earHitVisible(i) : !(drawables.opacities[i] < 0.05 || !(drawables.dynamicFlags[i] & 1));
+      /**
+       * 그 자리에서 가장 앞에 그려진, 그림(알파)이 있는 터치 가능 메시 찾기
+       * @param x 캔버스(배율 1) x 좌표
+       * @param y 캔버스(배율 1) y 좌표
+       * @returns drawable 번호, 없으면 -1
+       */
+      const pickDrawable = (x: number, y: number) => {
         if (!alphaMaps) buildAlpha();
         const px = (x - model.x) / model.scale.x, py = (y - model.y) / model.scale.y;
         let best = -1, bestOrder = -Infinity;
-        for (let i = 0; i < DR.count; i++) {
+        for (let i = 0; i < drawables.count; i++) {
           if (!touchable(i)) continue;
-          const order = DR.renderOrders[i];
+          const order = drawables.renderOrders[i];
           if (order <= bestOrder) continue;
-          const v = im.getDrawableVertices(i);
-          const [x0, y0, x1, y1] = meshBounds(v);
+          const vertices = im.getDrawableVertices(i);
+          const [x0, y0, x1, y1] = meshBounds(vertices);
           if (px < x0 || px > x1 || py < y0 || py > y1) continue;
-          if (meshHit(v, DR.indices[i], DR.vertexUvs[i], px, py, (u, w) => alphaAt(DR.textureIndices[i], u, w))) { best = i; bestOrder = order; }
+          if (meshHit(vertices, drawables.indices[i], drawables.vertexUvs[i], px, py, (u, v) => alphaAt(drawables.textureIndices[i], u, v))) { best = i; bestOrder = order; }
         }
         return best;
       };
-      // 꼬마 모습(체형 2): 가슴 반응 없이 머리(보이는 그림 위쪽 45%)·몸만 구분 (데스크톱 펫과 같음)
+      /**
+       * 꼬마 모습(체형 2)의 터치 부위. 가슴 반응 없이 머리(보이는 그림 위쪽 45%)·몸만 구분 (데스크톱 펫과 같음)
+       * @param y 캔버스 y 좌표
+       */
       const chibiRegion = (y: number) => {
         let y0 = Infinity, y1 = -Infinity;
-        for (let i = 0; i < DR.count; i++) {
-          if (DR.opacities[i] < 0.05) continue;
-          const v = im.getDrawableVertices(i);
-          for (let k = 1; k < v.length; k += 2) { if (v[k] < y0) y0 = v[k]; if (v[k] > y1) y1 = v[k]; }
+        for (let i = 0; i < drawables.count; i++) {
+          if (drawables.opacities[i] < 0.05) continue;
+          const vertices = im.getDrawableVertices(i);
+          for (let j = 1; j < vertices.length; j += 2) { if (vertices[j] < y0) y0 = vertices[j]; if (vertices[j] > y1) y1 = vertices[j]; }
         }
         return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < 0.45 ? "head" : "body";
       };
-      // 부위 그림(drawRegion)과 가슴 타원·높이(ry)로 부위를 정한다
-      const regionByShape = (r: string | null, ry: number, inChest: boolean) => {
-        if (r === "head" && ry > 0.3) r = null;
-        if (r === "arm" && cover.q > 0.3 && ry < 0.45) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
-        if (r === "arm" || r === "leg" || r === "head") return r;
+      /**
+       * 부위 그림(drawRegion)과 가슴 타원·높이로 터치 부위 결정
+       * @param region 누른 메시가 속한 부위 그림 이름(없으면 null)
+       * @param ratioY 전신 그림 영역 안 세로 위치(0 = 위, 1 = 아래)
+       * @param inChest 가슴 타원 안이면 true
+       */
+      const regionByShape = (region: string | null, ratioY: number, inChest: boolean) => {
+        if (region === "head" && ratioY > 0.3) region = null;
+        if (region === "arm" && cover.q > 0.3 && ratioY < 0.45) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
+        if (region === "arm" || region === "leg" || region === "head") return region;
         if (inChest) return "chest";
-        if (r === "lower") return "lower";
-        if (r === "waist") return ry > 0.4 ? "lower" : "chest";
-        if (r === null && ry < 0.3) return "head";
-        return ry < 0.4 ? "chest" : "body";
+        if (region === "lower") return "lower";
+        if (region === "waist") return ratioY > 0.4 ? "lower" : "chest";
+        if (region === null && ratioY < 0.3) return "head";
+        return ratioY < 0.4 ? "chest" : "body";
       };
-      const touchRegion = (x: number, y: number, d: number) => {
+      /**
+       * 누른 자리의 터치 부위(head·arm·leg·chest·lower·body) 판정. 가슴이 움직인 만큼 전신 기준 영역도 옮겨 판정
+       * @param x 캔버스 x 좌표
+       * @param y 캔버스 y 좌표
+       * @param drawable 누른 메시 번호
+       */
+      const touchRegion = (x: number, y: number, drawable: number) => {
         if (bodyW > 0.5) return chibiRegion(y);
-        const sc = model.scale.x, cc = chestCenter();
-        const shiftX = cc && chestBase ? cc.x - chestBase.x : 0, shiftY = cc && chestBase ? cc.y - chestBase.y : 0;
-        const rx = (x - model.x - (B.minX + shiftX) * sc) / (B.w * sc);
-        const ry = (y - model.y - (B.minY + shiftY) * sc) / (B.h * sc);
-        const inChest = Math.pow((rx - 0.45) / 0.13, 2) + Math.pow((ry - 0.295) / 0.045, 2) <= 1;
-        return regionByShape(drawRegion[d], ry, inChest);
+        const scale = model.scale.x, currentChest = chestCenter();
+        const shiftX = currentChest && chestBase ? currentChest.x - chestBase.x : 0, shiftY = currentChest && chestBase ? currentChest.y - chestBase.y : 0;
+        const ratioX = (x - model.x - (bodyBounds.minX + shiftX) * scale) / (bodyBounds.w * scale);
+        const ratioY = (y - model.y - (bodyBounds.minY + shiftY) * scale) / (bodyBounds.h * scale);
+        const inChest = Math.pow((ratioX - 0.45) / 0.13, 2) + Math.pow((ratioY - 0.295) / 0.045, 2) <= 1;
+        return regionByShape(drawRegion[drawable], ratioY, inChest);
       };
-      // 화면 좌표 → 캔버스 좌표, 캐릭터 위면 [x, y, 메시 번호]
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
       const UI_HIT = 'button, a[href], input, textarea, select, summary, [contenteditable="true"], [class*="composerSeat"] [class*="_card"]';
+      /**
+       * 화면 좌표 → 캔버스 좌표 변환과 캐릭터 위 여부 판정
+       * @param cx 창 x 좌표(clientX)
+       * @param cy 창 y 좌표(clientY)
+       * @returns 캐릭터 위면 [캔버스 x, 캔버스 y, 메시 번호], 아니면 null
+       */
       const hitAt = (cx: number, cy: number) => {
         if (canvas.style.display === "none" || fleeX !== 0) return null;
-        const r = canvas.getBoundingClientRect();
-        if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return null;
+        const rect = canvas.getBoundingClientRect();
+        if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return null;
         if (document.elementFromPoint(cx, cy)?.closest(UI_HIT)) return null;
-        const x = (cx - r.left) / curK, y = (cy - r.top) / curK;
-        const d = pickDrawable(x, y);
-        return d >= 0 ? [x, y, d] : null;
+        const x = (cx - rect.left) / curK, y = (cy - rect.top) / curK;
+        const drawable = pickDrawable(x, y);
+        return drawable >= 0 ? [x, y, drawable] : null;
       };
 
       let clicks: number[] = [], headClicks: number[] = [], spamAt = -1e9, inputLockedUntil = 0;
       const shy = { count: 0, last: -1e9, cooldownUntil: 0 }, low = { count: 0, last: -1e9, cooldownUntil: 0 };
+      /**
+       * 가슴 터치 반응. 8초 안에 이어 누른 횟수로 단계가 오르고, 다섯 번째엔 진정할 때까지 6초 터치 잠금
+       * 180ms 안의 연타와 쿨다운 중 터치는 무시
+       * @param now performance.now() 시각(ms)
+       */
       const onChest = (now: number) => {
         if (now < shy.cooldownUntil || now - shy.last < 180) return;
         if (now - shy.last > 8000) shy.count = 0;
@@ -1933,23 +1977,36 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           setTimeout(() => speak("chest_calm", 2800), 3000);
         }
       };
-      // 가까운 쪽 화면 끝(-1 = 왼쪽, 1 = 오른쪽)과 그쪽으로 완전히 나가는 거리. 높이는 그대로 두고 좌우로만 움직임.
-      const nearSide = () => { const a = area(), c = shown.x - fleeX + W * curK / 2; return c - a.l < a.r - c ? -1 : 1; };
-      const outDistance = (dir: number) => { const a = area(), x = shown.x - fleeX; return dir < 0 ? -(x + W * curK - a.l + 20) : a.r - x + 20; };
+      /** 가까운 쪽 화면 끝(-1 = 왼쪽, 1 = 오른쪽) */
+      const nearSide = () => { const areaRect = area(), centerX = shown.x - fleeX + W * curK / 2; return centerX - areaRect.l < areaRect.r - centerX ? -1 : 1; };
+      /**
+       * 그쪽 화면 끝으로 완전히 나가는 거리. 높이는 그대로 두고 좌우로만 움직임
+       * @param dir -1 = 왼쪽, 1 = 오른쪽
+       * @returns fleeX로 쓸 가로 이동량(px, 왼쪽이면 음수)
+       */
+      const outDistance = (dir: number) => { const areaRect = area(), x = shown.x - fleeX; return dir < 0 ? -(x + W * curK - areaRect.l + 20) : areaRect.r - x + 20; };
       // 도망
       //  · 창 안: 창 경계 밖으로 걸어 나가 사라졌다가 10초 뒤 같은 쪽에서 돌아옴 (원래 동작)
       //  · 펫 창: 멀티 모니터에서는 '화면 끝'이 다른 모니터라 지워지지 않으므로, 일정 거리 이동 + 페이드로 확실히 사라지게 한다
       const FLEE_DIST = 300, FLEE_OUT_MS = 700, FLEE_IN_MS = 900, FLEE_HIDE_MS = 10000;
       let fleeFade = 1;   // 도망 중 캔버스 불투명도 (1 = 평소)
+      /**
+       * 도망용 가로 이동(fleeX) 애니메이션. 처음·끝은 부드럽게(ease-in-out)
+       * @param from 시작 fleeX(px)
+       * @param to 끝 fleeX(px)
+       * @param done 다 움직인 뒤 부를 함수
+       */
       const fleeSlide = (from: number, to: number, ms: number, done?: () => void) => {
-        const t0 = performance.now();
+        const startedAt = performance.now();
+        /** 한 프레임만큼 fleeX 갱신, 끝나면 done 호출 */
         const step = () => {
-          const p = Math.min(1, (performance.now() - t0) / ms), e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+          const progress = Math.min(1, (performance.now() - startedAt) / ms), e = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
           fleeX = from + (to - from) * e;
-          if (p < 1) requestAnimationFrame(step); else done && done();
+          if (progress < 1) requestAnimationFrame(step); else done && done();
         };
         requestAnimationFrame(step);
       };
+      /** 아래(치마) 터치가 쌓였을 때 화면 밖으로 도망쳤다가 돌아옴 */
       const flee = () => {
         if (drag.pending || drag.on || link.open || link.follow) return;   // 예약된 사이 집었거나 펫 창으로 넘어갔으면 취소
         hush();
@@ -1962,53 +2019,74 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
         // 펫 창: 거리 이동 + 페이드
         const dist = nearSide() * Math.max(FLEE_DIST, W * curK * 0.5);     // 캐릭터가 클수록 조금 더 멀리
+        /** 도망 끝: 제자리·불투명도 복구 후 한마디 */
         const finish = () => { fleeX = 0; fleeFade = 1; canvas.style.opacity = ""; setTimeout(() => speak("lower_after", 4000), 400); };
-        const runIn = () => {   // 사라진 자리에서 제자리까지 서서히 나타나며 돌아옴 (끌기 시작하면 즉시 복귀)
-          const t0 = performance.now();
+        /** 사라진 자리에서 제자리까지 서서히 나타나며 돌아옴 (끌기 시작하면 즉시 복귀) */
+        const runIn = () => {
+          const inStartedAt = performance.now();
+          /** 돌아오는 한 프레임 진행. 끌기가 시작되면 즉시 finish */
           const step = () => {
             if (drag.pending || drag.on) return finish();
-            const p = Math.min(1, (performance.now() - t0) / FLEE_IN_MS);
-            fleeX = dist * (1 - p * p * (3 - 2 * p));
-            fleeFade = p * p * (3 - 2 * p);
+            const progress = Math.min(1, (performance.now() - inStartedAt) / FLEE_IN_MS);
+            fleeX = dist * (1 - progress * progress * (3 - 2 * progress));
+            fleeFade = progress * progress * (3 - 2 * progress);
             canvas.style.opacity = String(Math.min(1, fleeFade));
-            if (p < 1) requestAnimationFrame(step); else finish();
+            if (progress < 1) requestAnimationFrame(step); else finish();
           };
           requestAnimationFrame(step);
         };
-        const t0 = performance.now();
+        const outStartedAt = performance.now();
+        /** 멀어지며 옅어지는 한 프레임 진행. 다 사라지면 FLEE_HIDE_MS 뒤 runIn */
         const runOut = () => {
-          const p = Math.min(1, (performance.now() - t0) / FLEE_OUT_MS);
-          fleeX = dist * (1 - Math.pow(1 - p, 3));                       // 빠르게 출발해 끝에서 감속
-          fleeFade = Math.max(0, 1 - Math.pow(p, 1.5));                  // 갈수록 빠르게 옅어져 도착하면 완전히 투명
+          const progress = Math.min(1, (performance.now() - outStartedAt) / FLEE_OUT_MS);
+          fleeX = dist * (1 - Math.pow(1 - progress, 3));                       // 빠르게 출발해 끝에서 감속
+          fleeFade = Math.max(0, 1 - Math.pow(progress, 1.5));                  // 갈수록 빠르게 옅어져 도착하면 완전히 투명
           canvas.style.opacity = String(fleeFade);
-          if (p < 1) requestAnimationFrame(runOut);
+          if (progress < 1) requestAnimationFrame(runOut);
           else setTimeout(runIn, FLEE_HIDE_MS);
         };
         requestAnimationFrame(runOut);
       };
       // ---------- 산책 ----------
       const WALK_SPEED = 320;   // 걷는 속도 (px/초)
-      const walkEase = (p: number) => { const a = 0.12, m = 2 * a * (1 - a); return p < a ? p * p / m : p > 1 - a ? 1 - (1 - p) * (1 - p) / m : (p - a / 2) / (1 - a); };   // 출발·도착만 부드럽게, 중간은 일정한 속도
-      // 산책의 예약 타이머와 걷기 애니메이션은 walk.timers·walk.slideId로 묶어, 집어 들면 한 번에 멈춘다
+      /**
+       * 출발·도착만 부드럽게, 중간은 일정한 속도인 산책 진행 곡선
+       * @param progress 시간 진행도(0~1)
+       * @returns 거리 진행도(0~1)
+       */
+      const walkEase = (progress: number) => { const ramp = 0.12, rampNorm = 2 * ramp * (1 - ramp); return progress < ramp ? progress * progress / rampNorm : progress > 1 - ramp ? 1 - (1 - progress) * (1 - progress) / rampNorm : (progress - ramp / 2) / (1 - ramp); };
+      /**
+       * 산책용 예약 타이머. walk.timers에 묶어 집어 들면 한 번에 멈춤
+       * @returns setTimeout id
+       */
       const walkLater = (fn: () => void, ms: number) => { const id = setTimeout(() => { walk.timers = walk.timers.filter((t) => t !== id); fn(); }, ms); walk.timers.push(id); return id; };
+      /**
+       * 걷기 애니메이션(WALK_SPEED 속도로 fleeX 이동). walk.slideId로 묶어 새 걷기가 시작되거나 집어 들면 멈춤
+       * @param from 시작 fleeX(px)
+       * @param to 끝 fleeX(px)
+       * @returns 이 걷기를 멈추는 함수
+       */
       const slide = (from: number, to: number, done: () => void) => {
-        const t0 = performance.now(), ms = Math.abs(to - from) / WALK_SPEED * 1000, id = ++walk.slideId;
+        const startedAt = performance.now(), ms = Math.abs(to - from) / WALK_SPEED * 1000, id = ++walk.slideId;
         let cancelled = false;
+        /** 걷기 한 프레임 진행. 멈췄거나 다른 걷기가 시작됐으면 중단 */
         const step = () => {
           if (cancelled || id !== walk.slideId) return;   // 멈춤
-          const p = ms ? Math.min(1, (performance.now() - t0) / ms) : 1;
-          fleeX = from + (to - from) * walkEase(p);
-          if (p < 1) requestAnimationFrame(step); else done();
+          const progress = ms ? Math.min(1, (performance.now() - startedAt) / ms) : 1;
+          fleeX = from + (to - from) * walkEase(progress);
+          if (progress < 1) requestAnimationFrame(step); else done();
         };
         requestAnimationFrame(step);
         return () => { cancelled = true; };
       };
-      const cancelWalk = () => {   // 출발 전(말하는 중)에 집어 들면 산책을 취소. 출발한 뒤에는 제자리에 올 때까지 집을 수 없음
+      /** 출발 전(말하는 중)에 집어 들었을 때 산책 취소. 출발한 뒤에는 제자리에 올 때까지 집을 수 없음 */
+      const cancelWalk = () => {
         if (walk.phase !== "ready") return;
         for (const t of walk.timers) clearTimeout(t);
         walk.timers = []; walk.slideId++; walk.phase = "";
       };
-      const walkBack = () => {   // 반대쪽(오른쪽) 화면 밖에서 원래 자리까지 걸어 들어옴
+      /** 반대쪽(오른쪽) 화면 밖에서 원래 자리까지 걸어 들어옴 */
+      const walkBack = () => {
         if (walk.phase !== "away") return;
         for (const t of walk.timers) clearTimeout(t);
         walk.timers = []; walk.phase = "in"; walk.dir = 1;   // 오른쪽에서 들어와 왼쪽으로 걸어옴
@@ -2017,7 +2095,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           walkLater(() => { if (!walk.phase) speak("walk_back", 3500); }, 450);   // 정면으로 돌아선 뒤 인사
         });
       };
-      const startWalk = () => {   // 말하고 → 가까운 쪽으로 돌아서 → 화면 밖까지 걸어감(높이 그대로) → 8~14초 뒤 같은 쪽으로 돌아옴
+      /** 산책 시작: 말하고 → 왼쪽으로 돌아서 → 화면 밖까지 걸어감(높이 그대로) → 8~14초 뒤 반대쪽(오른쪽)에서 돌아옴 */
+      const startWalk = () => {
         if (SLEEP.state !== "active") return;
         walk.phase = "ready"; walk.dir = -1;   // 연출: 항상 왼쪽으로 걸어 나갔다가 오른쪽에서 들어온다
         speak("walk_out", 2200);
@@ -2029,12 +2108,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           }); }, 700);   // 꼬마 모습으로 바뀐 뒤 출발
         }, 2300);
       };
-      // 산책을 떠나면 안 되는 때: 시작 연출·작업·대기·삐짐·도망 중
+      /** 산책을 떠나면 안 되는 때 여부: 시작 연출·작업·대기·삐짐·도망 중 */
       const walkMoodBusy = (now: number) => intro.phase !== "done" || mood !== "idle" || running || !!waitingKind || now < sulkUntil || now < inputLockedUntil || fleeX !== 0;
-      // 누르거나 들고 있을 때·움직이는 중·펫 창으로 넘긴 동안은 산책 안 함 (펫 창이 대신 산책)
+      /** 누르거나 들고 있을 때·움직이는 중·펫 창으로 넘긴 동안 여부. 이때는 산책 안 함 (펫 창이 대신 산책) */
       const walkInputBusy = () => !!(drag.pending || drag.on || free.anim || link.open || link.opening || link.follow);
-      // 말하는 중, 최근 1분 안에 만졌거나 15초 안에 말했을 때, 화면이 안 보일 때
+      /** 말하는 중, 최근 1분 안에 만졌거나 15초 안에 말했을 때, 화면이 안 보일 때 여부 */
       const walkRecentlyActive = (now: number) => bubble.classList.contains("show") || now - walk.lastTouch < 60000 || now - lastSayAt < 15000 || document.hidden;
+      /**
+       * 프레임마다 산책 시작·조기 귀환 판단. 갈 때가 아니면 30초 뒤, 떠나면 4~8분 뒤 다시 확인
+       * @param now performance.now() 시각(ms)
+       */
       walkCheck = (now: number) => {
         if (SLEEP.state !== "active") return;   // 절전 중에는 산책하지 않음
         if (walk.phase === "away" && running) return walkBack();   // 나가 있는 동안 작업이 시작되면 바로 돌아옴
@@ -2047,7 +2130,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // ---------- 절전(슬립): 입력이 없으면 말 한마디 후 오른쪽 화면 밖으로 나가 렌더링(티커)을 멈춤 ----------
       const SLEEP = { enabled: true, minutes: 1, lastActive: performance.now(), state: "active" };   // active → leaving → asleep → waking
       let sleepTimer = 0, cancelSleepSlide: (() => void) | null = null;
-      const SLEEP_OFF = () => innerWidth - (canvas.getBoundingClientRect().left - fleeX) + 40;   // 화면 오른쪽 밖 좌표
+      /** 화면 오른쪽 밖 좌표(그 자리까지 갈 fleeX, px) */
+      const SLEEP_OFF = () => innerWidth - (canvas.getBoundingClientRect().left - fleeX) + 40;
+      /** 절전(나가는 중 포함)에서 깨어나 제자리로 걸어 돌아옴. 펫 창으로 꺼내 둔 동안이면 걷지 않고 바로 활성 상태로 */
       const startWake = () => {
         if (SLEEP.state !== "asleep" && SLEEP.state !== "leaving") return;
         clearTimeout(sleepTimer); sleepTimer = 0;
@@ -2062,12 +2147,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           if (!running && !waitingKind) speak("sleep_back", 3500);
         });
       };
+      /** 사용자 입력 시각 기록과 절전 해제. 숨김 상태면 무시 */
       const sleepActivity = () => {
         if (hidden) return;
         SLEEP.lastActive = performance.now();
         startWake();
       };
       for (const t of (PET ? [] : ["pointerdown", "pointermove", "mousedown", "keydown", "wheel", "touchstart"])) addEventListener(t, sleepActivity, { passive: true, capture: true });
+      /**
+       * 절전 진입: 한마디 후 오른쪽 화면 밖으로 걸어 나가 렌더링 멈춤
+       * 숨김·펫 창·끌기·움직임·시작 연출·도망·산책 중이면 건너뜀
+       */
       const sleepGo = () => {
         if (hidden || PET || drag.on || drag.pending || free.anim || SLEEP.state !== "active" || intro.phase !== "done" || fleeX !== 0 || walk.phase) return;
         if (link.open || link.follow?.shown) { SLEEP.lastActive = performance.now(); return; }   // 펫 창으로 밖에 꺼내 둔 동안엔 절전 안 함
@@ -2085,6 +2175,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           });
         }, 2500);
       };
+      /**
+       * 아래(치마) 터치 반응. 8초 안에 이어 누른 횟수로 단계가 오르고, 다섯 번째엔 도망 후 14초 쿨다운
+       * 도망 중·쿨다운 중 터치와 180ms 안의 연타는 무시
+       * @param now performance.now() 시각(ms)
+       */
       const onLower = (now: number) => {
         if (fleeX !== 0 || now < low.cooldownUntil || now - low.last < 180) return;
         if (now - low.last > 8000) low.count = 0;
@@ -2106,39 +2201,64 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         '<path d="M22 30 H118 V78 Q118 96 100 96 H40 Q22 96 22 78 Z" fill="url(#dscPotBody)" stroke="#4b525b" stroke-width="3"/>' +
         '<ellipse cx="70" cy="30" rx="50" ry="10" fill="#d7dde4" stroke="#4b525b" stroke-width="3"/>' +
         '<ellipse cx="70" cy="30" rx="40" ry="6" fill="#59616b"/><path d="M38 48 Q44 70 40 86" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".55" fill="none"/></svg>';
-      // 충격 그림: 별 모양 터짐 + 바깥 충격선 (막았을 땐 은색 반짝임)
+      /**
+       * 충격 그림: 별 모양 터짐 + 바깥 충격선 (막았을 땐 은색 반짝임)
+       * @param guarded true면 세숫대야로 막았을 때 그림
+       * @returns SVG 문자열
+       */
       const impactSvg = (guarded: boolean) => {
-        const pts = [];
-        for (let i = 0; i < 20; i++) { const r = i % 2 ? 22 : 46, a = (i / 20) * Math.PI * 2 - Math.PI / 2; pts.push((50 + Math.cos(a) * r).toFixed(1) + "," + (50 + Math.sin(a) * r).toFixed(1)); }
+        const points = [];
+        for (let i = 0; i < 20; i++) { const radius = i % 2 ? 22 : 46, angle = (i / 20) * Math.PI * 2 - Math.PI / 2; points.push((50 + Math.cos(angle) * radius).toFixed(1) + "," + (50 + Math.sin(angle) * radius).toFixed(1)); }
         const fill = guarded ? "#f1f5f9" : "#ffe14d", stroke = guarded ? "#64748b" : "#ea580c", core = guarded ? "#ffffff" : "#fff7c2";
         let rays = "";
-        for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2 + 0.2, c = Math.cos(a), sn = Math.sin(a); rays += `<line x1="${(50 + c * 50).toFixed(1)}" y1="${(50 + sn * 50).toFixed(1)}" x2="${(50 + c * 62).toFixed(1)}" y2="${(50 + sn * 62).toFixed(1)}" stroke="${stroke}" stroke-width="4" stroke-linecap="round"/>`; }
-        return `<svg viewBox="-14 -14 128 128" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">${rays}<polygon points="${pts.join(" ")}" fill="${fill}" stroke="${stroke}" stroke-width="4" stroke-linejoin="round"/><circle cx="50" cy="50" r="12" fill="${core}"/></svg>`;
+        for (let i = 0; i < 8; i++) { const angle = (i / 8) * Math.PI * 2 + 0.2, cos = Math.cos(angle), sin = Math.sin(angle); rays += `<line x1="${(50 + cos * 50).toFixed(1)}" y1="${(50 + sin * 50).toFixed(1)}" x2="${(50 + cos * 62).toFixed(1)}" y2="${(50 + sin * 62).toFixed(1)}" stroke="${stroke}" stroke-width="4" stroke-linecap="round"/>`; }
+        return `<svg viewBox="-14 -14 128 128" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">${rays}<polygon points="${points.join(" ")}" fill="${fill}" stroke="${stroke}" stroke-width="4" stroke-linejoin="round"/><circle cx="50" cy="50" r="12" fill="${core}"/></svg>`;
       };
-      // 효과음 (파일 없이 합성): 맞으면 둔탁한 "통", 세숫대야로 막으면 금속이 울리는 "깡~"
       let audioCtx: AudioContext | null = null;
+      /**
+       * 효과음 (파일 없이 합성): 맞으면 둔탁한 "통", 세숫대야로 막으면 금속이 울리는 "깡~"
+       * @param guarded true면 세숫대야로 막았을 때 소리
+       */
       const impactSound = (guarded: boolean) => {
         try {
           audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-          const ac = audioCtx, t = ac.currentTime, out = ac.createGain();
-          out.gain.value = 0.22; out.connect(ac.destination);
-          const tone = (f: number, dur: number, vol: number, type: OscillatorType = "sine", drop = 1) => {
-            const o = ac.createOscillator(), g = ac.createGain();
-            o.type = type; o.frequency.setValueAtTime(f, t); if (drop !== 1) o.frequency.exponentialRampToValueAtTime(f * drop, t + dur);
-            g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-            o.connect(g); g.connect(out); o.start(t); o.stop(t + dur + 0.02);
+          const audio = audioCtx, t = audio.currentTime, out = audio.createGain();
+          out.gain.value = 0.22; out.connect(audio.destination);
+          /**
+           * 점점 잦아드는 단음 하나
+           * @param freq 시작 주파수(Hz)
+           * @param dur 길이(초)
+           * @param vol 시작 음량
+           * @param drop 끝 주파수 배율(1이면 고정)
+           */
+          const tone = (freq: number, dur: number, vol: number, type: OscillatorType = "sine", drop = 1) => {
+            const oscillator = audio.createOscillator(), gainNode = audio.createGain();
+            oscillator.type = type; oscillator.frequency.setValueAtTime(freq, t); if (drop !== 1) oscillator.frequency.exponentialRampToValueAtTime(freq * drop, t + dur);
+            gainNode.gain.setValueAtTime(vol, t); gainNode.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+            oscillator.connect(gainNode); gainNode.connect(out); oscillator.start(t); oscillator.stop(t + dur + 0.02);
           };
-          const noise = (dur: number, vol: number, hp: number) => {   // 부딪히는 순간의 "탁"
-            const b = ac.createBuffer(1, Math.ceil(ac.sampleRate * dur), ac.sampleRate), d = b.getChannelData(0);
-            for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
-            const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
-            src.buffer = b; f.type = "highpass"; f.frequency.value = hp; g.gain.value = vol;
-            src.connect(f); f.connect(g); g.connect(out); src.start(t);
+          /**
+           * 부딪히는 순간의 "탁" (점점 잦아드는 잡음)
+           * @param dur 길이(초)
+           * @param vol 음량
+           * @param highpassHz 고역 통과 필터 기준 주파수(Hz)
+           */
+          const noise = (dur: number, vol: number, highpassHz: number) => {
+            const noiseBuffer = audio.createBuffer(1, Math.ceil(audio.sampleRate * dur), audio.sampleRate), samples = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < samples.length; i++) samples[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / samples.length, 3);
+            const src = audio.createBufferSource(), filter = audio.createBiquadFilter(), gainNode = audio.createGain();
+            src.buffer = noiseBuffer; filter.type = "highpass"; filter.frequency.value = highpassHz; gainNode.gain.value = vol;
+            src.connect(filter); filter.connect(gainNode); gainNode.connect(out); src.start(t);
           };
-          if (guarded) { noise(0.05, 0.7, 2500); for (const [f, d, v] of [[640, 1.1, 0.5], [1370, 0.9, 0.35], [2230, 0.7, 0.25], [3150, 0.5, 0.15]]) tone(f, d, v, "sine", 0.995); }
+          if (guarded) { noise(0.05, 0.7, 2500); for (const [freq, dur, vol] of [[640, 1.1, 0.5], [1370, 0.9, 0.35], [2230, 0.7, 0.25], [3150, 0.5, 0.15]]) tone(freq, dur, vol, "sine", 0.995); }
           else { noise(0.07, 0.8, 900); tone(190, 0.28, 0.9, "triangle", 0.45); tone(470, 0.35, 0.35, "sine", 0.9); tone(1130, 0.22, 0.18, "sine", 0.95); }
         } catch {}
       };
+      /**
+       * 냄비 떨어뜨리기: 위에서 떨어져 머리를 치고 튕겨 나감. 세숫대야를 쓰고 있으면 막아 냄
+       * @param x 냄비가 떨어질 창 x 좌표(clientX)
+       * @param y 냄비가 떨어질 창 y 좌표(clientY)
+       */
       const potHit = (x: number, y: number) => {
         const now = performance.now();
         walk.lastTouch = now; clicks = []; headClicks = [];
@@ -2149,29 +2269,32 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         pot.style.cssText = `position:fixed;left:${x - w / 2}px;top:${y - h * 0.9}px;width:${w}px;height:${h}px;z-index:40;pointer-events:none;will-change:transform,opacity`;
         pot.innerHTML = POT_SVG;
         document.body.append(pot);
-        const fall = y + h + 20, T = 1250;
+        const fall = y + h + 20, animMs = 1250;
         const anim = pot.animate([
           { transform: `translateY(${-fall}px) rotate(-14deg)`, offset: 0, easing: "cubic-bezier(.5,0,1,.6)" },
           { transform: "translateY(0) rotate(0deg) scale(1.12,.86)", offset: 0.4, easing: "ease-out" },   // 쾅
           guarded ? { transform: `translate(${w * 0.45}px,${-h * 1.6}px) rotate(60deg)`, offset: 0.66, easing: "ease-in" }   // 세숫대야에 튕겨 더 높이
                   : { transform: `translate(${w * 0.25}px,${-h * 0.6}px) rotate(32deg)`, offset: 0.62, easing: "ease-in" },
           { transform: `translate(${w * 0.7}px,${h * 0.9}px) rotate(85deg)`, opacity: 0, offset: 1 },
-        ], { duration: T, fill: "forwards" });
+        ], { duration: animMs, fill: "forwards" });
+        /** 다 떨어진 냄비 정리 */
         anim.onfinish = () => pot.remove();
         setTimeout(() => {   // 부딪히는 순간
-          const fs = Math.max(60, 130 * curK), fx = life.own(document.createElement("div"), (node) => node.remove());   // 글자 없이 만화식 충격 별 + 충격선
-          fx.style.cssText = `position:fixed;left:${x - fs / 2}px;top:${y - h * 0.9 - fs / 2}px;width:${fs}px;height:${fs}px;z-index:41;pointer-events:none`;
-          fx.innerHTML = impactSvg(guarded);
-          document.body.append(fx);
-          fx.animate([{ transform: "scale(.2) rotate(-20deg)", opacity: 0 }, { transform: "scale(1.15) rotate(5deg)", opacity: 1, offset: 0.25 }, { transform: "scale(1.3) rotate(10deg)", opacity: 0 }], { duration: 620, fill: "forwards" }).onfinish = () => fx.remove();
+          const burstSize = Math.max(60, 130 * curK), burst = life.own(document.createElement("div"), (node) => node.remove());   // 글자 없이 만화식 충격 별 + 충격선
+          burst.style.cssText = `position:fixed;left:${x - burstSize / 2}px;top:${y - h * 0.9 - burstSize / 2}px;width:${burstSize}px;height:${burstSize}px;z-index:41;pointer-events:none`;
+          burst.innerHTML = impactSvg(guarded);
+          document.body.append(burst);
+          /** 다 터진 충격 그림 정리 */
+          burst.animate([{ transform: "scale(.2) rotate(-20deg)", opacity: 0 }, { transform: "scale(1.15) rotate(5deg)", opacity: 1, offset: 0.25 }, { transform: "scale(1.3) rotate(10deg)", opacity: 0 }], { duration: 620, fill: "forwards" }).onfinish = () => burst.remove();
           impactSound(guarded);
           if (guarded) { play("flinch", 600); speak("pot_guard", 3000); return; }   // 막아 냄: 살짝 움찔하고 의기양양
           play("bonk", 1100); shiverStarted = performance.now();
           speak("pot_hit", 3000);
           flashExp("dizzy", 2800);   // 빙글빙글 눈 (말풍선 꼬리표의 눈물과 함께)
-        }, T * 0.4);
+        }, animMs * 0.4);
       };
       // ---------- 세숫대야: 머리를 천천히 쓸어내리면 살며시 씌우고 10초 뒤 벗음 ----------
+      /** 세숫대야 씌우기 (10초 뒤 벗음) */
       const putBasin = () => {
         const now = performance.now();
         walk.lastTouch = now; clicks = []; headClicks = [];
@@ -2179,6 +2302,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         speak("basin_on", 3800);
       };
       const HEAD_SULK_AT = 3, SULK_MS = 15000;   // 머리 1~2번째 = 정색, 3번째 = 삐져서 15초 동안 터치 안 받음
+      /**
+       * 머리를 연달아 만졌을 때 삐짐: SULK_MS 동안 터치 안 받고 고개를 돌린 채 몰래 보기 3번, 풀리면 한마디
+       * @param now performance.now() 시각(ms)
+       */
       const sulk = (now: number) => {
         clicks = []; headClicks = [];
         until.dark = until.smug = 0;   // 정색 표정을 지우고 삐진 얼굴로
@@ -2191,11 +2318,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         flashExp("blush", SULK_MS);
         setTimeout(() => { stareUntil = performance.now() + 4300; speak("head_after", 4000); }, SULK_MS);   // 풀리며 한마디 할 땐 정면을 똑바로 봄
       };
-      const onTouch = (x: number, y: number, d: number) => {
+      /**
+       * 짧은 터치 반응: 부위별 대사, 3초 안 6번 연타·작업 중·머리 8초 안 3번(삐짐) 판정
+       * @param x 캔버스 x 좌표
+       * @param y 캔버스 y 좌표
+       * @param drawable 누른 메시 번호
+       */
+      const onTouch = (x: number, y: number, drawable: number) => {
         const now = performance.now();
         if (now < inputLockedUntil) return;
         walk.lastTouch = now;
-        const region = touchRegion(x, y, d);
+        const region = touchRegion(x, y, drawable);
         if (region === "chest") { clicks = []; headClicks = []; low.count = 0; return onChest(now); }
         if (region === "lower") { clicks = []; headClicks = []; shy.count = 0; return onLower(now); }
         shy.count = 0; low.count = 0;
@@ -2218,19 +2351,30 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 머리에서 아래로 쓸어내리면 끌기 대신 냄비(빠르게)·세숫대야(천천히)
       const POT_MS = 130;   // 머리에서 이 시간(ms) 안에 55px 넘게 쓸어내리면 냄비, 아니면 세숫대야
       let swallowClick = false, strokeFrom: { x: number; y: number; t: number; h: number[] } | null = null;   // strokeFrom: 머리를 누른 채 쓸어내리는지 지켜보는 중
-      const pt = (e: MouseEvent): [number, number] => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];   // 창 안 = 창 좌표, 펫 창 = 화면 좌표
-      // 몸 전체 영역(캔버스 양옆 빈 곳·머리 위 여백 제외). 펫 창은 클릭을 통과시키다 이 안에 커서가 오면 받기 시작하므로,
-      // 반투명한 머리카락 끝처럼 그림 판정이 빗나가는 곳도 집을 수 있게 이 영역으로 판단한다
+      /** 이벤트의 포인터 좌표. 창 안 = 창 좌표, 펫 창 = 화면 좌표 */
+      const pt = (e: MouseEvent): [number, number] => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];
+      /**
+       * 몸 전체 영역(캔버스 양옆 빈 곳·머리 위 여백 제외) 안 여부. 펫 창은 클릭을 통과시키다 이 안에 커서가 오면 받기 시작하므로,
+       * 반투명한 머리카락 끝처럼 그림 판정이 빗나가는 곳도 집을 수 있게 이 영역으로 판단
+       * @param cx 창 x 좌표(clientX)
+       * @param cy 창 y 좌표(clientY)
+       */
       const overBody = (cx: number, cy: number) => {
         if (canvas.style.display === "none" || fleeX !== 0) return false;
-        const c = canvas.getBoundingClientRect(), r = bodyRect(c.left, c.top, curK);
-        return cx >= r.l && cx <= r.r && cy >= r.t && cy <= r.b;
+        const canvasRect = canvas.getBoundingClientRect(), body = bodyRect(canvasRect.left, canvasRect.top, curK);
+        return cx >= body.l && cx <= body.r && cy >= body.t && cy <= body.b;
       };
-      const walking = () => walk.phase === "out" || walk.phase === "away" || walk.phase === "in";   // 출발한 뒤 ~ 제자리 도착 전
-      // 가슴 끌기는 놓은 직후 부끄러워 떠는 동안에도 바로 다시 잡을 수 있다 (inputLockedUntil은 머리 터치에만 적용)
+      /** 산책으로 걷는 중 여부 (출발한 뒤 ~ 제자리 도착 전) */
+      const walking = () => walk.phase === "out" || walk.phase === "away" || walk.phase === "in";
+      /**
+       * 가슴 끌기를 시작할 수 있는지 여부. 놓은 직후 부끄러워 떠는 동안에도 바로 다시 잡을 수 있음 (inputLockedUntil은 머리 터치에만 적용)
+       * @param now performance.now() 시각(ms)
+       */
       const canPullChest = (now: number) => bodyW <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
-      // 3초 넘게 잡은 채로 '흔들어야' 더 자극적인 대사가 나온다 (잡고만 있으면 나오지 않음)
-      // 4초를 넘겨 계속 흔들면 어지러워하는 대사로 바뀐다
+      /**
+       * 가슴을 잡은 동안의 흔들기 대사 감시 시작
+       * 3초 넘게 잡은 채로 '흔들어야' 더 자극적인 대사가 나옴 (잡고만 있으면 안 나옴), 4초를 넘겨 계속 흔들면 어지러워하는 대사로 바뀜
+       */
       const armChestLong = () => {
         clearInterval(chestLongTimer);
         const startedAt = performance.now();
@@ -2245,6 +2389,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           chestShake.acc = 0; chestShake.next = now + 3000;                    // 계속 흔들면 3초마다 한 번씩
         }, 300);
       };
+      /** 가슴 끌기 놓기: 끌어올린 만큼 출렁이며 내려가고 부끄러워하는 반응, 2.5초 터치 잠금 */
       const releaseChest = () => {
         chestFrom = null;
         if (!chestDragging) return;
@@ -2256,10 +2401,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         speak("chest_drop", 3500); shiverStarted = now;
         coverChest(3000); inputLockedUntil = now + 2500; walk.lastTouch = now;
       };
-      // 좌우 버튼 코드: 첫 버튼을 누른 채 150ms 안에 다른 버튼을 누르면 집기로 자연스럽게 넘어가게 하는 시간 마진.
-      // 두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 그대로 처리하므로 150ms로 제한하지 않는다.
-      // 두 번째 버튼이 합류할 때: 그 사이 예약된 쓰다듬기·가슴 끌기를 버리고 집기 예약을 되살린다.
-      // (pointerdown은 첫 버튼에만 오므로, 두 번째 버튼은 mousedown/pointermove에서 이 함수를 부른다.)
+      /**
+       * 두 번째 버튼 합류 시 집기 예약 복원. 그 사이 예약된 쓰다듬기·가슴 끌기는 버림
+       * 좌우 버튼 코드: 첫 버튼을 누른 채 150ms 안에 다른 버튼을 누르면 집기로 자연스럽게 넘어가게 하는 시간 마진.
+       * 두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 그대로 처리하므로 150ms 제한 없음
+       * pointerdown은 첫 버튼에만 오므로, 두 번째 버튼은 mousedown/pointermove에서 호출
+       * @param pointerId 집기 예약에 기록할 포인터 id
+       */
       const armChordGrab = (e: PointerEvent | MouseEvent, now: number, pointerId = (e as PointerEvent).pointerId) => {
         if (chestDragging) { clearInterval(chestLongTimer); chestDragging = false; chestTarget = 0; chestShiftTarget = 0; }
         strokeFrom = null; chestFrom = null;
@@ -2272,7 +2420,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         try { e.preventDefault(); e.stopPropagation(); } catch {}
         swallowClick = true;
       };
-      // 오른쪽 첫 버튼이 캐릭터 위에서 유효하게 시작했는지 (왼쪽 pointerdown과 같은 가드).
+      /**
+       * 오른쪽 첫 버튼이 캐릭터 위에서 유효하게 시작했는지 판정 (왼쪽 pointerdown과 같은 가드)
+       * @param id 기록할 포인터 id
+       * @returns 유효하면 { at, hit, id }, 아니면 null
+       */
       const rightStart = (e: PointerEvent | MouseEvent, id = (e as PointerEvent).pointerId ?? rightPress?.id) => {
         if (PET && petPanelOpen && petPanel && petPanel.contains(e.target as Node)) return null;
         if (walking()) return null;
@@ -2281,8 +2433,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!h && !(PET && overBody(e.clientX, e.clientY))) return null;
         return { at: performance.now(), hit: true, id };
       };
-      // pointermove의 buttons 변화로 두 번째 버튼 합류를 감지한다. pointerdown은 첫 버튼만 오고,
-      // 왼쪽 pointerdown의 preventDefault가 compatibility mousedown을 막을 수 있어 이 경로가 기준이다.
+      /**
+       * pointermove의 buttons 변화로 두 번째 버튼 합류 감지. pointerdown은 첫 버튼만 오고,
+       * 왼쪽 pointerdown의 preventDefault가 compatibility mousedown을 막을 수 있어 이 경로가 기준
+       * @returns 집기 예약을 되살렸으면 true
+       */
       const chordButtonsMoved = (e: PointerEvent, now: number) => {
         const mask = e.buttons & 3, prev = mouseButtons;
         mouseButtons = mask;

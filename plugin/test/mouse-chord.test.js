@@ -10,7 +10,7 @@ import vm from 'node:vm'
 const source = readSource(new URL('../../character/index.ts', import.meta.url))
 // 순수 판정 함수는 character/chord.js, 버튼 합류 처리(armChordGrab 등)는 캐릭터 본체 구간을 잘라 쓴다
 const chordFns = await import('../../character/chord.ts')
-const chordBlock = source.slice(source.indexOf('// 두 번째 버튼이 합류할 때'), source.indexOf('life.listen(document, "pointerdown"'))
+const chordBlock = source.slice(source.indexOf('const armChordGrab ='), source.indexOf('life.listen(document, "pointerdown"'))
 const mouseStart = source.indexOf('// 마우스 좌우 버튼 코드 보완')
 const mouseEnd = source.indexOf('\n', source.indexOf('life.listen(document, "mouseup"', mouseStart))
 const mouseBlock = source.slice(mouseStart, mouseEnd)
