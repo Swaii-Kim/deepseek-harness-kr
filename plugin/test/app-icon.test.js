@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { sameInstall, shortcutIconValue, isWindows, installIconFile, applyShortcutIcon } from '../app-icon.js'
+import { sameInstall, shortcutIconValue, isWindows, isMac, appBundleOf, installIconFile, applyShortcutIcon } from '../app-icon.js'
 
 test('sameInstall: 같은 설치 폴더만 인정한다', () => {
   const exe = 'C:\\Users\\me\\AppData\\Local\\Programs\\DeepSeek Harness\\DeepSeek Harness.exe'
@@ -51,9 +51,37 @@ test('installIconFile: 안정된 경로로 아이콘을 복사한다', async () 
   }
 })
 
-test('applyShortcutIcon: 윈도우가 아니면 아무 것도 하지 않는다', async () => {
-  const r = await applyShortcutIcon({ assetsDir: 'C:\\none', enabled: true, platform: 'darwin' })
+test('applyShortcutIcon: Windows·macOS가 아니면 아무 것도 하지 않는다', async () => {
+  let calls = 0
+  const r = await applyShortcutIcon({ assetsDir: '/none', enabled: true, platform: 'linux', exePath: '/usr/bin/x', runner: async () => { calls++; return { stdout: '' } } })
   assert.deepEqual(r, { skipped: 'platform' })
+  assert.equal(calls, 0)
+})
+
+test('appBundleOf: 실행 파일이 번들 안쪽 깊은 곳(도우미 앱 등)에 있어도 가장 바깥 .app', () => {
+  assert.equal(appBundleOf('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness'), '/Applications/DeepSeek Harness.app')
+  assert.equal(appBundleOf('/Applications/DeepSeek Harness.app/Contents/Frameworks/DeepSeek Harness Helper.app/Contents/MacOS/DeepSeek Harness Helper'), '/Applications/DeepSeek Harness.app')
+  assert.equal(appBundleOf('/usr/local/bin/node'), null)
+  assert.equal(appBundleOf(''), null)
+  assert.equal(isMac('darwin'), true); assert.equal(isMac('win32'), false)
+})
+
+test('applyShortcutIcon(macOS): 켜면 아이콘을 붙이고, 끄면 떼며, 실패는 사유로 돌려줌', async () => {
+  const calls = []
+  const exePath = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness'
+  const runner = (stdout) => async (file, args) => { calls.push({ file, args }); return { stdout } }
+  const on = await applyShortcutIcon({ assetsDir: '/plugin/assets', enabled: true, platform: 'darwin', exePath, runner: runner('1\n') })
+  assert.deepEqual(on, { changed: 1 })
+  assert.equal(calls[0].file, 'osascript')
+  assert.deepEqual(calls[0].args.slice(-2), ['/Applications/DeepSeek Harness.app', 'apply'])
+  assert.ok(calls[0].args.at(-3).endsWith('app-icon.ico'))
+  const off = await applyShortcutIcon({ assetsDir: '/plugin/assets', enabled: false, platform: 'darwin', exePath, runner: runner('0\n') })
+  assert.deepEqual(off, { changed: 0 })
+  assert.equal(calls[1].args.at(-1), 'restore')
+  assert.deepEqual(await applyShortcutIcon({ assetsDir: '/a', enabled: true, platform: 'darwin', exePath, runner: runner('no-image') }), { skipped: 'icon-failed', message: 'no-image' })
+  assert.deepEqual(await applyShortcutIcon({ assetsDir: '/a', enabled: true, platform: 'darwin', exePath: '/usr/bin/node', runner: runner('1') }), { skipped: 'no-app-bundle' })
+  const fail = await applyShortcutIcon({ assetsDir: '/a', enabled: true, platform: 'darwin', exePath, runner: async () => { throw new Error('boom') } })
+  assert.equal(fail.skipped, 'spawn-failed')
 })
 
 test('applyShortcutIcon: 켜기/끄기에 따라 인자와 실행 결과를 처리한다', async () => {

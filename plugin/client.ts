@@ -908,7 +908,7 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
       ['character', ko ? '캐릭터와 말풍선' : 'Character and speech bubbles'],
       ['mobileCharacter', ko ? '모바일에서도 캐릭터 표시' : 'Show character on mobile'],
       ['intro', ko ? '시작할 때 등장 연출' : 'Intro on startup'],
-      ['appIcon', ko ? '앱 바로가기 아이콘 (Windows)' : 'App shortcut icon (Windows)'],
+      ['appIcon', ko ? '앱 아이콘 (Windows·macOS)' : 'App icon (Windows, macOS)'],
       ['theme', ko ? '파스텔 테마' : 'Pastel theme'],
       ['translation', ko ? '한국어 언어팩' : 'Korean language pack'],
     ]
@@ -1056,7 +1056,7 @@ async function reportHostStatus(fetchImpl: typeof fetch = (...args) => window.fe
     if (!response.ok) { log.debug('호스트 상태 조회 실패: HTTP', response.status); return }
     const status = await response.json() as { appIcon?: { reason: string; message?: string } | null }
     const problem = status?.appIcon
-    if (problem) log.warnOnce('app-icon:' + problem.reason + ':' + (problem.message ?? ''), '앱 바로가기 아이콘 적용 실패:', problem.reason, problem.message ?? '')
+    if (problem) log.warnOnce('app-icon:' + problem.reason + ':' + (problem.message ?? ''), '앱 아이콘 적용 실패:', problem.reason, problem.message ?? '')
   } catch (error) {
     log.debug('호스트 상태 조회 실패:', (error as Error)?.message ?? error)
   }
@@ -1178,7 +1178,7 @@ function apply(ctx: DshContext) {
       if (value.canvasToggle !== true && link.character?.canvasHidden() === true) link.character.toggleCanvas?.()
     }
     life.add(form.subscribe(sync))
-    // 앱 바로가기 아이콘은 호스트가 PowerShell로 몇 초 뒤에 적용하므로, 시작하고 잠시 뒤 결과를 한 번 받아 실패만 콘솔에 남김
+    // 앱 아이콘은 호스트가 PowerShell·osascript로 몇 초 뒤에 적용하므로, 시작하고 잠시 뒤 결과를 한 번 받아 실패만 콘솔에 남김
     life.timeout(() => { void reportHostStatus() }, HOST_STATUS_DELAY_MS)
     let lastToggleAt = -Infinity, togglePending = false
     /**

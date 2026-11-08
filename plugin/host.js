@@ -86,7 +86,7 @@ export const Config = z.object({
   intro: z.boolean().default(true).volatile(),
   // 모바일(터치 전용) 화면에서도 캐릭터를 보여 줄지 (기본 표시)
   mobileCharacter: z.boolean().default(true).volatile(),
-  // 앱 바로가기 아이콘을 DeepSeek짱 아이콘으로 (Windows만, 창·작업 표시줄 아이콘은 해당 없음)
+  // 앱 아이콘을 DeepSeek짱 아이콘으로 (Windows는 바로가기, macOS는 앱의 Finder 아이콘. 실행 중 창·작업 표시줄 아이콘은 해당 없음)
   appIcon: z.boolean().default(true).volatile(),
   // 절전: 입력이 없으면 캐릭터가 화면 밖으로 나가 렌더링을 멈춤
   idleSleep: z.boolean().default(true).volatile(),
@@ -192,7 +192,7 @@ export function apply(ctx, config) {
     const unregister = ctx.webServer.register({ kind: 'prefix', path: PET_PATH, handler: createPetHandler(pet, rejection) })
     return () => { unregister?.(); pet.dispose() }
   }, 'deepseek-harness-kr: pet')
-  // 앱 바로가기 아이콘(Windows): 켜면 시작할 때·플러그인 업데이트 후에 적용하고, 끄면 원래 아이콘으로 되돌린다.
+  // 앱 아이콘(Windows 바로가기·macOS 앱 Finder 아이콘): 켜면 시작할 때·플러그인 업데이트 후에 적용하고, 끄면 원래 아이콘으로 되돌린다.
   // 설정은 volatile이라 몇 초마다 확인해 바뀐 경우에만 실행한다(같은 값이면 아무 것도 하지 않음).
   ctx.effect(() => {
     let last = /** @type {boolean | null} */ (null), stopped = false

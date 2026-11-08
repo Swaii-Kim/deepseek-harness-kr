@@ -832,7 +832,7 @@ test('plugin settings page exposes feature and power saving switches', () => {
     assert.match(html, /Character and speech bubbles/)
     assert.match(html, /Show character on mobile/)
     assert.match(html, /Intro on startup/)
-    assert.match(html, /App shortcut icon/)
+    assert.match(html, /App icon \(Windows, macOS\)/)
     assert.match(html, /Pastel theme/)
     assert.match(html, /Korean language pack/)
     assert.match(html, /aria-label="Power saving"/)
