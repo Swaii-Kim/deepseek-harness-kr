@@ -24,7 +24,8 @@ let menuState = { size: 1, outfit: {} }
 const MAC = process.platform === 'darwin'
 const SECRET = process.env.DSC_PET_SECRET
 delete process.env.DSC_PET_SECRET
-if (!PIPE || !ASSETS || !SECRET) app.exit(1)
+// 호스트는 표준 오류 꼬리를 종료 알림에 실어 DSH 창 콘솔에 보여 준다
+if (!PIPE || !ASSETS || !SECRET) { process.stderr.write('dsc-pet: missing --dsc-pipe, --dsc-assets or DSC_PET_SECRET\n'); app.exit(1) }
 app.setName('DeepSeekChan Pet')
 if (MAC) {
   app.setActivationPolicy('accessory')                 // Dock·앱 전환기에 안 나타남 (번들 Info.plist 의 LSUIElement 와 겹쳐 둠)
@@ -41,6 +42,31 @@ const placer = createPlacer(() => win, { width: WIN_W, height: WIN_H })
 let seq
 /** 호스트로 메시지 보내기 (회차 번호가 있으면 seq 를 붙임, 연결이 끊겼으면 버림) */
 const toHost = (message) => { if (socket && !socket.destroyed) socket.write(JSON.stringify(seq === undefined ? message : { ...message, seq }) + '\n') }
+// 진단 기록: 펫 창의 경고·오류는 호스트를 거쳐 DSH 창 콘솔에 나온다. 같은 내용은 한 번만, 서로 다른 내용은 100개까지
+const LOG_LIMIT = 500, sentLogs = new Set()
+/**
+ * 호스트로 진단 기록 보내기 (500자까지 자름)
+ * @param {'warn' | 'error'} level @param {unknown} text
+ */
+function logToHost(level, text) {
+  const line = String(text).slice(0, LOG_LIMIT)
+  if (sentLogs.has(line) || sentLogs.size >= 100) return
+  sentLogs.add(line)
+  toHost({ type: 'log', level, text: line })
+}
+/** 펫 창 콘솔 줄 중 경고·오류만 호스트로 (event.level·message 형식. 위치 인자는 Electron이 폐기 예정이라 받지 않음) */
+function forwardConsole(event) {
+  if (event.level === 'warning' || event.level === 'error') logToHost(event.level === 'error' ? 'error' : 'warn', event.message)
+}
+// 펫 창은 클릭이 뒤로 통과해 창에 붙은 DevTools를 쓸 수 없으므로 별도 창으로 다시 연다. 스스로 다시 연 경우는 건너뛰어 반복 없음
+let reopeningDevTools = false
+/** 펫 창에 열린 DevTools를 닫고 별도 창(detach)으로 다시 열기 */
+function detachDevTools() {
+  if (reopeningDevTools) { reopeningDevTools = false; return }
+  const contents = win.webContents
+  contents.closeDevTools()
+  setTimeout(() => { if (win.isDestroyed()) return; reopeningDevTools = true; contents.openDevTools({ mode: 'detach' }) }, 0)
+}
 // 페이지가 'ready'를 보내기 전에 온 메시지는 모아 두었다가 넘김 (첫 실행 때 open이 사라지지 않게)
 let pageReady = false
 const pending = []
@@ -133,6 +159,10 @@ app.whenReady().then(() => {
   win.on('hide', () => watchCursor(false))
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.webContents.on('console-message', forwardConsole)
+  win.webContents.on('render-process-gone', (_event, details) => logToHost('error', `pet renderer gone: ${details.reason} (exit code ${details.exitCode})`))
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => logToHost('error', `pet page failed to load: ${errorCode} ${errorDescription} ${validatedURL}`))
+  win.webContents.on('devtools-opened', detachDevTools)
   win.loadURL(`dscpet://assets${OWN}/index.html`)
   ipcMain.on('dsc', (event, message) => {
     if (event.sender !== win.webContents || !message || typeof message.type !== 'string') return

@@ -301,19 +301,64 @@
     return hmm + line;
   }
 
+  // character/log.ts
+  var PREFIX = "[deepseek-chan-plugin-for-dsh]";
+  var DEBUG_KEY = "deepseek-chan-plugin-for-dsh:debug";
+  var switchOn = (storage) => {
+    try {
+      return storage()?.getItem(DEBUG_KEY) === "1";
+    } catch {
+      return false;
+    }
+  };
+  function createLogger(output = console, storage = () => globalThis.localStorage) {
+    const seen = /* @__PURE__ */ new Set();
+    const debugOn = switchOn(storage);
+    return {
+      warnOnce(key, ...args) {
+        if (seen.has(key)) return;
+        seen.add(key);
+        output.warn(PREFIX, ...args);
+      },
+      // console.debug는 DevTools 기본 수준(Verbose 꺼짐)에서 안 보여 log로 남김
+      debug(...args) {
+        if (debugOn) output.log(PREFIX, ...args);
+      }
+    };
+  }
+  var log = createLogger();
+
   // character/pet-link.ts
   function createPetLink(deps) {
-    const { url, fetch: fetch2, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now() } = deps;
+    const { url, fetch: fetch2, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now(), log: log2 = log } = deps;
     const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 };
     link.relay = (name, args) => {
       if (link.open || link.follow?.shown) link.queue.push([name, args]);
     };
     link.post = (path, body = {}) => {
       deps.onUse();
-      return fetch2(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.ok ? response.json() : null).then((reply) => {
+      return fetch2(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.ok ? response.json() : postRefused(path, response)).then((reply) => {
         if (reply?.state) link.petState = reply.state;
         return reply;
-      }).catch(() => null);
+      }).catch((error) => {
+        const reason = String(error?.message ?? error);
+        log2.warnOnce(`post:${path}:${reason}`, `펫 요청 오류 (${path}):`, reason);
+        return null;
+      });
+    };
+    const postRefused = async (path, response) => {
+      const reply = await response.json().catch(() => null);
+      const reason = typeof reply?.error === "string" ? reply.error : "";
+      log2.warnOnce(`post:${path}:${response.status}:${reason}`, `펫 요청 실패 (${path}): HTTP ${response.status}`, reason);
+      return null;
+    };
+    const report = (event) => {
+      const stderr = event.stderr ? ["\n" + String(event.stderr)] : [];
+      if (event.type === "error") log2.warnOnce(`error:${event.message}`, "펫 창 오류:", event.message, ...stderr);
+      else if (event.type === "closed" && ((event.code ?? 0) !== 0 || event.signal)) {
+        const exit = [event.code !== void 0 && `code ${event.code}`, event.signal && `signal ${event.signal}`].filter(Boolean).join(", ");
+        log2.warnOnce(`closed:${exit}`, `펫 프로세스 비정상 종료 (${exit}):`, ...stderr);
+      } else if (event.type === "log") log2.warnOnce(`log:${event.text}`, `펫 창 ${event.level}:`, event.text);
     };
     link.enter = () => {
       const already = !!link.follow?.shown;
@@ -362,6 +407,7 @@
       }
     };
     const handle = (event) => {
+      report(event);
       if (event.seq !== void 0 && event.seq !== link.seq) return;
       if (event.type === "shown") onShown();
       else if (event.type === "attach" || event.type === "closed" || event.type === "error") {
@@ -385,8 +431,9 @@
           link.enter();
         }
         link.boot = false;
-      }).catch(() => {
+      }).catch((error) => {
         link.polling = false;
+        log2.debug("펫 상태 조회 실패:", error);
       });
     };
     link.tick = () => {
@@ -738,16 +785,25 @@
             offset += drawableCount * 16;
             drawables2.dynamicFlags.set(bytes.subarray(offset, offset + drawableCount));
           };
-          w.onerror = stop;
+          w.onerror = (event) => {
+            log.debug("Core Worker 오류, 메인 계산으로 전환:", event.message);
+            stop();
+          };
           w.onmessage = (e) => {
             const message = e.data;
             if (message.type === "ready") {
               if (message.count === drawableCount && message.params === cubismModel.parameters.count && message.parts === cubismModel.parts.count && message.offs.join() === offsets) ready2 = true;
-              else stop();
+              else {
+                log.debug("Core Worker 모델 불일치, 메인 계산으로 전환");
+                stop();
+              }
             } else if (message.type === "frame") {
               result = message.buf;
               busy = false;
-            } else if (message.type === "fail") stop();
+            } else if (message.type === "fail") {
+              log.debug("Core Worker 실패, 메인 계산으로 전환:", message.message ?? "(사유 없음)");
+              stop();
+            }
           };
           cubismModel.update = () => {
             if (!ready2) return localUpdate();
@@ -773,7 +829,8 @@
         await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (expName) => {
           try {
             expressionParams[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || [];
-          } catch {
+          } catch (error) {
+            log.debug("표정 파일 로드 실패:", expName, error);
             expressionParams[expName] = [];
           }
         }));

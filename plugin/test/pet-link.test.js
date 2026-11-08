@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createPetLink } from '../../character/pet-link.ts'
+import { createLogger } from '../../character/log.ts'
 
 // 바깥 펫 창 연결(character/pet-link.js)을 가짜 fetch·타이머로 실제 실행해 확인한다.
 // 예전에는 이 흐름을 dsc.js 소스 문자열로만 확인했다.
@@ -196,4 +197,28 @@ test('펫 경로가 없으면(펫 창 자신) 연결을 시작하지 않는다',
   h.link.start()
   assert.deepEqual(h.polls, [])
   assert.deepEqual(h.intervals, [])
+})
+
+test('진단: 오류·비정상 종료·펫 창 기록과 POST 실패를 회차와 상관없이 같은 내용은 한 번만 경고한다', async () => {
+  const output = { lines: [], warn: (...args) => output.lines.push(args.join(' ')), log: () => {} }
+  let reply = { ok: false, status: 500, json: async () => ({ error: 'boom' }) }
+  const h = harness({ log: createLogger(output, () => null), fetch: async (url) => {
+    if (url.endsWith('poll')) { const body = h.replies.shift(); return { ok: true, json: async () => body } }
+    if (reply instanceof Error) throw reply
+    return reply
+  } })
+  const events = [{ type: 'error', message: 'pet did not become ready', seq: 9, stderr: 'boom trace' }, { type: 'closed', code: 0 },
+    { type: 'closed', code: 1, stderr: 'fatal' }, { type: 'closed', signal: 'SIGKILL' }, { type: 'log', level: 'warn', text: 'pet authentication failed' }]
+  for (let round = 0; round < 2; round++) { h.replies.push({ supported: true, state: 'none', events }); h.link.poll(); await flush() }
+  await h.link.post('open'); await h.link.post('open')
+  reply = new Error('Failed to fetch')
+  assert.equal(await h.link.post('send'), null); await h.link.post('send')
+  assert.deepEqual(output.lines, [
+    '[deepseek-chan-plugin-for-dsh] 펫 창 오류: pet did not become ready \nboom trace',
+    '[deepseek-chan-plugin-for-dsh] 펫 프로세스 비정상 종료 (code 1): \nfatal',
+    '[deepseek-chan-plugin-for-dsh] 펫 프로세스 비정상 종료 (signal SIGKILL):',
+    '[deepseek-chan-plugin-for-dsh] 펫 창 warn: pet authentication failed',
+    '[deepseek-chan-plugin-for-dsh] 펫 요청 실패 (open): HTTP 500 boom',
+    '[deepseek-chan-plugin-for-dsh] 펫 요청 오류 (send): Failed to fetch',
+  ])
 })

@@ -218,3 +218,17 @@ test('barge-in during AudioContext.resume never schedules the superseded line', 
   assert.equal(harness.audio.analysers.length, 1, 'superseded line created no audio graph')
 })
 
+
+test('a refused speak request warns once with its status and server message', async (t) => {
+  const harness = createHarness(t, [])
+  await apply(harness.ctx)
+  const stateFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => url === '/dsh-tts/speak'
+    ? { ok: false, status: 502, body: null, json: async () => ({ error: { message: 'tts request failed: upstream down' } }) }
+    : stateFetch(url, init)
+  const warnings = []
+  t.mock.method(console, 'warn', (...args) => warnings.push(args))
+  for (const text of ['one', 'two']) { harness.emit({ text, ms: 0, kind: 'reaction' }); await harness.flush() }
+  assert.deepEqual(warnings, [['[deepseek-chan-plugin-for-dsh]', 'TTS 요청 실패: HTTP 502', 'tts request failed: upstream down']])
+  assert.equal(harness.audio.started.length, 0)
+})

@@ -470,7 +470,7 @@ function createUpdater({ fetch: fetchImpl = (...args: Parameters<typeof fetch>) 
 type Updater = ReturnType<typeof createUpdater>
 
 // ---------- 말풍선 음성 (TTS) ----------
-// 재생·입 모양 코드는 plugins/dsh-tts/src/client 원본을 그대로 가져다 쓴다(모듈 수준 상태 없음).
+// 재생·입 모양 코드는 plugins/dsh-tts/src/client 원본을 그대로 가져다 쓴다(모듈 수준 상태는 콘솔 경고 중복 억제 목록뿐).
 
 const DEFAULT_KEY_REF = 'DSH_TTS_API_KEY'
 

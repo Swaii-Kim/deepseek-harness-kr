@@ -13,6 +13,7 @@ import { chordDown, chordWithinGrace, chordUp, type Chord } from "./chord.ts";
 import { clamp, noise, S, spring, sstep, addGesture, blinkClose, seg, coverForearm } from "./motion.ts";
 import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-signals.ts";
 import { createPetLink, type PetMessage } from "./pet-link.ts";
+import { log } from "./log.ts";
 import { parseSyllables } from "./speech.ts";
 import { meshBounds, meshHit } from "./hit.ts";
 import type { Lifetime } from "./lifetime.ts";
@@ -242,14 +243,15 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           drawables.screenColors.set(new Float32Array(buf, offset, drawableCount * 4)); offset += drawableCount * 16;
           drawables.dynamicFlags.set(bytes.subarray(offset, offset + drawableCount));
         };
-        w.onerror = stop;
+        /** Worker 오류 시 메인 계산으로 전환 (디버그 로그에 사유 기록) */
+        w.onerror = (event) => { log.debug("Core Worker 오류, 메인 계산으로 전환:", event.message); stop(); };
         /** Worker 메시지 처리: 준비 확인(ready)·계산 결과(frame)·실패(fail) */
         w.onmessage = (e) => {
           const message = e.data;
           if (message.type === "ready") {   // 같은 모델인지(개수·정점 배치) 확인한 뒤에만 넘김
-            if (message.count === drawableCount && message.params === cubismModel.parameters.count && message.parts === cubismModel.parts.count && message.offs.join() === offsets) ready = true; else stop();
+            if (message.count === drawableCount && message.params === cubismModel.parameters.count && message.parts === cubismModel.parts.count && message.offs.join() === offsets) ready = true; else { log.debug("Core Worker 모델 불일치, 메인 계산으로 전환"); stop(); }
           } else if (message.type === "frame") { result = message.buf; busy = false; }
-          else if (message.type === "fail") stop();
+          else if (message.type === "fail") { log.debug("Core Worker 실패, 메인 계산으로 전환:", message.message ?? "(사유 없음)"); stop(); }
         };
         /** Core update 대체: 지난 결과를 반영하고 이번 파라미터를 Worker로 보냄 (결과는 1프레임 늦게 반영) */
         cubismModel.update = () => {
@@ -269,7 +271,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 표정
       const expressionParams: Record<string, Array<{ Id: string; Value: number; Blend?: string }>> = {};
       await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (expName) => {
-        try { expressionParams[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || []; } catch { expressionParams[expName] = []; }
+        try { expressionParams[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || []; } catch (error) { log.debug("표정 파일 로드 실패:", expName, error); expressionParams[expName] = []; }
       }));
       if (life.stopped) return;   // 표정 파일을 받는 사이 꺼졌으면 여기서 멈춤
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};

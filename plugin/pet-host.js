@@ -26,8 +26,10 @@ const PET_EXE = 'dsc-pet.exe'
  * 띄운 펫 프로세스 중 이 모듈이 쓰는 범위 (기본 child_process.spawn 의 ChildProcess)
  * @typedef {object} PetChild
  * @property {number} [pid]
- * @property {{ (event: 'exit', listener: () => void): unknown, (event: 'error', listener: (error: Error) => void): unknown }} once
+ * @property {{ (event: 'exit', listener: (code?: number | null, signal?: string | null) => void): unknown, (event: 'error', listener: (error: Error) => void): unknown }} once
  * @property {() => unknown} kill
+ * @property {{ resume(): unknown } | null} [stdout]
+ * @property {{ setEncoding(encoding: 'utf8'): unknown, on(event: 'data', listener: (chunk: string) => void): unknown, once(event: 'close', listener: () => void): unknown, readableEnded?: boolean } | null} [stderr]
  */
 /** 펫 프로세스와 주고받는 JSON 한 줄 (type 외 필드는 종류마다 다름) @typedef {{ type: string, [key: string]: unknown }} PetMessage */
 /**
@@ -185,13 +187,46 @@ export async function createEndpoint(platform = process.platform, tempDir = tmpd
 /** 펫 창 지원 여부 (실행 파일이 있고 Windows, 또는 .app 번들 안 실행 파일인 macOS) @param {NodeJS.Platform} platform @param {string | null | undefined} exe */
 const supportedOn = (platform, exe) => !!exe && (platform === 'win32' || (platform === 'darwin' && !!macBundle(exe)))
 
-/** 펫 프로세스 실행 옵션과 환경 (ELECTRON_RUN_AS_NODE 가 남아 있으면 Node 로만 돌고 창이 안 뜸) @param {NodeJS.Platform} platform @param {NodeJS.ProcessEnv} [base] */
+/** 펫 프로세스 실행 옵션과 환경 (ELECTRON_RUN_AS_NODE 가 남아 있으면 Node 로만 돌고 창이 안 뜸). 표준 출력·오류는 진단용으로 받음 @param {NodeJS.Platform} platform @param {NodeJS.ProcessEnv} [base] */
 function petSpawn(platform, base = process.env) {
   const env = { ...base }
   delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS
-  if (platform === 'darwin') { delete env.__CFBundleIdentifier; return { env, stdio: 'ignore' } }
-  return { env, stdio: 'ignore', windowsHide: false }
+  const stdio = /** @type {['ignore', 'pipe', 'pipe']} */ (['ignore', 'pipe', 'pipe'])
+  if (platform === 'darwin') { delete env.__CFBundleIdentifier; return { env, stdio } }
+  return { env, stdio, windowsHide: false }
 }
+
+const STDERR_TAIL = 8192   // 종료 알림에 실을 펫 표준 오류의 마지막 부분 (문자 수)
+
+/**
+ * 펫 표준 출력 비우기와 표준 오류 꼬리(STDERR_TAIL 문자) 보관. 파이프가 차서 펫이 멈추지 않게 둘 다 계속 읽음
+ * @param {PetChild} spawned
+ * @returns {() => string} 지금까지 보관한 표준 오류 꼬리
+ */
+function captureOutput(spawned) {
+  let tail = ''
+  spawned.stdout?.resume()
+  spawned.stderr?.setEncoding('utf8')
+  spawned.stderr?.on('data', (chunk) => { tail = (tail + chunk).slice(-STDERR_TAIL) })
+  return () => tail
+}
+
+/** 표준 오류를 끝까지 읽은 뒤(최대 0.5초) 실행. 표준 오류가 없거나 이미 끝났으면 바로 @param {PetChild} spawned @param {() => void} done */
+function afterStderr(spawned, done) {
+  const stream = spawned.stderr
+  if (!stream || stream.readableEnded) { done(); return }
+  let pending = true
+  /** 한 번만 실행 */
+  const finish = () => { if (pending) { pending = false; clearTimeout(timer); done() } }
+  const timer = setTimeout(finish, 500)
+  stream.once('close', finish)
+}
+
+/**
+ * 종료 알림에 덧붙일 진단 필드 (값이 있는 것만: 종료 코드·신호·표준 오류 꼬리)
+ * @param {number | null | undefined} code @param {string | null | undefined} signal @param {string} stderr
+ */
+const exitDetail = (code, signal, stderr) => ({ ...(typeof code === 'number' ? { code } : {}), ...(signal ? { signal } : {}), ...(stderr ? { stderr } : {}) })
 
 const READY_TIMEOUT = 15000   // 보통 2~3초. 이 안에 ready가 없으면 시작 도중 멈춘 것으로 봄 (macOS 서명·보안 정책 변화 등)
 const TASKPOLICY = '/usr/sbin/taskpolicy'
@@ -255,6 +290,8 @@ export function createPetManager({ assets, exe = electronExecutable(), platform 
     if (message.type !== 'ready') events.push(message)
     if (events.length > 100) events.splice(0, events.length - 100)
   }
+  /** 호스트가 본 연결 문제를 펫 창 기록(log)과 같은 알림으로 쌓기 (창 안 캐릭터가 DSH 창 콘솔에 경고) @param {string} text */
+  const note = (text) => onMessage({ type: 'log', level: 'warn', text })
   /** 타이머·연결·서버·연결 지점 정리와 상태 초기화 (프로세스는 끝내지 않음) */
   const reset = () => {
     clearTimeout(/** @type {NodeJS.Timeout | undefined} */ (readyTimer)); readyTimer = null
@@ -273,7 +310,7 @@ export function createPetManager({ assets, exe = electronExecutable(), platform 
     server = createServer((connection) => {
       if (socket || disposed) { connection.destroy(); return }
       connections.add(connection)
-      const timer = setTimeout(() => connection.destroy(), authTimeout)
+      const timer = setTimeout(() => { note('pet authentication timed out'); connection.destroy() }, authTimeout)
       connection.setEncoding('utf8')
       let buffer = '', authenticated = false
       connection.on('data', (chunk) => {
@@ -282,11 +319,11 @@ export function createPetManager({ assets, exe = electronExecutable(), platform 
           const line = buffer.slice(0, i); buffer = buffer.slice(i + 1)
           if (Buffer.byteLength(line) > 1024 * 1024) { connection.destroy(); return }
           let message
-          try { message = JSON.parse(line) } catch { connection.destroy(); return }
+          try { message = JSON.parse(line) } catch { note('pet sent invalid JSON'); connection.destroy(); return }
           if (!authenticated) {
             const token = Buffer.from(typeof message?.secret === 'string' ? message.secret : '')
             const expected = Buffer.from(secret)
-            if (socket || message?.type !== 'auth' || token.length !== expected.length || !timingSafeEqual(token, expected)) { connection.destroy(); return }
+            if (socket || message?.type !== 'auth' || token.length !== expected.length || !timingSafeEqual(token, expected)) { note('pet authentication failed'); connection.destroy(); return }
             authenticated = true; clearTimeout(timer); socket = connection
             server?.close()
             for (const other of connections) if (other !== connection) other.destroy()
@@ -296,7 +333,7 @@ export function createPetManager({ assets, exe = electronExecutable(), platform 
         if (Buffer.byteLength(buffer) > 1024 * 1024) connection.destroy()
       })
       connection.on('close', () => { clearTimeout(timer); connections.delete(connection); if (socket === connection) socket = null })
-      connection.on('error', () => {})
+      connection.on('error', (error) => note(`pet connection error: ${error.message}`))
     })
 
     // 리슨 전에 닫히면(시작 도중 dispose) 리슨 콜백이 오지 않으므로 close로도 끝냄
@@ -312,12 +349,17 @@ export function createPetManager({ assets, exe = electronExecutable(), platform 
     if (platform === 'darwin' && spawned?.pid) lowerPriority(spawned.pid)
     state = 'starting'
     // 지금 회차 번호를 붙여, 창 안 쪽이 이전 회차에 쌓인 종료 알림으로 진행 중인 따라오기를 끊지 않게 함. 이미 다른 프로세스로 바뀌었으면 무시
-    spawned.once('exit', () => { if (child !== spawned) return; reset(); events.push({ type: 'closed', seq }) })
+    const stderrTail = captureOutput(spawned)
+    spawned.once('exit', (code, signal) => {
+      if (child !== spawned) return
+      const closedSeq = seq
+      reset(); afterStderr(spawned, () => events.push({ type: 'closed', seq: closedSeq, ...exitDetail(code, signal, stderrTail()) }))
+    })
     spawned.once('error', (error) => { if (child !== spawned) return; reset(); events.push({ type: 'error', message: error.message, seq }) })
     readyTimer = setTimeout(() => {
       if (child !== spawned || state !== 'starting') return
       reset(); try { spawned.kill() } catch {}
-      events.push({ type: 'error', message: 'pet did not become ready', seq })
+      events.push({ type: 'error', message: 'pet did not become ready', seq, ...exitDetail(null, null, stderrTail()) })
     }, readyTimeout)
   })().catch((error) => { const started = child; reset(); started?.kill(); events.push({ type: 'error', message: error.message }); throw error })
   return {

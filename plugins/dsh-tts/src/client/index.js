@@ -24,6 +24,23 @@ const LEAD_SECONDS = 0.06
 const FIRST_CHUNK_LIMIT_MS = 1500
 /** Sentinel that distinguishes a deadline expiry from a stream end. */
 const TIMEOUT = Symbol('dsh-tts timeout')
+/** 콘솔 경고 접두어 (character/log.ts와 같은 값, 이 패키지는 그 파일을 가져오지 않음) */
+const LOG_PREFIX = '[deepseek-chan-plugin-for-dsh]'
+const warned = new Set()
+
+/** 같은 key는 한 번만 남기는 콘솔 경고 (character/log.ts의 warnOnce와 같은 규칙) */
+function warnOnce(key, ...args) {
+  if (warned.has(key)) return
+  warned.add(key)
+  console.warn(LOG_PREFIX, ...args)
+}
+
+/** 거절된 음성 요청 경고 (상태 코드와 서버가 보낸 error.message) */
+async function warnSpeakRefused(response) {
+  const body = await Promise.resolve(response.json?.()).catch(() => null)
+  const reason = String(body?.error?.message ?? '')
+  warnOnce('speak:' + response.status + ':' + reason, 'TTS 요청 실패: HTTP ' + response.status, reason)
+}
 
 /** Map one dsc:say kind to its voiceLines switch. */
 function kindAllowed(lines, kind) {
@@ -39,6 +56,7 @@ async function readState() {
     const response = await fetch(STATE_ROUTE, { cache: 'no-store' })
     if (!response.ok) return null
     const state = await response.json()
+    if (typeof state?.error === 'string') warnOnce('state:' + state.error, 'TTS 설정 오류:', state.error)
     if (state?.enabled !== true || typeof state.pcmSampleRate !== 'number') return null
     return state
   } catch {
@@ -202,6 +220,7 @@ export async function apply(ctx) {
         body: JSON.stringify({ text }),
         signal: controller.signal,
       })
+      if (!response.ok) await warnSpeakRefused(response)
       if (!response.ok || response.body === null) throw new Error('dsh-tts: speak failed with ' + response.status)
       const audio = getAudioContext()
       if (audio === null) throw new Error('dsh-tts: no AudioContext')

@@ -18,12 +18,14 @@
 //   snapshot(): 지금 표정·자세를 펫 창에 맞출 메시지 목록, dragMessages(): 이동 키 메시지 목록
 //   dockState(): { dock, outfit } 붙을 자리와 소품·옷, dragKey(): 이동 키, voice(): 외부 음성 상태
 //   idle(): 미리 띄워도 되는 한가한 때인지, hidden(): 캔버스를 숨긴 상태인지, openPose(): 지금 자리(화면 좌표 { k, x, y })
+//   log: 진단 기록 통로 (기본 character/log.ts의 log, 시험에서 바꿔 끼움)
+import { log as defaultLog, type Logger } from "./log.ts";
 /** 펫 창으로 보내는 메시지: [이름, 인자 목록] */
 export type PetMessage = [string, unknown[]];
 /** 펫 연결이 캐릭터 쪽에서 받는 환경·콜백 (위 deps 설명 참고) */
 export interface PetLinkDeps {
   url: string | null;
-  fetch: (url: string, init?: RequestInit) => Promise<{ ok: boolean; json(): Promise<any> }>;
+  fetch: (url: string, init?: RequestInit) => Promise<{ ok: boolean; status?: number; json(): Promise<any> }>;
   setTimeout: (fn: () => void, ms?: number) => unknown;
   setInterval: (fn: () => void, ms?: number) => unknown;
   requestAnimationFrame: (fn: () => void) => unknown;
@@ -40,6 +42,7 @@ export interface PetLinkDeps {
   idle(): boolean;
   hidden(): boolean;
   openPose(): { k: number; x: number; y: number };
+  log?: Logger;
 }
 /** 펫 연결 상태와 동작 (위 상태 설명 참고) */
 export interface PetLink {
@@ -55,11 +58,11 @@ export interface PetLink {
   toggle(): void;
 }
 /** 펫 창 알림 하나 */
-interface PetEvent { type: string; seq?: number; list?: unknown }
+interface PetEvent { type: string; seq?: number; list?: unknown; message?: unknown; code?: unknown; signal?: unknown; stderr?: unknown; level?: unknown; text?: unknown }
 
 /** 펫 창 연결 생성 (start()를 불러야 조회·주기 동작 시작) */
 export function createPetLink(deps: PetLinkDeps): PetLink {
-  const { url, fetch, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now() } = deps;
+  const { url, fetch, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now(), log = defaultLog } = deps;
   // 메서드는 아래에서 채운다
   const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 } as unknown as PetLink;
 
@@ -77,7 +80,30 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
   link.post = (path, body = {}) => {
     deps.onUse();
     return fetch(url! + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-      .then((response) => (response.ok ? response.json() : null)).then((reply) => { if (reply?.state) link.petState = reply.state; return reply; }).catch(() => null);
+      .then((response) => (response.ok ? response.json() : postRefused(path, response))).then((reply) => { if (reply?.state) link.petState = reply.state; return reply; })
+      .catch((error) => { const reason = String(error?.message ?? error); log.warnOnce(`post:${path}:${reason}`, `펫 요청 오류 (${path}):`, reason); return null; });
+  };
+
+  /**
+   * 거절된 POST 응답 경고 (상태 코드와 응답 본문의 error 필드)
+   * @returns 응답 대신 넘길 값 (항상 null)
+   */
+  const postRefused = async (path: string, response: { status?: number; json(): Promise<any> }) => {
+    const reply = await response.json().catch(() => null);
+    const reason = typeof reply?.error === "string" ? reply.error : "";
+    log.warnOnce(`post:${path}:${response.status}:${reason}`, `펫 요청 실패 (${path}): HTTP ${response.status}`, reason);
+    return null;
+  };
+
+  /** 펫 프로세스 알림 중 진단할 것(오류·비정상 종료·펫 창 기록) 경고. 회차와 상관없이 같은 내용은 한 번만 */
+  const report = (event: PetEvent) => {
+    const stderr = event.stderr ? ["\n" + String(event.stderr)] : [];
+    if (event.type === "error") log.warnOnce(`error:${event.message}`, "펫 창 오류:", event.message, ...stderr);
+    else if (event.type === "closed" && ((event.code ?? 0) !== 0 || event.signal)) {
+      const exit = [event.code !== undefined && `code ${event.code}`, event.signal && `signal ${event.signal}`].filter(Boolean).join(", ");
+      log.warnOnce(`closed:${exit}`, `펫 프로세스 비정상 종료 (${exit}):`, ...stderr);
+    }
+    else if (event.type === "log") log.warnOnce(`log:${event.text}`, `펫 창 ${event.level}:`, event.text);
   };
 
   /** 펫 창이 보이기 시작함 처리 */
@@ -120,6 +146,7 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
   };
   /** 펫 창 알림 하나 처리 */
   const handle = (event: PetEvent) => {
+    report(event);
     if (event.seq !== undefined && event.seq !== link.seq) return;   // 이전 회차(붙고 숨은 뒤 늦게 남은) 알림은 버림
     if (event.type === "shown") onShown();
     // 붙음·닫힘·오류: 창 안 캐릭터로 돌아옴
@@ -141,7 +168,7 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
       // 이 화면을 새로 불러왔는데 펫 창이 떠 있음 (처음 한 번만: 붙은 직후 잠깐 남은 펫 창 때문에 다시 숨으면 안 됨)
       if (link.boot && status.state === "shown" && !link.open) { if (Number.isInteger(status.seq)) link.seq = status.seq; link.enter(); }
       link.boot = false;
-    }).catch(() => { link.polling = false; });
+    }).catch((error) => { link.polling = false; log.debug("펫 상태 조회 실패:", error); });
   };
 
   /** 150ms마다 하는 일: 열기 시간 초과 정리, 붙을 자리·소품·옷·이동 키가 바뀌면 전송, 모인 반응을 한 번에 보낸 뒤 알림 조회 */

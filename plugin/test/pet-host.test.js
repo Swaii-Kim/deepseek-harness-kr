@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { lstat, mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -267,7 +268,7 @@ test('mac pet process gets a unix socket, accepts one connection and cleans up o
   assert.equal(bin, '/pet/bin')   // 펫은 직접 띄우고 우선순위는 띄운 뒤 -p 로 낮춤 (시작부터 건 백그라운드는 풀리지 않음)
   const sockPath = args.find((a) => a.startsWith('--dsc-pipe=')).slice('--dsc-pipe='.length)
   assert.ok(args.includes('--dsc-assets=A'))
-  assert.equal(opts.stdio, 'ignore'); assert.equal('windowsHide' in opts, false)
+  assert.deepEqual(opts.stdio, ['ignore', 'pipe', 'pipe']); assert.equal('windowsHide' in opts, false)
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', '__CFBundleIdentifier']) assert.equal(key in opts.env, false)
   // 펫이 연결해 ready 를 보내면 hidden, 호스트가 보내는 open 은 한 줄 JSON 으로 도착
   const socket = connect(sockPath); await once(socket, 'connect')
@@ -448,4 +449,57 @@ test('펫 창 설정 패널: 값을 설정 저장소로 넘기고 이 플러그�
   assert.match(client, /createCharacter\(\{ base: ROOT, life, prefs: link\.initialPrefs\(\), onSetting \}\)/)
   assert.match(client, /PET_CONFIG_KEYS = new Set\(\[\.\.\.OUTFIT_FIELDS\.map/)
   assert.match(client, /'bodyType', 'character'/)
+})
+
+test('펫 진단: 표준 오류 꼬리(8KB)·종료 코드·신호를 종료 알림에 싣고, 표준 출력은 계속 비운다', async () => {
+  const children = []
+  const spawnImpl = (bin, args, opts) => {
+    const c = new EventEmitter(); c.kill = () => {}; c.opts = opts
+    c.stdout = new PassThrough(); c.stderr = new PassThrough(); children.push(c); return c
+  }
+  const pet = createPetManager({ assets: 'A', exe: 'C:/dsh/DeepSeek Harness.exe', platform: 'win32', base: 'B', prepare: async () => 'bin', spawnImpl })
+  await pet.warm()
+  const [first] = children
+  assert.deepEqual(first.opts.stdio, ['ignore', 'pipe', 'pipe'])
+  assert.equal(first.stdout.readableFlowing, true, '읽는 쪽이 없으면 파이프가 차서 펫이 멈춘다')
+  first.stderr.write('x'.repeat(9000)); first.stderr.write('END')
+  await sleep(10)
+  first.emit('exit', 1, null)
+  assert.deepEqual(pet.status().events, [], '표준 오류를 끝까지 읽은 뒤 알린다')
+  first.stderr.end(); await sleep(20)
+  const [closed] = pet.status().events
+  assert.equal(closed.type, 'closed'); assert.equal(closed.code, 1); assert.equal('signal' in closed, false)
+  assert.equal(closed.stderr.length, 8192); assert.ok(closed.stderr.endsWith('xEND'))
+  await pet.warm()
+  children[1].stderr.end(); await sleep(20)
+  children[1].emit('exit', null, 'SIGKILL')
+  assert.deepEqual(pet.status().events, [{ type: 'closed', seq: undefined, signal: 'SIGKILL' }])
+  pet.dispose()
+})
+
+test('펫 진단: 인증 실패는 기록(log) 알림으로 쌓고, 펫이 보낸 log 메시지도 그대로 전달한다', async () => {
+  const win = process.platform === 'win32'
+  let opts, args
+  const spawnImpl = (bin, list, options) => { args = list; opts = options; const c = new EventEmitter(); c.kill = () => {}; return c }
+  const pet = createPetManager({ assets: 'A', exe: win ? 'C:/dsh/DeepSeek Harness.exe' : '/Applications/X.app/Contents/MacOS/X', platform: win ? 'win32' : 'darwin',
+    base: 'B', prepare: async () => 'bin', spawnImpl, readyTimeout: 60000 })
+  await pet.warm()
+  const pipe = args.find((a) => a.startsWith('--dsc-pipe=')).slice('--dsc-pipe='.length)
+  const intruder = connect(pipe); intruder.on('error', () => {}); await once(intruder, 'connect')
+  intruder.write(JSON.stringify({ type: 'auth', secret: 'wrong' }) + '\n'); await once(intruder, 'close')
+  const socket = connect(pipe); await once(socket, 'connect')
+  socket.write(JSON.stringify({ type: 'auth', secret: opts.env.DSC_PET_SECRET }) + '\n')
+  socket.write(JSON.stringify({ type: 'log', level: 'error', text: 'pet renderer gone: crashed (exit code 5)', seq: 2 }) + '\n'); await sleep(100)
+  const logs = pet.status().events.filter((e) => e.type === 'log')
+  assert.deepEqual(logs, [{ type: 'log', level: 'warn', text: 'pet authentication failed' }, { type: 'log', level: 'error', text: 'pet renderer gone: crashed (exit code 5)', seq: 2 }])
+  socket.destroy(); pet.dispose()
+})
+
+test('펫 창 진단 연결: 경고·오류 콘솔·렌더러 종료·불러오기 실패를 호스트로 보내고, DevTools는 별도 창으로 연다', async () => {
+  const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
+  for (const event of ['console-message', 'render-process-gone', 'did-fail-load', 'devtools-opened']) assert.match(main, new RegExp(`win\\.webContents\\.on\\('${event}'`))
+  assert.match(main, /toHost\(\{ type: 'log', level, text: line \}\)/)
+  assert.match(main, /if \(reopeningDevTools\) \{ reopeningDevTools = false; return \}/)   // 스스로 다시 연 경우는 건너뜀 (반복 없음)
+  assert.match(main, /contents\.closeDevTools\(\)[\s\S]*?contents\.openDevTools\(\{ mode: 'detach' \}\)/)
+  assert.match(main, /win\.setIgnoreMouseEvents\(true, \{ forward: true \}\)/)   // 클릭 통과는 그대로
 })
