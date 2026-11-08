@@ -1,9 +1,11 @@
 import test from 'node:test'
+import { readSource } from './source.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { lstat, mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -266,7 +268,7 @@ test('mac pet process gets a unix socket, accepts one connection and cleans up o
   assert.equal(bin, '/pet/bin')   // 펫은 직접 띄우고 우선순위는 띄운 뒤 -p 로 낮춤 (시작부터 건 백그라운드는 풀리지 않음)
   const sockPath = args.find((a) => a.startsWith('--dsc-pipe=')).slice('--dsc-pipe='.length)
   assert.ok(args.includes('--dsc-assets=A'))
-  assert.equal(opts.stdio, 'ignore'); assert.equal('windowsHide' in opts, false)
+  assert.deepEqual(opts.stdio, ['ignore', 'pipe', 'pipe']); assert.equal('windowsHide' in opts, false)
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', '__CFBundleIdentifier']) assert.equal(key in opts.env, false)
   // 펫이 연결해 ready 를 보내면 hidden, 호스트가 보내는 open 은 한 줄 JSON 으로 도착
   const socket = connect(sockPath); await once(socket, 'connect')
@@ -315,14 +317,14 @@ test('펫 페이지와 assets는 한 출처(dscpet://assets)라 Core 계산 Work
 
 test('펫 창이 숨으면 페이지에 그리기 중지를 알리고, 페이지는 그리기를 멈춘 채 대기한다', async () => {
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(main, /toPage\(\{ type: 'power', on: false \}\)/)
-  assert.match(dsc, /m\.type === "power"/)
+  assert.match(dsc, /power: onPetPower,/)   // 펫 창 메시지 처리표
   assert.match(dsc, /처음엔 숨은 채 대기/)
 })
 
 test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마다 깨우지 않고, open 이 오면 다시 돈다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   // 상호작용 매니저의 Ticker.system 구독은 루프가 쉬는 동안만 끄고, 깨울 때 되돌린다 (autoInteract: false 라 쓰지 않음)
   assert.match(dsc, /const systemTicker = \(on\) => \{ try \{ app\.renderer\.plugins\.interaction\.useSystemTicker = on; \} catch \{\} \};/)
   assert.match(dsc, /const wakeRaf = \(\) => \{ if \(rafIdle\) \{ rafIdle = false; systemTicker\(true\); requestAnimationFrame\(raf\); \} \};/)
@@ -330,21 +332,25 @@ test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마�
   // 숨은 펫(petPower=false)은 루프를 다음 프레임에 이어 가지 않는다
   assert.match(dsc, /if \(PET \? !petPower : link\.open\) \{ rafIdle = true; systemTicker\(false\); return; \}\n\s*requestAnimationFrame\(raf\);/)
   // power on·open 은 루프를 다시 깨운다
-  assert.match(dsc, /petPower = !!m\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
-  assert.match(dsc, /m\.type === "open"\) \{[^\n]*\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
+  assert.match(dsc, /petPower = !!message\.on;\s*setRender\(petPower\);\s*if \(petPower\) wakeRaf\(\);/)
+  assert.match(dsc, /const onPetOpen = \(message\) => \{\n\s*petPower = true;\s*setRender\(true\);\s*wakeRaf\(\);/)
 })
 
 test('펫 창이 대신 보여 주는 동안 창 안 캐릭터는 배치 루프를 쉬고, 붙을 자리는 150ms 틱이 직접 계산한다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   // 매 프레임 homePose(레이아웃 읽기)를 하던 저장 경로 제거: 링크 검사가 homePose 보다 먼저
   assert.ok(!dsc.includes('link.home'), '매 프레임 저장하던 link.home 이 남아 있으면 안 된다')
-  assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*const home = homePose\(\);/)
-  assert.match(dsc, /const h = dockTarget\(homePose\(\)\)/)
-  // link.open 을 끄는 두 곳(leaveLink, 캔버스 다시 표시)에서 루프를 깨운다
-  assert.match(dsc, /const leaveLink = \(\) => \{[^\n]*\n[^\n]*\n\s*link\.open = false; link\.opening = 0; link\.queue = \[\];\n\s*wakeRaf\(\);/)
-  assert.match(dsc, /link\.open = false; link\.follow = null; link\.opening = 0; try \{ linkPost\("hide"\); \} catch \{\} \}\n\s*wakeRaf\(\);\n\s*place\(\);/)
+  assert.match(dsc, /if \(link\.open \|\| link\.follow\?\.shown\) \{ setRender\(false\);[^\n]*\n\s*return false;/)   // placeBlocked()의 마지막 검사
+  assert.match(dsc, /if \(placeBlocked\(\)\) return;\n\s*const now = performance\.now\(\);\n\s*const home = homePose\(\);/)
+  assert.match(dsc, /const dockSpot = dockTarget\(homePose\(\)\)/)
+  // link.open 을 끄는 두 곳(연결의 leave, 캔버스 다시 표시)에서 루프를 깨운다
+  const petLink = await readFile(new URL('../../character/pet-link.ts', import.meta.url), 'utf8')
+  assert.match(petLink, /link\.open = false; link\.opening = 0; link\.queue = \[\];\n\s*deps\.onLeave\(\);/)
+  assert.match(dsc, /onLeave: \(\) => petLinkLeave\(\)/)
+  assert.match(dsc, /const petLinkLeave = \(\) => \{\n\s*wakeRaf\(\);/)
+  assert.match(dsc, /link\.open = false; link\.follow = null; link\.opening = 0; try \{ link\.post\("hide"\); \} catch \{\} \}\n\s*wakeRaf\(\);\n\s*place\(\);/)
   // link.open = false 를 대입하는 곳은 이 두 곳뿐이어야 한다 (새 경로가 생기면 wakeRaf 도 필요)
-  assert.equal(dsc.match(/link\.open = false/g).length, 2)
+  assert.equal(dsc.match(/link\.open = false/g).length + petLink.match(/link\.open = false/g).length, 2)
 })
 
 test('펫 프로세스의 커서 확인 타이머는 창이 보이는 동안만 돈다', async () => {
@@ -357,9 +363,9 @@ test('펫 프로세스의 커서 확인 타이머는 창이 보이는 동안만 
 
 test('펫 창 따라오기: 커서는 펫 프로세스가 직접 읽어 페이지로 보내고, 창 안 캐릭터는 위치를 HTTP로 보내지 않는다', async () => {
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(main, /case 'track': track\(!!message\.on, message\.grab, message\.off\)/)
-  assert.match(main, /placer\.place\(p\.x - g\.x - o\.x, p\.y - g\.y - o\.y\)[\s\S]*toPage\(\{ type: 'cursor'/)   // 창은 커서를 읽는 즉시 여기서 옮김 (페이지 왕복 없음)
+  assert.match(main, /placer\.place\(cursor\.x - grabPoint\.x - bodyOffset\.x, cursor\.y - grabPoint\.y - bodyOffset\.y\)[\s\S]*toPage\(\{ type: 'cursor'/)   // 창은 커서를 읽는 즉시 여기서 옮김 (페이지 왕복 없음)
   assert.ok(!/win\.setPosition\(/.test(main), '창 이동은 모두 placer로: setPosition 한 번으로 끝내면 배율이 다른 모니터에서 어긋난 채 남는다')
   assert.match(main, /case 'move': placer\.place\(message\.x, message\.y(?:, message\.walk === true)?\)/)
   assert.ok(!/win\.setSize\(/.test(main), '창 크기도 placer로: setSize 로 바꾸면 다음 이동이 고정 크기로 되돌린다')
@@ -386,9 +392,11 @@ test('restorePriority: 주 프로세스와 자식의 백그라운드를 풀고, 
 })
 
 test('웜업: 시작 인사·작업 중에는 미루고 한가할 때 숨긴 펫을 미리 띄운다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
-  assert.match(dsc, /const warmUp = \(tries = 0\) => \{[\s\S]*intro\.phase !== "done" \|\| running \|\| document\.hidden[\s\S]*linkPost\("warm"\)/)
-  assert.match(dsc, /setTimeout\(warmUp, 5000\)/)
+  // 미루기·재시도·warm 요청은 plugin/test/pet-link.test.js가 실행해 확인하고, 여기서는 '한가함'의 기준만 확인한다
+  const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
+  assert.match(dsc, /idle: \(\) => intro\.phase === "done" && !running && !document\.hidden/)
+  const petLink = await readFile(new URL('../../character/pet-link.ts', import.meta.url), 'utf8')
+  assert.match(petLink, /setTimeout\(warmUp, 5000\)/)
 })
 
 test('ready가 오지 않으면 시간 제한 뒤 펫을 끝내고 오류를 알리며, 다음 시도에서 다시 띄운다', async () => {
@@ -414,29 +422,84 @@ test('펫 창 우클릭 메뉴: 설정·크기 프리셋·돌아가기·숨기�
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
   for (const label of ['설정…', '크기', '창으로 돌아가기', '캐릭터 잠시 숨기기', '소품·옷', '체형']) assert.ok(main.includes(label), label)
   assert.match(main, /toPage\(\{ type: 'panel', open: true \}\)/)
-  assert.match(main, /toPage\(\{ type: 'size', ratio: r \}\)/)
+  assert.match(main, /toPage\(\{ type: 'size', ratio: sizeRatio \}\)/)
   assert.match(main, /toHost\(\{ type: 'config', list: \[\['character', false\]\] \}\)/)
   assert.match(main, /case 'state':/)   // 메뉴 체크 표시용 상태는 호스트로 넘기지 않는다
   assert.match(main, /MENU_SIZES = \[0\.75, 1, 1\.25, 1\.5\]/)
 })
 
 test('펫 창 크기: 기본(머리 맞춤) 대비 배율로 기억하고, 패널·휠·메뉴가 같은 값을 쓴다', async () => {
-  const dsc = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(dsc, /const PET_SIZE_KEY = "dsc-pet-size"/)
   assert.match(dsc, /function petClampK\(k\)/)
   assert.match(dsc, /Math\.min\(petKFit\(\), Math\.max\(PET_K_MIN, n\)\)/)
-  assert.match(dsc, /petPendingRatio = m\.follow \? ratio : null/)   // 따라오는 중엔 놓을 때 배율을 맞춤
+  assert.match(dsc, /petPendingRatio = message\.follow \? ratio : null/)   // 따라오는 중엔 놓을 때 배율을 맞춤
   assert.match(dsc, /petSetRatio\(Number\(slider\.value\) \/ 100, 0\)/)
   assert.match(dsc, /else \{ petRememberRatio\(petRatio\(\)\); petSyncMenu\(\); renderPetPanel\(\); \}/)
   assert.match(dsc, /function petPanelBox\(body\)/)   // 패널 영역도 클릭을 받도록 hitbox에 더함
   assert.match(dsc, /petPanel\.contains\(e\.target\)/)
-  assert.match(dsc, /else if \(ev\.type === "config" && Array\.isArray\(ev\.list\)\)/)
-  assert.match(dsc, /PET\.send\(\{ type: "fit", w: fitW, h: fitH \}\)/)   // 패널/캐릭터에 맞춰 창 크기
+  assert.match(dsc, /onConfig: \(key, value\) => onSetting\?\.\(key, value\)/)   // 펫 창 메뉴 값 → 플러그인 설정 (처리 규칙은 pet-link.test.js)
+  assert.match(dsc, /PET\s*\.send\(\{ type: "fit", w: fitW, h: fitH \}\)/)   // 타입 단언(!)이 지워진 자리의 공백 허용   // 패널/캐릭터에 맞춰 창 크기
 })
 
 test('펫 창 설정 패널: 값을 설정 저장소로 넘기고 이 플러그인이 아는 키만 반영한다', async () => {
-  const client = await readFile(new URL('../../plugin/client.js', import.meta.url), 'utf8')
-  assert.match(client, /window\.__dscSetConfig = applyPetConfig/)
+  const client = await readFile(new URL('../../plugin/client.ts', import.meta.url), 'utf8')
+  // 펫 창 메뉴 값은 createCharacter의 onSetting으로 받아 저장한다 (window 전역 없음)
+  assert.match(client, /startCharacter\(feature, link, applyPetConfig\)/)
+  assert.match(client, /createCharacter\(\{ base: ROOT, life, prefs: link\.initialPrefs\(\), onSetting \}\)/)
   assert.match(client, /PET_CONFIG_KEYS = new Set\(\[\.\.\.OUTFIT_FIELDS\.map/)
   assert.match(client, /'bodyType', 'character'/)
+})
+
+test('펫 진단: 표준 오류 꼬리(8KB)·종료 코드·신호를 종료 알림에 싣고, 표준 출력은 계속 비운다', async () => {
+  const children = []
+  const spawnImpl = (bin, args, opts) => {
+    const c = new EventEmitter(); c.kill = () => {}; c.opts = opts
+    c.stdout = new PassThrough(); c.stderr = new PassThrough(); children.push(c); return c
+  }
+  const pet = createPetManager({ assets: 'A', exe: 'C:/dsh/DeepSeek Harness.exe', platform: 'win32', base: 'B', prepare: async () => 'bin', spawnImpl })
+  await pet.warm()
+  const [first] = children
+  assert.deepEqual(first.opts.stdio, ['ignore', 'pipe', 'pipe'])
+  assert.equal(first.stdout.readableFlowing, true, '읽는 쪽이 없으면 파이프가 차서 펫이 멈춘다')
+  first.stderr.write('x'.repeat(9000)); first.stderr.write('END')
+  await sleep(10)
+  first.emit('exit', 1, null)
+  assert.deepEqual(pet.status().events, [], '표준 오류를 끝까지 읽은 뒤 알린다')
+  first.stderr.end(); await sleep(20)
+  const [closed] = pet.status().events
+  assert.equal(closed.type, 'closed'); assert.equal(closed.code, 1); assert.equal('signal' in closed, false)
+  assert.equal(closed.stderr.length, 8192); assert.ok(closed.stderr.endsWith('xEND'))
+  await pet.warm()
+  children[1].stderr.end(); await sleep(20)
+  children[1].emit('exit', null, 'SIGKILL')
+  assert.deepEqual(pet.status().events, [{ type: 'closed', seq: undefined, signal: 'SIGKILL' }])
+  pet.dispose()
+})
+
+test('펫 진단: 인증 실패는 기록(log) 알림으로 쌓고, 펫이 보낸 log 메시지도 그대로 전달한다', async () => {
+  const win = process.platform === 'win32'
+  let opts, args
+  const spawnImpl = (bin, list, options) => { args = list; opts = options; const c = new EventEmitter(); c.kill = () => {}; return c }
+  const pet = createPetManager({ assets: 'A', exe: win ? 'C:/dsh/DeepSeek Harness.exe' : '/Applications/X.app/Contents/MacOS/X', platform: win ? 'win32' : 'darwin',
+    base: 'B', prepare: async () => 'bin', spawnImpl, readyTimeout: 60000 })
+  await pet.warm()
+  const pipe = args.find((a) => a.startsWith('--dsc-pipe=')).slice('--dsc-pipe='.length)
+  const intruder = connect(pipe); intruder.on('error', () => {}); await once(intruder, 'connect')
+  intruder.write(JSON.stringify({ type: 'auth', secret: 'wrong' }) + '\n'); await once(intruder, 'close')
+  const socket = connect(pipe); await once(socket, 'connect')
+  socket.write(JSON.stringify({ type: 'auth', secret: opts.env.DSC_PET_SECRET }) + '\n')
+  socket.write(JSON.stringify({ type: 'log', level: 'error', text: 'pet renderer gone: crashed (exit code 5)', seq: 2 }) + '\n'); await sleep(100)
+  const logs = pet.status().events.filter((e) => e.type === 'log')
+  assert.deepEqual(logs, [{ type: 'log', level: 'warn', text: 'pet authentication failed' }, { type: 'log', level: 'error', text: 'pet renderer gone: crashed (exit code 5)', seq: 2 }])
+  socket.destroy(); pet.dispose()
+})
+
+test('펫 창 진단 연결: 경고·오류 콘솔·렌더러 종료·불러오기 실패를 호스트로 보내고, DevTools는 별도 창으로 연다', async () => {
+  const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
+  for (const event of ['console-message', 'render-process-gone', 'did-fail-load', 'devtools-opened']) assert.match(main, new RegExp(`win\\.webContents\\.on\\('${event}'`))
+  assert.match(main, /toHost\(\{ type: 'log', level, text: line \}\)/)
+  assert.match(main, /if \(reopeningDevTools\) \{ reopeningDevTools = false; return \}/)   // 스스로 다시 연 경우는 건너뜀 (반복 없음)
+  assert.match(main, /contents\.closeDevTools\(\)[\s\S]*?contents\.openDevTools\(\{ mode: 'detach' \}\)/)
+  assert.match(main, /win\.setIgnoreMouseEvents\(true, \{ forward: true \}\)/)   // 클릭 통과는 그대로
 })

@@ -11,9 +11,14 @@ const { spawnSync } = process.getBuiltinModule("node:child_process");
 const HERE = path.dirname(path.resolve(process.argv[1] || "plugins/dsh-tts/test/dsc-hooks.test.js"));
 const DSC_JS = path.resolve(
   HERE,
-  "../../../assets/dsc.js",
+  "../../../character/index.ts",
 );
-const SRC = fs.readFileSync(DSC_JS, "utf8");
+// 캐릭터 소스는 TypeScript라 타입 표기만 공백으로 지워 읽는다 (줄·열 위치 유지)
+const { stripTypeScriptTypes } = process.getBuiltinModule("node:module");
+const emitWarning = process.emitWarning;
+process.emitWarning = (warning, ...rest) => { if (!String(warning).includes("stripTypeScriptTypes")) emitWarning.call(process, warning, ...rest); };
+const SRC = stripTypeScriptTypes(fs.readFileSync(DSC_JS, "utf8")).replace(/(?<=\S) {2,}(?=[),=])/g, (m, i, all) => (all[i + m.length] === "=" ? " " : ""));
+process.emitWarning = emitWarning;
 
 test("dsc.js 존재 + dsc:say CustomEvent 동기 디스패치", () => {
   assert.ok(SRC.length > 1000, "dsc.js 를 읽었다");
@@ -58,8 +63,8 @@ test("__dsc.voice 훅 + lines 매니페스트", () => {
   assert.ok(SRC.includes("lines: TEXT"), "lines 매니페스트");
   assert.match(
     SRC,
-    /voice: \(s\) => \{ voiceState = s && s\.speaking !== false \? s : null; \}/,
-    "voice(s) 구현",
+    /voice: \(state\) => \{ voiceState = state && state\.speaking !== false \? state : null; \}/,
+    "voice(state) 구현",
   );
   assert.ok((SRC.match(/voiceState = null/g) || []).length >= 2, "voiceState 선언/만료 정리");
 });
@@ -79,7 +84,7 @@ test("렌더 루프: voiceState 만료 + talking/open/모음 오버라이드", (
   assert.match(SRC, /open = clamp\(voiceState\.level, 0, 1\) \* 0\.9;/, "level → open 덮어쓰기");
   assert.match(
     SRC,
-    /for \(const k of VOW\) vowel\[k\] = Math\.max\(vowel\[k\] \* 0\.4, clamp\(voiceState\.vowels\[k\] \|\| 0, 0, 1\)\);/,
+    /for \(const key of VOWELS\) vowel\[key\] = Math\.max\(vowel\[key\] \* 0\.4, clamp\(voiceState\.vowels\[key\] \|\| 0, 0, 1\)\);/,
     "vowels → vowel 덮어쓰기",
   );
 });

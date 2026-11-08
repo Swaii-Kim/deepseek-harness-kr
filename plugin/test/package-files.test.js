@@ -95,8 +95,8 @@ test('files 화이트리스트가 엔트리에서 도달하는 모든 상대 imp
     'plugins/dsh-tts/src/host.js',
     'plugins/dsh-tts/src/cache.js',
   ]) assert.ok(reached.has(expected), `검사 그래프에 ${expected}가 없습니다`)
-  // plugin/client.js는 번들 소스(build.mjs가 읽는다)라 import 그래프에는 안 잡히지만 같이 배포해야 한다.
-  assert.ok(isListed('plugin/client.js', files), 'plugin/client.js가 files에 없습니다')
+  // 브라우저 쪽은 빌드 산출물만 배포한다 (소스 character/·plugin/client.ts는 번들에 들어가 있다)
+  for (const built of ['lib/client.js', 'assets/dsc.js', 'pet/settings.cjs']) assert.ok(isListed(built, files), `빌드 산출물 ${built}가 files에 없습니다`)
 })
 
 test('files에서 plugin/app-icon.js를 빼면 회귀를 잡는다', async () => {

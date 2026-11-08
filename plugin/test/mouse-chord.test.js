@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { readSource } from './source.mjs'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
@@ -6,10 +7,12 @@ import vm from 'node:vm'
 // Pointer Events는 첫 버튼에만 pointerdown을 주므로, 두 번째 버튼은 mousedown으로 들어온다.
 // 이 테스트는 dsc.js에서 실제 등록된 mousedown/mouseup handler 코드와 chord helper를 그대로 잘라
 // 이벤트 시퀀스를 주입해 pending 생성/차단을 검증한다. (pointermove grab 자체는 소스 배선으로 확인)
-const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
-const chordBlock = source.slice(source.indexOf('const CHORD_GRACE_MS = 150;'), source.indexOf('document.addEventListener("pointerdown"'))
+const source = readSource(new URL('../../character/index.ts', import.meta.url))
+// 순수 판정 함수는 character/chord.js, 버튼 합류 처리(armChordGrab 등)는 캐릭터 본체 구간을 잘라 쓴다
+const chordFns = await import('../../character/chord.ts')
+const chordBlock = source.slice(source.indexOf('const armChordGrab ='), source.indexOf('life.listen(document, "pointerdown"'))
 const mouseStart = source.indexOf('// 마우스 좌우 버튼 코드 보완')
-const mouseEnd = source.indexOf('\n', source.indexOf('document.addEventListener("mouseup"', mouseStart))
+const mouseEnd = source.indexOf('\n', source.indexOf('life.listen(document, "mouseup"', mouseStart))
 const mouseBlock = source.slice(mouseStart, mouseEnd)
 
 function harness() {
@@ -26,8 +29,11 @@ function harness() {
     performance: { now: () => context.clock },
     hitAt: () => (context.hit ? [1, 2, 3] : null),
     overBody: () => false,
-    pt: (event) => [event.clientX, event.clientY],
+    pointerPoint: (event) => [event.clientX, event.clientY],
     clearInterval: () => {},
+    ...chordFns,
+    // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
+    life: { listen: (target, type, fn, options) => target.addEventListener(type, fn, options), own: (value) => value, add() {}, stopped: false },
     document: {
       addEventListener(type, fn, options) { listeners.set(type, { fn, options }) },
     },
@@ -165,7 +171,9 @@ test('rightStart id 보존: mousedown은 pointerdown의 id를 유지하고, id �
 
 test('pointermove grab 배선: pending이 있고 두 버튼이 함께 눌리면 both로 grab한다', () => {
   assert.match(source, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
-  assert.match(source, /const p = drag\.pending;\s*\n\s*if \(!p \|\| e\.pointerId !== p\.id\) return;/)
+  assert.match(source, /const pending = drag\.pending;\s*\n\s*if \(!pending \|\| e\.pointerId !== pending\.id\) return;/)
   assert.match(source, /if \(!both\) \{ if \(drag\.on\) endDrag\(e, false\); return; \}/)
-  assert.match(source, /if \(!drag\.on\) \{[\s\S]*?drag\.on = true;/)
+  assert.match(source, /if \(!drag\.on\) beginCarry\(e, pending, px, py, now\);/)   // 처음 움직일 때 집어 옮기기 시작
+  assert.match(source, /const beginCarry = \(e, pending, px, py, now\) => \{[\s\S]*?drag\.on = true;/)
+  assert.match(source, /carryMove\(e, pending\);/)
 })

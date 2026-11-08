@@ -1,11 +1,15 @@
 import test from 'node:test'
+import { readSource } from './source.mjs'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
+import * as layout from '../../character/layout.ts'
+import * as chordFns from '../../character/chord.ts'
+import { PARTS } from '../../character/model-profile.ts'
 
 // dsc.js의 순수 계산/상태 조각을 그대로 실행해 확인한다. DOM·캔버스 없이 돌 수 있게
 // 필요한 값만 vm 컨텍스트에 넣고, 실제 소스 구간(문자열 경계)을 잘라 쓴다.
-const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+const source = readSource(new URL('../../character/index.ts', import.meta.url))
 
 const sliceBetween = (startText, endText) => {
   const start = source.indexOf(startText)
@@ -17,9 +21,7 @@ const sliceBetween = (startText, endText) => {
 const runScript = (script, context, expose) => vm.runInContext(`${script}\n${expose}`, vm.createContext(context))
 
 test('말풍선 꼬리는 코에 맞추고, 화면 경계는 최소 여백만 남긴다', () => {
-  // HOME_GAP·tailRight·tailLeft·BUBBLE_TAIL 이 함께 있는 구간 (homeLayout/bubbleLayout 정의는 실행하지 않는다)
-  const slice = sliceBetween('const HOME_GAP = 8', 'let curK = 1, fleeX = 0;')
-  const { tailRight, tailLeft, BUBBLE_TAIL } = runScript(slice, {}, '({ tailRight, tailLeft, BUBBLE_TAIL })')
+  const { tailRight, tailLeft, BUBBLE_TAIL } = layout
   assert.equal(BUBBLE_TAIL, 55)
 
   // 꼬리(오른쪽 55px)의 중심이 정확히 코(noseX)에 온다: width - right - 55 === noseX
@@ -43,8 +45,7 @@ test('말풍선 꼬리는 코에 맞추고, 화면 경계는 최소 여백만 �
 })
 
 test('짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁힌다', () => {
-  const slice = sliceBetween('const HOME_GAP = 8', 'let curK = 1, fleeX = 0;')
-  const { bubbleTail, tailRight, tailLeft } = runScript(slice, {}, '({ bubbleTail, tailRight, tailLeft })')
+  const { bubbleTail, tailRight, tailLeft } = layout
   // 넓은 말풍선(폭 106px 이상)은 기존 55px 그대로
   assert.equal(bubbleTail(300), 55)
   assert.equal(bubbleTail(106), 55)
@@ -57,8 +58,25 @@ test('짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁힌다'
   assert.equal(tailLeft({ noseX: 300, bw: 40, width: 1000, tail: 22 }) + 40 - 22, 300)
 })
 
+test('시작 연출 말풍선은 제자리로 옮겨 가는 동안 평소 크기로 줄어든다', async () => {
+  const { introBubbleSize, REST_BUBBLE } = layout
+  // 가운데(진행도 0)는 큰 말풍선, 도착(1)은 평소 크기와 지금 배율의 최대폭
+  assert.deepEqual(introBubbleSize(0, 200), { font: 22, padY: 14, padX: 24, maxWidth: 560 })
+  assert.deepEqual(introBubbleSize(1, 200), { font: 13, padY: 9, padX: 14, maxWidth: 200 })
+  // 중간은 캐릭터 배율과 같은 진행도만큼
+  assert.deepEqual(introBubbleSize(0.5, 200), { font: 17.5, padY: 11.5, padX: 19, maxWidth: 380 })
+  // 진행도 범위 밖은 양 끝으로 자름
+  assert.deepEqual(introBubbleSize(-1, 200), introBubbleSize(0, 200))
+  assert.deepEqual(introBubbleSize(2, 200), introBubbleSize(1, 200))
+  // 도착 순간 인라인 스타일을 지우고 CSS 기본값으로 돌아가므로 평소 값은 CSS와 같아야 함
+  const css = await readFile(new URL('../../assets/character.css', import.meta.url), 'utf8')
+  const rule = css.match(/#dsc-bubble \{\r?\n[^}]*\}/)[0]
+  assert.match(rule, new RegExp(`padding: ${REST_BUBBLE.padY}px ${REST_BUBBLE.padX}px;`))
+  assert.match(rule, new RegExp(`font: 600 ${REST_BUBBLE.font}px/`))
+})
+
 test('터치 제스처: 가로 끌기는 집기, 세로 움직임은 쓰다듬기, 가만히 길게 누르면 집기', () => {
-  const slice = sliceBetween('const TOUCH = {', 'document.addEventListener("pointermove"')
+  const slice = sliceBetween('const TOUCH = {', 'life.listen(document, "pointermove"')
   const { touchGesture, TOUCH } = runScript(slice, {}, '({ touchGesture, TOUCH })')
   assert.equal(TOUCH.grabMs, 320)
   assert.equal(TOUCH.verticalPx, 8)
@@ -74,10 +92,10 @@ test('터치 제스처: 가로 끌기는 집기, 세로 움직임은 쓰다듬�
 
 test('이동 키가 빈 문자열이면 드래그 보조 키가 꺼진다', () => {
   const slice = sliceBetween('const dragKeyRaw =', 'const TOUCH = {')
-  const context = { window: {}, PET: false, link: { open: false }, linkPost() {}, addEventListener() {} }
+  const context = { prefs: {}, PET: false, link: { open: false }, linkPost() {}, addEventListener() {} }
   const { dragKeyToken, dragKeyHeld, rememberKey } = runScript(
     slice, context, '({ dragKeyRaw, dragKeyToken, dragKeyHeld, rememberKey })')
-  const setKey = (key) => { context.window.__dscDrag = { key } }
+  const setKey = (key) => { context.prefs.drag = { key } }
 
   setKey('')
   assert.equal(dragKeyToken(), '')
@@ -110,7 +128,8 @@ test('캔버스 숨김: 숨기면 그리기만 멈추고 칩을 남기며, 복�
   assert.ok(chip(), '숨김 상태에서는 복구 칩이 있어야 한다')
   assert.equal(setHidden(false), false)
   assert.equal(chip(), null, '복구하면 칩을 지운다')
-  assert.equal(wakeCalls(), 1, '복구하면 펫 창 때문에 쉬던 배치 루프를 깨운다')
+  // 그리기를 다시 켜는 setRender(true)도 깨우므로 호출은 여러 번일 수 있다 (실제 wakeRaf는 쉬는 중일 때만 동작)
+  assert.ok(wakeCalls() >= 1, '복구하면 펫 창 때문에 쉬던 배치 루프를 깨운다')
 })
 
 test('복구 칩은 모바일 숨김 설정이면 남지 않고, 설정을 되돌리면 다시 보인다', () => {
@@ -143,70 +162,93 @@ test('모바일 숨김 설정에서는 새 숨김에도 칩을 만들지 않는�
   h.setHidden(false)
 })
 
-test('티커는 상태가 바뀔 때만 시작/정지한다 (매 프레임 start/stop 반복 없음)', () => {
-  const slice = sliceBetween('const setRender =', 'const place = () =>')
-  const ticker = {
-    started: true, starts: 0, stops: 0,
-    start() { this.started = true; this.starts++ },
-    stop() { this.started = false; this.stops++ },
-  }
-  const { setRender } = runScript(slice, { app: { ticker } }, '({ setRender })')
+test('그리기 여부는 바뀔 때만 반영하고, 다시 켜면 멈춘 시간을 건너뛰고 쉬던 배치 루프를 깨운다', () => {
+  const slice = sliceBetween('let renderOn = true;', 'const place = () =>')
+  const ticker = { lastTime: 5, update() {} }
+  const context = { app: { ticker }, wakes: 0, performance: { now: () => 1000 } }
+  const { setRender, rendering } = runScript(`let wakes = 0; const wakeRaf = () => { wakes++ };\n${slice}`, context,
+    '({ setRender, rendering: () => renderOn, wakes: () => wakes })')
+  assert.equal(rendering(), true, '창이 보이기 전에 첫 그리기를 끝내 두도록 처음엔 켜져 있다')
   setRender(true)
-  setRender(true)
-  assert.equal(ticker.starts, 0)
+  assert.equal(ticker.lastTime, 5, '이미 켜져 있으면 아무것도 바꾸지 않는다')
   setRender(false)
   setRender(false)
-  setRender(false)
-  assert.equal(ticker.stops, 1)
+  assert.equal(rendering(), false)
   setRender(true)
-  assert.equal(ticker.starts, 1)
-  assert.equal(ticker.started, true)
+  assert.equal(rendering(), true)
+  assert.equal(ticker.lastTime, 1000, '멈춰 있던 시간만큼 모델이 한꺼번에 움직이지 않게 기준 시각을 지금으로')
 })
 
-test('캔버스를 숨긴 동안 펫 창 단축키는 아무 것도 하지 않고, 복구하면 다시 열린다', () => {
-  const slice = sliceBetween('const petOpenPose = () =>', 'window.__dscPetToggle = petToggle;')
+test('한 프레임 안에서 배치가 먼저 돌고 그 다음에 모델 갱신·그리기가 돈다', () => {
+  // 배치(크기·해상도 변경)가 그리기보다 늦으면 resize로 지워진 버퍼가 화면에 나간다(인트로 이동 중 사라짐)
+  const calls = []
   const context = {
-    hidden: true,
-    PET_URL: '/dsc-pet/',
-    SLEEP: { state: 'active' },
-    shown: { k: 0.8, x: 100, y: 200 },
-    link: { open: false, follow: null, petState: 'none', opening: 0, seq: 0 },
-    homePose: () => ({ k: 0.5, x: 0, y: 0 }),
-    dockTarget: (home) => home,
-    screenOf: (x, y) => ({ x: x + 10, y: y + 20 }),
-    enterLink() {},
-    performance: { now: () => 1234 },
-    calls: [],
-    linkPost(type, payload) { context.calls.push([type, payload]) },
+    PET: false, petPower: false, hidden: false, SLEEP: { state: 'active' }, link: { open: false },
+    app: { ticker: { lastTime: 0, update: (time) => calls.push(`update@${time}`) } },
+    console,
+    performance: { now: () => 0 },
+    place: () => calls.push('place'),
+    syncHideChip: () => calls.push('chip'),
+    pageHiddenNow: () => false,
+    systemTicker: () => {},
+    requestAnimationFrame: () => calls.push('next'),
   }
-  const { petToggle } = runScript(slice, context, '({ petToggle })')
-  petToggle()   // 숨김 상태: no-op (stale shown 포즈로 펫 창을 열지 않는다)
-  assert.deepEqual(context.calls, [])
-  assert.equal(context.link.opening, 0)
+  const script = [
+    'let placeErrorWarned = false;',
+    sliceBetween('let renderOn = true;', 'const place = () =>'),
+    sliceBetween('let rafIdle = false;', '\n      requestAnimationFrame(raf);'),
+  ].join('\n')
+  const { raf, setRender } = runScript(script, context, '({ raf, setRender })')
 
-  context.hidden = false
-  petToggle()   // 복구 후: 정상적으로 펫 창을 연다
-  assert.equal(context.calls.length, 1)
-  assert.equal(context.calls[0][0], 'open')
-  assert.equal(context.link.opening, 1234)
+  raf(16)
+  assert.deepEqual(calls, ['place', 'update@16', 'next'])
 
-  context.link.open = true
-  context.calls.length = 0
-  petToggle()   // 펫 창이 떠 있으면 창 안으로 되돌린다
-  assert.equal(context.calls[0][0], 'hide')
+  // 그리기를 끄면 배치만 돌고 티커는 건드리지 않는다
+  calls.length = 0
+  setRender(false)
+  raf(32)
+  assert.deepEqual(calls, ['place', 'next'])
+
+  // 배치가 실패해도 그 프레임 그리기는 그대로 한다
+  calls.length = 0
+  setRender(true)
+  context.place = () => { calls.push('place'); throw new Error('boom') }
+  const warn = console.warn
+  console.warn = () => {}
+  try { raf(48) } finally { console.warn = warn }
+  assert.deepEqual(calls, ['place', 'update@48', 'next'])
 })
+
+test('렌더 해상도는 실제로 바뀔 때만 버퍼를 다시 만든다', () => {
+  const slice = sliceBetween('const setRes = ', '\n')
+  const calls = []
+  const app = { renderer: { resolution: 3, resize: (w, h) => calls.push(`resize ${w}x${h}@${app.renderer.resolution}`) } }
+  const setRes = runScript(slice, { app, DPR: 3, W: 300, H: 300 }, 'setRes')
+  setRes(1.5)
+  assert.deepEqual(calls, ['resize 300x300@4.5'])
+  calls.length = 0
+  setRes(1.5); setRes(1)
+  assert.deepEqual(calls, ['resize 300x300@3'])
+  // 배율 1 이하는 해상도가 그대로(DPR)라 버퍼를 건드리지 않는다
+  calls.length = 0
+  setRes(0.6); setRes(0.42)
+  assert.deepEqual(calls, [])
+})
+
+// 캔버스를 숨긴 동안의 펫 창 단축키는 plugin/test/pet-link.test.js에서 연결 모듈을 직접 실행해 확인한다
 
 test('동물귀 파트 lookup: Part159 인덱스를 찾고, 없으면 -1로 안전하게 넘긴다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const cm = {
     parts: { ids: ['Part81', 'Part156', 'Part159'] },
     drawables: { count: 1, parentPartIndices: [2], opacities: [1], dynamicFlags: [1] },
   }
-  const api = runScript(slice, { cm, window: {} }, `({
+  const api = runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, `({
     earPartIndexFor, earPartIndex, earDrawables,
     earPartIndexMissing: earPartIndexFor(['Part81'], 'Part159'),
     earPartIndexNull: earPartIndexFor(null, 'Part159'),
   })`)
+  assert.equal(PARTS.animalEars, 'Part159')   // 이 모델의 동물귀 파트 ID (model-profile.ts)
   assert.equal(api.earPartIndex, 2)
   assert.equal(api.earPartIndexMissing, -1)
   assert.equal(api.earPartIndexNull, -1)
@@ -214,10 +256,10 @@ test('동물귀 파트 lookup: Part159 인덱스를 찾고, 없으면 -1로 안�
 })
 
 test('귀 파트 opacity만 바꾸고 다른 파트·기하(model.x/scale)는 건드리지 않는다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const cm = { parts: { ids: ['Part159'], opacities: new Float32Array([1]) }, drawables: { count: 0, parentPartIndices: [], opacities: [], dynamicFlags: [] } }
   const model = { x: 12.5, y: -3, scale: { x: 0.42, y: 0.42 } }
-  const { applyEarOpacity, earOpacityValue } = runScript(slice, { cm, window: {} }, '({ applyEarOpacity, earOpacityValue })')
+  const { applyEarOpacity, earOpacityValue } = runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, '({ applyEarOpacity, earOpacityValue })')
   const parts = { opacities: new Float32Array([1, 1, 1, 1]) }
   const before = { x: model.x, y: model.y, sx: model.scale.x, sy: model.scale.y }
   assert.equal(applyEarOpacity(parts, 2, 1), true)
@@ -234,9 +276,9 @@ test('귀 파트 opacity만 바꾸고 다른 파트·기하(model.x/scale)는 �
 })
 
 test('귀 숨김은 부드럽게 0..1 사이로 보간되고, 끄면 원래대로 돌아온다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const cm = { parts: { ids: ['Part159'] }, drawables: { count: 0, parentPartIndices: [], opacities: [], dynamicFlags: [] } }
-  const { earOpacityStep, earOpacityValue, setEarW, getEarW } = runScript(slice, { cm, window: {} }, '({ earOpacityStep, earOpacityValue, setEarW: (v) => { earW = v }, getEarW: () => earW })')
+  const { earOpacityStep, earOpacityValue, setEarW, getEarW } = runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, '({ earOpacityStep, earOpacityValue, setEarW: (v) => { earWeight = v }, getEarW: () => earWeight })')
   let w = 0
   w = earOpacityStep(w, true, 0.1)
   assert.ok(w > 0 && w < 1, '한 프레임에 1로 점프하지 않는다')
@@ -254,13 +296,13 @@ test('귀 숨김은 부드럽게 0..1 사이로 보간되고, 끄면 원래대�
 })
 
 test('귀 터치 판정: earHide 감쇠 전 가시성을 유지하되, 다른 원인으로 숨은 귀는 되살리지 않는다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinW = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const make = (opacities, flags) => {
     const cm = {
       parts: { ids: ['Part159'] },
       drawables: { count: 2, parentPartIndices: [0, 0], opacities: new Float32Array(opacities), dynamicFlags: new Uint8Array(flags) },
     }
-    return { cm, api: runScript(slice, { cm, window: {} }, '({ earHitVisible, earBaseVisible, setEarW: (v) => { earW = v } })') }
+    return { cm, api: runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, '({ earHitVisible, earBaseVisible, setEarW: (v) => { earWeight = v } })') }
   }
   const normal = make([1, 1], [1, 1])
   assert.equal(normal.api.earBaseVisible.get(0), true)
@@ -323,8 +365,7 @@ test('worker는 전달받은 parts opacities(귀 포함)를 Core 모델에 그�
 })
 
 test('좌우 버튼 코드: 첫 버튼 누른 채 150ms 이내 두 번째 버튼이면 grab, 떨어진 클릭/단일 버튼은 제외', () => {
-  const slice = sliceBetween('const CHORD_GRACE_MS = 150;', 'document.addEventListener("pointerdown"')
-  const { chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS } = runScript(slice, {}, '({ chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS })')
+  const { chordDown, chordWithinGrace, chordUp, CHORD_GRACE_MS } = chordFns
   assert.equal(CHORD_GRACE_MS, 150)
   const empty = { at: null, button: null, valid: false }
 
@@ -360,7 +401,7 @@ test('좌우 버튼 코드: 첫 버튼 누른 채 150ms 이내 두 번째 버튼
 })
 
 test('코드 그레이스는 기존 양쪽 hold(임의 간격) 판정을 150ms로 제한하지 않는다', async () => {
-  const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(source, /if \(\(e\.buttons & 1\) && chordWithinGrace\(chord, e\.button, e\.buttons, nowDown\)\)/)
   assert.match(source, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
   assert.match(source, /chord = chordUp\(chord, e\.buttons\)/)
@@ -375,9 +416,12 @@ function runChipContext() {
     placeCalls: 0,
     removed: 0,
     hiddenNow: false,
-    window: { __dscPageHidden: false },
+    prefs: { pageHidden: false },
+    hooks: {},
     addEventListener() {},
     systemTickerCalls: [],
+    // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다
+    life: { listen: (target, type, fn, options) => target.addEventListener(type, fn, options), own: (value) => value, add() {}, stopped: false },
     document: {
       createElement() {
         return {
@@ -390,11 +434,7 @@ function runChipContext() {
       documentElement: { classList: { remove() {} } },
     },
     app: {
-      ticker: {
-        started: true, starts: 0, stops: 0,
-        start() { this.started = true; this.starts++ },
-        stop() { this.started = false; this.stops++ },
-      },
+      ticker: { lastTime: -1, update() {} },
     },
     SLEEP: { state: 'active', lastActive: 0 },
     drag: { pending: null, on: false },
@@ -414,7 +454,7 @@ function runChipContext() {
     'let hidden = false;',
     'let pageHiddenApplied = false;',
     'let sleepTimer = 0, cancelSleepSlide = null, fleeX = 0, strokeFrom = null, chestFrom = null, lastPlaceKey = "";',
-    'const pageHiddenNow = () => !PET && window.__dscPageHidden === true;',
+    'const pageHiddenNow = () => !PET && prefs.pageHidden === true;',
     'const mobileHidden = () => mobileHiddenNow;',
     'const place = () => { placeCalls++ };',
     'let rafIdle = false;',
@@ -424,7 +464,7 @@ function runChipContext() {
   const script = [
     preamble,
     sliceBetween('const hideChipVisible =', 'let placeErrorWarned'),
-    sliceBetween('const setRender =', 'const place = () =>'),
+    sliceBetween('let renderOn = true;', 'const place = () =>'),
     sliceBetween('let hideChip = null;', '      if (!PET) {'),
   ].join('\n')
   const api = runScript(script, context, `({
@@ -433,7 +473,7 @@ function runChipContext() {
     chip: () => hideChip,
     placeCalls: () => placeCalls,
     wakeCalls: () => wakeCalls,
-    ticker: app.ticker,
+    rendering: () => renderOn,
     removed: () => removed,
     canvas: canvas.style, bubble: bubble.style, veil: veil.style,
   })`)

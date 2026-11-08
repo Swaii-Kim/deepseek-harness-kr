@@ -1,0 +1,29 @@
+{
+  // 타입 검사 전용 (출력 없음). 빌드는 esbuild(plugin/build.mjs)가 타입만 지우고 묶는다.
+  // npm run typecheck = tsc -p tsconfig.json
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  // 엄격하게 검사하는 캐릭터 소스와, Node가 직접 실행하는 JS(// @ts-check, JSDoc 타입)
+  "include": [
+    "character/layout.ts", "character/chord.ts", "character/motion.ts", "character/harness-signals.ts",
+    "character/pet-link.ts", "character/log.ts", "character/lifetime.ts", "character/types.ts", "character/speech.ts", "character/hit.ts", "character/model-profile.ts", "character/pet-walk.ts",
+    "character/index.ts", "character/standalone.ts", "plugin/client.ts", "plugin/dsh-types.ts",
+    "shared/settings.js", "plugin/host.js", "plugin/pet-host.js", "plugin/app-icon.js", "pet/placement.cjs", "pet/profile.cjs"
+  ]
+}

@@ -1,3 +1,4 @@
+// @ts-check
 import z from '@deepseek-ai/schemastery'
 import { createReadStream } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
@@ -8,12 +9,32 @@ import { normalize as normalizeTts } from '../plugins/dsh-tts/src/config.js'
 import { registerSpeechRoutes } from '../plugins/dsh-tts/src/index.js'
 import { createPetHandler, createPetManager, PET_PATH } from './pet-host.js'
 import { applyShortcutIcon } from './app-icon.js'
+import { OUTFIT_ITEMS, BODY_TYPES } from '../shared/settings.js'
 
 export const name = 'deepseek-harness-kr'
 export const inject = ['webServer', 'connection']
 
+/** @typedef {import('node:http').IncomingMessage} IncomingMessage */
+/** @typedef {import('node:http').ServerResponse} ServerResponse */
+/** @typedef {(req: IncomingMessage, res: ServerResponse) => Promise<void>} RequestHandler */
+/**
+ * DSH 컨텍스트 중 이 플러그인이 쓰는 범위 (registerSpeechRoutes 에도 그대로 넘김)
+ * @typedef {object} HostContext
+ * @property {(fn: () => (() => void) | void | undefined, label: string) => void} effect
+ * @property {{ register(route: { kind: 'prefix' | 'exact', path: string, handler: RequestHandler }): (() => void) | undefined }} webServer
+ * @property {{ requestRejection?: (req: IncomingMessage) => number | undefined } | undefined} connection
+ */
+/**
+ * 설정 중 이 파일이 읽는 값 (volatile 참조일 수 있어 readLive로 읽음)
+ * @typedef {{ tts?: unknown, appIcon?: unknown }} HostConfig
+ */
+
 // 말풍선 음성(TTS). 설정 화면이 쓰는 값은 모두 volatile이어야 한다(Settings는 volatile 필드만 쓴다).
 // 값의 범위·형식 검사는 요청마다 dsh-tts normalize가 맡고, 잘못된 값은 /dsh-tts/state가 이유를 알려 준다.
+/**
+ * 스키마의 volatile 변환 (설정 화면에서 바꾼 값을 요청마다 다시 읽기 위함)
+ * @template R @param {{ volatile(): R }} schema @returns {R}
+ */
 const live = (schema) => schema.volatile()
 export const TtsConfig = z.object({
   enabled: live(z.boolean().default(false)),
@@ -42,7 +63,11 @@ export const TtsConfig = z.object({
   }),
 })
 
-// volatile 참조(.get())가 섞인 설정을 그 시점의 평범한 값으로 바꾼다.
+/**
+ * volatile 참조(.get())가 섞인 설정의 그 시점 평범한 값 변환
+ * @param {any} value 설정 값 아무거나 (volatile 참조·객체·원시값이 섞임)
+ * @returns {unknown}
+ */
 export function readLive(value) {
   if (value && typeof value.get === 'function') return structuredClone(value.get())
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value
@@ -53,22 +78,15 @@ export const Config = z.object({
   character: z.boolean().default(true).volatile(),
   theme: z.boolean().default(true).volatile(),
   translation: z.boolean().default(true).volatile(),
-  // 소품·옷·체형 (데스크톱 펫의 "소품·옷" 메뉴와 같은 항목)
-  glasses: z.boolean().default(false).volatile(),
-  monocle: z.boolean().default(false).volatile(),
-  skirt: z.boolean().default(false).volatile(),
-  chestClothes: z.boolean().default(false).volatile(),
-  shoesOff: z.boolean().default(false).volatile(),
-  tailHide: z.boolean().default(false).volatile(),
-  // 동물귀 숨기기: 모델의 귀 파트(Part159)만 부드럽게 감춘다 (없는 모델에서는 표시만 되고 동작하지 않음)
-  earHide: z.boolean().default(false).volatile(),
-  bodyType: z.union([z.const('default'), z.const('type1'), z.const('type2')]).default('default').volatile(),
+  // 소품·옷·체형: 항목 정의는 shared/settings.js 하나 (펫 창 메뉴·설정 화면·캐릭터와 같은 목록)
+  ...Object.fromEntries(OUTFIT_ITEMS.map(({ key }) => [key, z.boolean().default(false).volatile()])),
+  bodyType: z.union(BODY_TYPES.map(({ key }) => z.const(key))).default('default').volatile(),
   tts: TtsConfig,
   // 시작할 때 가운데에서 크게 인사하는 등장 연출 (끄면 처음부터 제자리에 뜬다)
   intro: z.boolean().default(true).volatile(),
   // 모바일(터치 전용) 화면에서도 캐릭터를 보여 줄지 (기본 표시)
   mobileCharacter: z.boolean().default(true).volatile(),
-  // 앱 바로가기 아이콘을 DeepSeek짱 아이콘으로 (Windows만, 창·작업 표시줄 아이콘은 해당 없음)
+  // 앱 아이콘을 DeepSeek짱 아이콘으로 (Windows는 바로가기, macOS는 앱의 Finder 아이콘. 실행 중 창·작업 표시줄 아이콘은 해당 없음)
   appIcon: z.boolean().default(true).volatile(),
   // 절전: 입력이 없으면 캐릭터가 화면 밖으로 나가 렌더링을 멈춤
   idleSleep: z.boolean().default(true).volatile(),
@@ -85,16 +103,24 @@ export const Config = z.object({
   canvasToggleKey: z.string().default('Ctrl+Shift+H').volatile(),
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
+/** 호스트 쪽 진단 상태 조회 경로 (설정 화면이 시작 후 한 번 읽어 콘솔에 남김) */
+export const STATUS_PATH = '/deepseek-harness-kr/status'
 const assets = fileURLToPath(new URL('../assets/', import.meta.url))
+/** @type {Record<string, string | undefined>} */
 const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream' }
 
+/**
+ * 자산 파일 요청 처리기 생성. GET·HEAD만 받고 ETag가 같으면 304
+ * @param {string} [root] 자산 폴더 (기본 assets/)
+ * @returns {RequestHandler}
+ */
 export function createAssetHandler(root = assets) {
   return async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return
     }
     try {
-      // Decode before resolving; both lexical traversal and symlink escapes fail closed.
+      // 경로 해석 전에 디코딩. 경로 문자열로 벗어나기·심볼릭 링크로 벗어나기 모두 거절로 처리
       const path = decodeURIComponent((req.url || '').split('?')[0])
       if (!path.startsWith(ASSET_PATH + '/')) { res.writeHead(404); res.end(); return }
       const suffix = path.slice(ASSET_PATH.length + 1)
@@ -117,31 +143,69 @@ export function createAssetHandler(root = assets) {
       else await pipeline(createReadStream(target), res)
     } catch (error) {
       if (!res.headersSent) { res.writeHead(error instanceof URIError ? 400 : 404); res.end() }
-      else if (!res.destroyed) res.destroy(error)
+      else if (!res.destroyed) res.destroy(/** @type {Error} */ (error))
     }
   }
 }
 
-export function apply(ctx, config) {
+/**
+ * 앱 바로가기 아이콘 적용 결과 중 알릴 만한 실패만 추림 (Windows가 아니거나 실행 경로가 없는 경우는 정상으로 봄)
+ * @param {{ skipped?: string, message?: string } | undefined} result applyShortcutIcon 결과
+ * @returns {{ reason: string, message?: string } | null} 실패면 사유, 아니면 null
+ */
+export function iconProblem(result) {
+  if (!result?.skipped || result.skipped === 'platform' || result.skipped === 'no-exec-path') return null
+  return { reason: result.skipped, ...(result.message ? { message: result.message } : {}) }
+}
+
+/**
+ * 진단 상태 요청 처리기 생성. 인증을 통과한 GET만 받아 지금 상태를 JSON으로 응답
+ * @param {() => object} read 지금 상태 읽기
+ * @param {(req: IncomingMessage) => number | undefined} rejection 거절할 HTTP 상태 코드 (통과면 undefined)
+ * @returns {RequestHandler}
+ */
+export function createStatusHandler(read, rejection) {
+  return async (req, res) => {
+    const denied = rejection(req)
+    if (denied !== undefined) { res.writeHead(denied); res.end(); return }
+    if (req.method !== 'GET') { res.writeHead(405, { Allow: 'GET' }); res.end(); return }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(read()))
+  }
+}
+
+/**
+ * 플러그인 시작: 자산·음성·펫 경로 등록, 앱 바로가기 아이콘 동기화
+ * @param {HostContext} ctx @param {HostConfig | undefined} config 플러그인 설정 (volatile 참조가 섞임)
+ * @param {{ applyIcon?: typeof applyShortcutIcon }} [options] 앱 아이콘 적용 함수 대체 (시험용, DSH는 넘기지 않음)
+ */
+export function apply(ctx, config, { applyIcon = applyShortcutIcon } = {}) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ASSET_PATH, handler: createAssetHandler() }), 'deepseek-harness-kr: assets')
   // 말풍선 음성: 설정 화면에서 바꾼 값(volatile)을 요청마다 다시 읽는다. 꺼져 있으면 404.
   registerSpeechRoutes(ctx, () => normalizeTts(readLive(config?.tts)))
+  /** 펫·상태 경로 요청의 거절 상태 코드. DSH 연결 서비스 검사기 결과(통과면 undefined), 검사기가 없으면 503 @param {IncomingMessage} req */
+  const rejection = (req) => { const connection = ctx.connection; return typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : 503 }
+  /** 앱 바로가기 아이콘의 마지막 실패 사유 (성공하거나 해당 없으면 null) */
+  let appIconProblem = /** @type {{ reason: string, message?: string } | null} */ (null)
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: STATUS_PATH, handler: createStatusHandler(() => ({ appIcon: appIconProblem }), rejection) }), 'deepseek-harness-kr: status')
   ctx.effect(() => {
     const pet = createPetManager({ assets })
-    const rejection = (req) => { const c = ctx.connection; return typeof c?.requestRejection === 'function' ? c.requestRejection(req) : 503 }
     const unregister = ctx.webServer.register({ kind: 'prefix', path: PET_PATH, handler: createPetHandler(pet, rejection) })
     return () => { unregister?.(); pet.dispose() }
   }, 'deepseek-harness-kr: pet')
-  // 앱 바로가기 아이콘(Windows): 켜면 시작할 때·플러그인 업데이트 후에 적용하고, 끄면 원래 아이콘으로 되돌린다.
+  // 앱 아이콘(Windows 바로가기·macOS 앱 Finder 아이콘): 켜면 시작할 때·플러그인 업데이트 후에 적용하고, 끄면 원래 아이콘으로 되돌린다.
   // 설정은 volatile이라 몇 초마다 확인해 바뀐 경우에만 실행한다(같은 값이면 아무 것도 하지 않음).
   ctx.effect(() => {
-    let last = null, stopped = false
+    let last = /** @type {boolean | null} */ (null), stopped = false
+    /** 앱 아이콘 설정이 바뀐 경우에만 바로가기 아이콘 적용 (멈춘 뒤에는 무시) */
     const sync = () => {
       if (stopped) return
       const enabled = readLive(config?.appIcon) !== false
       if (enabled === last) return
       last = enabled
-      applyShortcutIcon({ assetsDir: assets, enabled }).catch(() => {})
+      applyIcon({ assetsDir: assets, enabled })
+        .then((result) => { appIconProblem = iconProblem(result) })
+        .catch((error) => { appIconProblem = { reason: 'failed', message: String(error?.message ?? error) } })
     }
     sync()
     const timer = setInterval(sync, 4000)

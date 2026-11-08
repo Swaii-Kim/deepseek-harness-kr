@@ -1,58 +1,57 @@
+// 소스 → 배포 산출물 빌드. 산출물은 커밋한다(GitHub 주소 설치에는 빌드 단계가 없다).
+//   character/standalone.ts → assets/dsc.js   (<script>로 바로 실행: 바깥 펫 창)
+//   plugin/client.ts        → lib/client.js   (DSH 모듈 로더 형식: window.__ModuleLoader__.load)
+//   shared/settings.js      → pet/settings.cjs (펫 Electron 메인 프로세스용, 펫 앱 폴더째 런타임으로 복사된다)
+// esbuild는 devDependency로 설치하거나, ESBUILD에 esbuild/lib/main.js 경로를 넣어 지정한다.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = dirname(here)
 const packageName = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).name
-const original = join(root, 'assets')
-let character = (await readFile(join(original, 'dsc.js'), 'utf8')).replaceAll('\r\n', '\n')
-const replace = (from, to) => {
-  if (!character.includes(from)) throw new Error('Original character changed; adapter requires review: ' + from.slice(0, 100))
-  character = character.replace(from, to)
+const GENERATED = '// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.ts, shared/)를 고친 뒤 npm run build 하세요.'
+
+/** esbuild 불러오기 (ESBUILD 환경 변수 경로 우선, 없으면 esbuild 패키지). 못 불러오면 설치 안내 오류 */
+async function loadEsbuild() {
+  const override = process.env.ESBUILD
+  const loaded = await import(override ? pathToFileURL(override).href : 'esbuild').catch((error) => {
+    throw new Error('esbuild를 불러오지 못했습니다' + (override ? ` (ESBUILD=${override})` : ' (npm install 필요)') + ': ' + error.message)
+  })
+  return loaded.build ? loaded : loaded.default
 }
-replace('const BASE = new URL("./", document.currentScript.src).href;', 'const BASE = ROOT;')
-// Keep original behavior; add only ownership/cancellation boundaries for plugin unload.
-character = character.replaceAll('document.addEventListener(', 'life.listen(document, ')
-character = character.replaceAll('document.createElement(', 'life.own(document.createElement(')
-// The source creates elements with a single literal tag name.
-character = character.replace(/life\.own\(document\.createElement\(("[a-z]+")\)/g, 'life.own(document.createElement($1), (node) => node.remove())')
-replace('app.stage.addChild(model);', 'if (life.stopped) { model.destroy(); return; }\n      app.stage.addChild(model);')
-replace('const model = await', 'life.add(() => app.destroy(true, { children: true }));\n      const model = await')
-replace('if (!window.PIXI.live2d) await load("vendor/cubism4.patched.js");', 'if (!window.PIXI.live2d) await load("vendor/cubism4.patched.js");\n      if (life.stopped) return;')
-// The Core worker is not tied to the PIXI app, so terminate it explicitly when the plugin unloads.
-replace('try { w = new Worker(BASE + "dsc-core-worker.js"); } catch { return; }', 'try { w = new Worker(BASE + "dsc-core-worker.js"); } catch { return; }\n        life.add(() => { try { w.terminate() } catch {} })')
-replace('window.__dsc = {', 'if (life.stopped) return;\n      window.__dsc = {')
-// Stop async initialization even if a fetch finishes after disable.
-replace('const weight = {}, hold = {}, until = {};', 'if (life.stopped) return;\n      const weight = {}, hold = {}, until = {};')
-const dictionaries = JSON.parse(await readFile(join(here, 'locales.ko.json'), 'utf8'))
-// 말풍선 음성(dsh-tts) 브라우저 쪽: 원본 ES 모듈 두 개를 import/export만 걷어 내 한 함수 안에 넣는다.
-const ttsDir = join(root, 'plugins/dsh-tts/src/client')
-const unexport = (source, file, edits) => {
-  let text = source.replaceAll('\r\n', '\n')
-  for (const [from, to] of edits) {
-    if (!text.includes(from)) throw new Error('dsh-tts client changed; build requires review: ' + file + ': ' + from)
-    text = text.replace(from, () => to)
-  }
-  if (/^\s*(import|export)\b/m.test(text)) throw new Error('dsh-tts client has an unhandled import/export: ' + file)
-  return text
-}
-const ttsCore = unexport(await readFile(join(ttsDir, 'core.js'), 'utf8'), 'core.js', [
-  ['export function pcm16ToFloat32', 'function pcm16ToFloat32'],
-  ['export function carryOddByte', 'function carryOddByte'],
-  ['export class ChunkScheduler', 'class ChunkScheduler'],
-])
-const ttsIndex = unexport(await readFile(join(ttsDir, 'index.js'), 'utf8'), 'index.js', [
-  ["import { ChunkScheduler, carryOddByte } from './core.js'\n", ''],
-  ['export const inject = []', 'const inject = []'],
-  ['export async function apply(ctx)', 'async function apply(ctx)'],
-])
-const ttsClient = `function createTtsClient() {\n${ttsCore}\n${ttsIndex}\nreturn { apply }\n}`
-const adapter = (await readFile(join(here, 'client.js'), 'utf8'))
-  .replace('/* ORIGINAL_CHARACTER */', () => character)
-  .replace('/* TTS_CLIENT */', () => ttsClient)
-const result = `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageName)}, factory: (require) => {\nconst module = { exports: {} }; const exports = module.exports;\nconst PLUGIN_ID = ${JSON.stringify(packageName)};\nconst KOREAN_DICTIONARIES = ${JSON.stringify(dictionaries)};\n${adapter}\nreturn module.exports;\n} });\n`
-await writeFile(join(root, 'cordis.patch.yml'), `- insert:\n    - id: deepseek-harness-kr\n      name: ${JSON.stringify(packageName)}\n`)
+
+const esbuild = await loadEsbuild()
+// 결과를 파일에 바로 쓰지 않고 받아서 쓴다: 같은 소스면 같은 바이트가 나오는지(재현성) 테스트가 확인한다
+const common = { bundle: true, platform: 'browser', target: 'es2022', charset: 'utf8', legalComments: 'none', write: false, logLevel: 'warning' }
+
+const character = await esbuild.build({
+  ...common,
+  entryPoints: [join(root, 'character/standalone.ts')],
+  format: 'iife',
+  banner: { js: GENERATED },
+})
+const client = await esbuild.build({
+  ...common,
+  entryPoints: [join(here, 'client.ts')],
+  format: 'cjs',
+  external: ['react'],
+  banner: { js: `${GENERATED}\nwindow.__ModuleLoader__.load({ id: ${JSON.stringify(packageName)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;` },
+  footer: { js: 'return module.exports;\n} });' },
+})
+
+const petSettings = await esbuild.build({
+  ...common,
+  entryPoints: [join(root, 'shared/settings.js')],
+  platform: 'node',
+  format: 'cjs',
+  banner: { js: GENERATED },
+})
+
+await writeFile(join(root, 'assets/dsc.js'), character.outputFiles[0].text)
+await writeFile(join(root, 'pet/settings.cjs'), petSettings.outputFiles[0].text)
 await mkdir(join(root, 'lib'), { recursive: true })
-await writeFile(join(root, 'lib/client.js'), result)
-console.error(`Built independent DSH bundle: ${Object.keys(dictionaries).length} Korean namespaces; original character/assets preserved.`)
+await writeFile(join(root, 'lib/client.js'), client.outputFiles[0].text)
+await writeFile(join(root, 'cordis.patch.yml'), `- insert:\n    - id: deepseek-harness-kr\n      name: ${JSON.stringify(packageName)}\n`)
+const dictionaries = JSON.parse(await readFile(join(here, 'locales.ko.json'), 'utf8'))
+console.error(`Built assets/dsc.js and lib/client.js: ${Object.keys(dictionaries).length} Korean namespaces.`)

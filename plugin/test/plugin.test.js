@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { readSource } from './source.mjs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import React from 'react'
 const require = createRequire(import.meta.url)
@@ -13,26 +14,33 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { JSDOM } from 'jsdom'
-import { apply as hostApply, createAssetHandler, ASSET_PATH, Config, readLive } from '../host.js'
+import { apply as hostApply, createAssetHandler, ASSET_PATH, Config, readLive, STATUS_PATH } from '../host.js'
 import { PET_PATH } from '../pet-host.js'
 
 const packageName = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).name
 const bundle = await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8')
+// 한국어 사전 네임스페이스 수 (plugin/locales.ko.json)
+const KO_NAMESPACES = Object.keys(JSON.parse(await readFile(new URL('../locales.ko.json', import.meta.url), 'utf8'))).length
+// 캐릭터와 플러그인 화면은 createCharacter API로만 통신한다. window에 남은 캐릭터 통신용 전역(__dsc 디버그 핸들 제외)을 모은다
+const dscGlobals = (window) => Object.keys(window).filter((key) => key.startsWith('__dsc'))
 
 test('source build preserves sleep code and matches the committed bundle', async () => {
+  const character = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
   execFileSync(process.execPath, ['plugin/build.mjs'], { cwd: fileURLToPath(new URL('../../', import.meta.url)) })
   assert.equal(await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8'), bundle)
+  assert.equal(await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8'), character, '커밋된 assets/dsc.js도 소스에서 다시 만든 결과와 같아야 한다')
   assert.match(bundle, /sleep_out:/)
   assert.match(bundle, /sleep_back:/)
-  assert.match(bundle, /'절전' : 'Power saving'/)
+  assert.match(bundle, /["']절전["'] : ["']Power saving["']/)
   assert.match(bundle, /sharedTicker: false/)
   assert.match(bundle, /autoUpdate: false/)
   assert.match(bundle, /model.update\(Math.min\(app.ticker.deltaMS, 100\)\)/)
 })
 
 test('sleep cancels departures, protects intro and wakes for waiting cards', async () => {
-  const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
-  for (const code of [source, bundle]) {
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
+  // 번들은 esbuild가 다시 찍어 들여쓰기·이름이 달라지므로 소스 구간을 실행한다 (번들이 소스와 같은지는 위 빌드 재현 테스트가 확인)
+  for (const code of [source]) {
     let now = 100000, timerId = 0, poll, stopped = false, card = null, working = false
     const timers = new Map(), frames = [], events = new Map(), lines = []
     const context = vm.createContext({
@@ -46,9 +54,10 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
       app: { ticker: { get started() { return !stopped }, start: () => { stopped = false }, stop: () => { stopped = true } } },
       setRender: (on) => { stopped = !on },   // 배치 코드가 쓰는 상태 기반 티커 제어 (테스트에선 stopped 로만 확인)
       document: { hidden: false, querySelector: (selector) => selector === 'stop' ? working : selector.includes(card) && card },
-      window: { __dscSleep: { enabled: true, minutes: 0.5 } },
+      prefs: { sleep: { enabled: true, minutes: 0.5 } },
       PET: false, drag: {}, free: {}, link: {},
-      UI: { stop: 'stop', approval: 'approval' }, intro: { phase: 'center' }, walk: { phase: '', slideId: 0, timers: [] },
+      // 화면 읽기(character/harness-signals.js)는 따로 검사하고, 여기서는 그 결과만 흉내 낸다
+      readStatus: () => ({ running: working, waiting: card === 'approval' ? 'approval' : card ? 'question' : null }), intro: { phase: 'center' }, walk: { phase: '', slideId: 0, timers: [] },
       speak: (line) => lines.push(line), say: (line) => lines.push(line), hush() {}, place() {},
       setExp() {}, setMood() {}, play() {}, mutterCheck() {}, flashExp() {},
       TEXT: { approval: 'approval', question: 'question' },
@@ -56,7 +65,8 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
     vm.runInContext('let fleeX = 0, hidden = false, running = false, waitingKind = null, lastSayAt = 0, lastError = 0;', context)
     vm.runInContext(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')), context)
     vm.runInContext(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')), context)
-    const pollStart = code.lastIndexOf('      if (!PET) setInterval(() => {')
+    // 작업 상태 확인 주기와 그 단계 함수(절전 설정 읽기·대기·작업 반응·절전 판정)를 함께 실행한다
+    const pollStart = code.indexOf('      const readSleepPrefs = () => {')
     vm.runInContext(code.slice(pollStart, code.indexOf('      }, 400);', pollStart) + '      }, 400);'.length), context)
     const read = (s) => vm.runInContext(s, context)
     const frame = () => { now += 500; frames.splice(0).forEach((fn) => fn()) }
@@ -72,11 +82,11 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
     for (const trigger of ['work', 'disable', 'approval', 'data-question-reply']) {
       read('sleepGo()')
       if (trigger === 'work') working = true
-      else if (trigger === 'disable') context.window.__dscSleep.enabled = false
+      else if (trigger === 'disable') context.prefs.sleep.enabled = false
       else card = trigger
       poll(); assert.equal(read('SLEEP.state'), 'waking')
       assert.equal(timers.size, 0)
-      frame(); working = false; card = null; context.window.__dscSleep.enabled = true; poll()
+      frame(); working = false; card = null; context.prefs.sleep.enabled = true; poll()
       timers.clear()
     }
     for (const waiting of ['approval', 'data-question-reply']) {
@@ -94,7 +104,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
 })
 
 test('sleep preserves free placement, blocks dragging and never sleeps while the pet is outside', async () => {
-  const code = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+  const code = readSource(new URL('../../character/index.ts', import.meta.url))
   for (const petPage of [false, true]) {
     let now = 0, stopped = false, listeners = 0
     const frames = [], timers = [], lines = []
@@ -114,7 +124,8 @@ test('sleep preserves free placement, blocks dragging and never sleeps while the
     run('let fleeX = 0, hidden = false, running = false, waitingKind = null, snapP = 0;')
     run(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')))
     run(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')))
-    run(code.slice(code.indexOf('      const dockPose ='), code.indexOf('      const GLIDE =')))
+    // 자유 위치 계산 단계(애니메이션 끝·미끄러짐·창 비율 자리)와 dockPose를 함께 실행한다
+    run(code.slice(code.indexOf('      const finishFreeAnim ='), code.indexOf('      const GLIDE =')))
     assert.equal(listeners, petPage ? 0 : 6)
     if (petPage) { run('sleepGo()'); assert.equal(run('SLEEP.state'), 'active'); assert.equal(stopped, false); continue }
     for (const guard of ['drag.on', 'drag.pending', 'free.anim']) {
@@ -266,7 +277,7 @@ test('character shortcut debounces, guards permissions/failures and disposes', a
     resolveSave(true); await new Promise((resolve) => setImmediate(resolve))
     ctx.dispose()
     await wait(180); await key(); assert.equal(calls, pendingCalls + 1)
-    assert.equal(h.dom.window.__dscSleep, undefined)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
@@ -353,7 +364,7 @@ test('empty drag key stays empty so both buttons are required again', () => {
   const h = clientHarness({ character: true, theme: false, translation: false, dragKey: '' })
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
-    assert.equal(h.dom.window.__dscDrag?.key, '', '빈 값이 Alt로 되돌아가면 안 된다')
+    assert.equal(h.client.internals.linkOf(ctx).prefs.drag.key, '', '빈 값이 Alt로 되돌아가면 안 된다')
     const Page = h.pages.get(packageName + '#deepseek-harness-kr')
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
     assert.match(html, /aria-label="Record drag key"[^>]*value=""/)
@@ -457,9 +468,10 @@ test('canvas shortcut row is disabled while the character setting is off', () =>
 
 test('settings page explains a hidden canvas instead of implying the setting is off', () => {
   const h = clientHarness({ character: true, theme: true, translation: true, canvasToggle: true })
-  h.dom.window.__dscCanvasHidden = () => true
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
+    // 모델이 준비된 캐릭터 대신 숨김 상태만 알려 주는 가짜 캐릭터를 붙인다
+    h.client.internals.linkOf(ctx).attach({ setPrefs() {}, canvasHidden: () => true, toggleCanvas: () => {} })
     const Page = h.pages.get(packageName + '#deepseek-harness-kr')
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
     assert.match(html, /The canvas is hidden right now \(the character setting is still on\)/)
@@ -473,7 +485,7 @@ test('pet window shortcut calls the toggle the character exposes', () => {
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
     let calls = 0
-    h.dom.window.__dscPetToggle = () => { calls++ }
+    h.client.internals.linkOf(ctx).attach({ setPrefs() {}, canvasHidden: () => false, togglePet: () => { calls++ } })
     const press = (extra = {}, target = h.dom.window) => {
       const event = new h.dom.window.KeyboardEvent('keydown', { key: 'P', code: 'KeyP', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true, ...extra })
       target.dispatchEvent(event)
@@ -498,7 +510,7 @@ test('canvas shortcut only runs when enabled and works inside the composer', asy
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
     let calls = 0
-    h.dom.window.__dscCanvasToggle = () => { calls++ }
+    h.client.internals.linkOf(ctx).attach({ setPrefs() {}, canvasHidden: () => false, toggleCanvas: () => { calls++ } })
     const fire = (type, extra = {}, target = h.dom.window) => {
       const event = new h.dom.window.KeyboardEvent(type, { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true, ...extra })
       target.dispatchEvent(event)
@@ -533,20 +545,53 @@ test('pet window settings panel is tall enough to avoid a needless scrollbar', a
   assert.doesNotMatch(css, /#dsc-pet-panel \{[^}]*max-height: 440px/)
 })
 
-test('character source supports modifier drag and a pet window toggle', async () => {
-  const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
-  for (const code of [source, bundle]) {
-    assert.match(code, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
-    assert.match(code, /window\.__dscPetToggle = petToggle/)
-    assert.match(code, /link\.queue\.push\(\["drag", \[dragKeyRaw\(\)\]\]\)/)
-    assert.match(code, /fn === "drag"\) window\.__dscDrag = \{ key: a\[0\] \}/)
-    assert.match(code, /fn === "dragheld"\)/)
-    assert.match(code, /window\.__dscCanvasToggle = \(\) => setHidden\(!hidden\)/)
-    assert.match(code, /id = "dsc-hide-chip"/)
-    assert.match(code, /\["earHide", "동물귀 숨기기"\]/)   // 펫 창 우클릭 소품·옷 메뉴에도 같은 항목
-  }
+test('solid bubble tail raises its opening so the border edge does not show as a line', async () => {
+  // 말풍선이 소수 픽셀 위치에 놓이면 테두리 위쪽 가장자리가 꼬리 입구에 가는 가로줄로 비친다 (점선 꼬리와 같은 방식)
+  const css = await readFile(new URL('../../assets/character.css', import.meta.url), 'utf8')
+  const tail = css.match(/#dsc-bubble::after \{[^}]*\}/)[0]
+  assert.match(tail, /clip-path: polygon\(100% 0, 12px 2px, 12px 1\.29px, 1\.29px 12px, 2px 12px, 0 100%, 100% 100%\)/)
 })
 
+test('character source supports modifier drag and a pet window toggle', async () => {
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
+  for (const code of [source, bundle]) {
+    assert.match(code, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
+    assert.match(code, /hooks\.togglePet = link\.toggle/)
+    assert.match(code, /const list\s*= \[\["drag", \[dragKeyRaw\(\)\]\]\];/)   // 펫 창이 보이기 시작할 때 이동 키를 보낸다 (petLinkDragMessages)
+    assert.match(code, /hooks\.toggleCanvas = \(\) => setHidden\(!hidden\)/)
+    assert.match(code, /id = "dsc-hide-chip"/)
+  }
+  // 펫 창은 창 안 캐릭터가 보낸 이동 키와 키 눌림 상태를 받는다 (번들은 esbuild가 줄을 바꿔 찍어 소스로 확인)
+  assert.match(source, /drag: \(args\) => \{ prefs\.drag = \{ key: args\[0\] \}; \}/)
+  assert.match(source, /dragheld: \(args\) =>/)
+  // 펫 창 설정 패널 항목은 공용 정의에서 만든다
+  assert.match(source, /const PET_OUTFIT_ROWS = OUTFIT_ITEMS\.map\(/)
+})
+
+test('outfit and body items come from one shared definition everywhere', async () => {
+  const shared = await import('../../shared/settings.js')
+  const keys = shared.OUTFIT_ITEMS.map((item) => item.key)
+  assert.ok(keys.includes('earHide'))
+  // 호스트 설정 스키마: 항목마다 끔 기본값, 체형은 정의된 값만
+  const defaults = readLive(Config({}))
+  for (const key of keys) assert.equal(defaults[key], false, key)
+  assert.equal(defaults.bodyType, 'default')
+  assert.throws(() => Config({ bodyType: 'type3' }))
+  // 설정 화면·캐릭터 값: 같은 항목 + 체형
+  const h = clientHarness({ character: false, theme: false, translation: false })
+  try {
+    const prefs = h.client.internals.characterPrefs({ glasses: true })
+    assert.deepEqual(Object.keys(prefs.outfit), [...keys, 'bodyType'])
+    assert.equal(prefs.outfit.glasses, true)
+  } finally { h.dom.window.close() }
+  // 펫 Electron 메뉴용 산출물도 같은 정의 (빌드가 만든 pet/settings.cjs)
+  const pet = require('../../pet/settings.cjs')
+  assert.deepEqual(pet.OUTFIT_ITEMS, shared.OUTFIT_ITEMS)
+  assert.deepEqual(pet.BODY_TYPES, shared.BODY_TYPES)
+  const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
+  assert.match(main, /require\('\.\/settings\.cjs'\)/)
+  assert.match(main, /const MENU_OUTFIT = OUTFIT_ITEMS\.map\(/)
+})
 test('sleep minutes are bounded in schema and client settings', () => {
   assert.equal(Config.dict.idleSleepMinutes.meta.min, 0.5)
   assert.equal(Config.dict.idleSleepMinutes.meta.max, 60)
@@ -556,7 +601,7 @@ test('sleep minutes are bounded in schema and client settings', () => {
     const ctx = h.ctx(); h.client.apply(ctx)
     for (const [value, expected] of [[undefined, 1], [NaN, 1], [Infinity, 1], [-1, 0.5], [0.5, 0.5], [60, 60], [100, 60]]) {
       h.form.update({ character: false, theme: false, translation: false, idleSleepMinutes: value })
-      assert.equal(h.dom.window.__dscSleep.minutes, expected)
+      assert.equal(h.client.internals.linkOf(ctx).prefs.sleep.minutes, expected)
     }
     ctx.dispose()
   } finally { h.dom.window.close() }
@@ -569,10 +614,10 @@ test('client registers Korean independently, mounts once, and rolls back on disa
     h.client.apply(first)
     assert(h.languages.has('ko'))
     assert.equal(h.selected, 'en', 'installation must not overwrite the user language')
-    assert.equal(h.dictionaries.size, 54)
+    assert.equal(h.dictionaries.size, KO_NAMESPACES)
     assert.equal(h.dictionaries.get('settings.theme/ko')['appearance.title'], '모양')
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 1)
-    assert.equal(h.dom.window.document.querySelectorAll('link').length, 2)
+    assert.equal(h.dom.window.document.querySelectorAll('link').length, 3)   // character.css, theme.css, korean.css
     first.dispose()
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage, #dsc-bubble, link').length, 0)
     assert.equal(h.dictionaries.size, 0)
@@ -584,6 +629,7 @@ test('client registers Korean independently, mounts once, and rolls back on disa
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(modelDestroyed, 1, 'late model completion must be disposed')
     assert.equal(h.dom.window.__dsc, undefined)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
@@ -602,22 +648,21 @@ test('plugin and automation panels hide only the in-window character and clean u
   }
   const h = clientHarness({ character: false, theme: false, translation: false }, 'ready', { layout })
   try {
-    const events = []
-    h.dom.window.addEventListener('dsc:page-hidden', () => events.push(h.dom.window.__dscPageHidden))
     const ctx = h.ctx()
     h.client.apply(ctx)
-    assert.equal(h.dom.window.__dscPageHidden, false)
+    const link = h.client.internals.linkOf(ctx)
+    assert.equal(link.pageHidden, false)
     select('plugins')
-    assert.equal(h.dom.window.__dscPageHidden, true, 'plugins panel must hide the in-window character')
+    assert.equal(link.pageHidden, true, 'plugins panel must hide the in-window character')
     select(null)
-    assert.equal(h.dom.window.__dscPageHidden, false, 'conversation must restore the in-window character')
+    assert.equal(link.pageHidden, false, 'conversation must restore the in-window character')
     select('schedules')
-    assert.equal(h.dom.window.__dscPageHidden, true, 'automation panel must hide the in-window character')
+    assert.equal(link.pageHidden, true, 'automation panel must hide the in-window character')
     select('plugins')
     ctx.dispose()
-    assert.equal(h.dom.window.__dscPageHidden, false, 'unloading the plugin must clear the panel override')
+    assert.equal(link.pageHidden, false, 'unloading the plugin must clear the panel override')
     assert.equal(listeners.size, 0, 'the layout subscription must be released')
-    assert.equal(events.at(-1), false)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
@@ -634,15 +679,16 @@ test('a stale panel-visibility disposer does not clear a reinjected instance sta
   try {
     const first = h.ctx()
     h.client.apply(first)
-    assert.equal(h.dom.window.__dscPageHidden, true)
+    assert.equal(h.client.internals.linkOf(first).pageHidden, true)
     const second = h.ctx()
     h.client.apply(second)
-    assert.equal(h.dom.window.__dscPageHidden, true)
+    const link = h.client.internals.linkOf(second)
+    assert.equal(link.pageHidden, true)
     first.dispose()
-    assert.equal(h.dom.window.__dscPageHidden, true, 'the old instance must not reset the new instance override')
+    assert.equal(link.pageHidden, true, 'the old instance must not reset the new instance override')
     assert.equal(listeners.size, 1, 'only the old subscription is released')
     second.dispose()
-    assert.equal(h.dom.window.__dscPageHidden, false)
+    assert.equal(link.pageHidden, false)
     assert.equal(listeners.size, 0)
   } finally { h.dom.window.close() }
 })
@@ -656,7 +702,7 @@ test('reinjection takes over without duplicate dictionaries or stale disposer re
     h.client.apply(second)
     first.dispose()
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 1)
-    assert.equal(h.dictionaries.size, 54)
+    assert.equal(h.dictionaries.size, KO_NAMESPACES)
     second.dispose()
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 0)
     assert.equal(h.dictionaries.size, 0)
@@ -700,10 +746,12 @@ test('Host asset route serves only its files and unregisters with the plugin', a
     assert.equal((await fetch(url + ASSET_PATH + '/..%5coutside.json')).status, 404)
     assert.equal((await fetch(url + ASSET_PATH + '/model.json', { method: 'POST' })).status, 405)
     assert.equal((await fetch(url + ASSET_PATH + '/%zz')).status, 400)
-    const registrations = new Map(), disposers = []
-    hostApply({ effect(fn) { disposers.push(fn()) }, webServer: { register(route) { registrations.set(route.path, route); return () => registrations.delete(route.path) } } })
+    const registrations = new Map(), disposers = [], icons = []
+    const applyIcon = async (options) => { icons.push(options.enabled); return {} }
+    hostApply({ effect(fn) { disposers.push(fn()) }, webServer: { register(route) { registrations.set(route.path, route); return () => registrations.delete(route.path) } } }, undefined, { applyIcon })
+    assert.deepEqual(icons, [true], 'app icon defaults to on, through the injected function only')
     assert.equal(registrations.get(ASSET_PATH).kind, 'prefix')
-    assert.deepEqual([...registrations.keys()].sort(), [ASSET_PATH, PET_PATH, '/dsh-tts/speak', '/dsh-tts/state'].sort())
+    assert.deepEqual([...registrations.keys()].sort(), [ASSET_PATH, STATUS_PATH, PET_PATH, '/dsh-tts/speak', '/dsh-tts/state'].sort())
     for (const dispose of disposers) dispose()
     assert.equal(registrations.size, 0)
   } finally {
@@ -723,7 +771,8 @@ test('all eight combinations mount only the selected features', () => {
       assert.equal(!!doc.querySelector('link[href$="character.css"]'), character)
       assert.equal(!!doc.querySelector('link[href$="theme.css"]'), theme)
       assert.equal(h.languages.has('ko'), translation)
-      assert.equal(h.dictionaries.size, translation ? 54 : 0)
+      assert.equal(!!doc.querySelector('link[href$="korean.css"]'), translation, '한국어 줄바꿈은 번역 기능과 함께 켜지고 꺼진다')
+      assert.equal(h.dictionaries.size, translation ? KO_NAMESPACES : 0)
       assert.equal(doc.body.hasAttribute('data-ds-dark-theme'), true, 'theme and character keep the app dark mode')
       assert.equal(h.pages.size, 1, 'settings remain available even when every feature is off')
       ctx.dispose()
@@ -742,6 +791,7 @@ test('live changes preserve unrelated features and dispose character resources i
     assert.equal(h.appDestroyed, 0)
     await h.form.set('translation', false)
     assert.equal(h.dictionaries.size, 0)
+    assert(!doc.querySelector('link[href$="korean.css"]'))
     assert.equal(doc.querySelector('#dsc-stage'), canvas)
     await h.form.set('character', false)
     assert.equal(h.appDestroyed, 1)
@@ -756,6 +806,15 @@ test('live changes preserve unrelated features and dispose character resources i
     ctx.dispose()
     assert.equal(h.pages.size, 0)
   } finally { h.dom.window.close() }
+})
+
+test('한국어 줄바꿈은 한국어 화면에서만 낱말 중간을 끊지 않고, 긴 글자는 넘치지 않게 자른다', async () => {
+  const css = await readFile(new URL('../../assets/korean.css', import.meta.url), 'utf8')
+  const rule = css.match(/html:lang\(ko\) body \{([^}]*)\}/)
+  assert(rule, 'DSH가 넣는 <html lang>으로 한국어 화면만 고른다')
+  assert.match(rule[1], /word-break: keep-all;/)
+  assert.match(rule[1], /overflow-wrap: break-word;/)
+  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ''), /text-wrap/, '검토 결과 text-wrap: pretty는 쓰지 않음')
 })
 
 test('stored disabled values do not flash features while configuration is loading', () => {
@@ -782,7 +841,7 @@ test('plugin settings page exposes feature and power saving switches', () => {
     assert.match(html, /Character and speech bubbles/)
     assert.match(html, /Show character on mobile/)
     assert.match(html, /Intro on startup/)
-    assert.match(html, /App shortcut icon/)
+    assert.match(html, /App icon \(Windows, macOS\)/)
     assert.match(html, /Pastel theme/)
     assert.match(html, /Korean language pack/)
     assert.match(html, /aria-label="Power saving"/)
@@ -803,20 +862,28 @@ test('settings page offers accessories, outfit and body type, and shares them wi
     assert.doesNotMatch(html, /basin|Lean forward/i)
     assert.equal((html.match(/type="radio"/g) || []).length, 3)
     assert.match(html, /type="radio" name="deepseek-harness-kr-body" checked=""[^>]*\/><span>Body type 2 \(chibi\)/)
-    assert.deepEqual({ ...h.dom.window.__dscOutfit }, { glasses: true, monocle: false, skirt: false, chestClothes: false, shoesOff: false, tailHide: false, earHide: false, bodyType: 'type2' })
+    const link = h.client.internals.linkOf(ctx)
+    const outfit = () => ({ ...link.prefs.outfit })
+    assert.deepEqual(outfit(), { glasses: true, monocle: false, skirt: false, chestClothes: false, shoesOff: false, tailHide: false, earHide: false, bodyType: 'type2' })
+    // 붙어 있는 캐릭터에도 같은 값이 전달된다
+    const sent = []
+    link.attach({ setPrefs: (next) => { if (next.outfit) sent.push(next.outfit.bodyType) }, canvasHidden: () => false })
     await h.form.set('bodyType', 'type1')
-    assert.equal(h.dom.window.__dscOutfit.bodyType, 'type1')
+    assert.equal(outfit().bodyType, 'type1')
+    assert.deepEqual(sent, ['type1'])
     await h.form.set('earHide', true)
-    assert.equal(h.dom.window.__dscOutfit.earHide, true, '귀 숨김 설정이 캐릭터(아웃핏)로 동기화되어야 한다')
+    assert.equal(outfit().earHide, true, '귀 숨김 설정이 캐릭터(아웃핏)로 동기화되어야 한다')
     await h.form.set('earHide', false)
-    assert.equal(h.dom.window.__dscOutfit.earHide, false)
+    assert.equal(outfit().earHide, false)
     ctx.dispose()
-    assert.equal(h.dom.window.__dscOutfit, undefined)
+    assert.deepEqual(dscGlobals(h.dom.window), [])
   } finally { h.dom.window.close() }
 })
 
-test('core worker is registered for termination when the plugin unloads', () => {
-  assert.match(bundle, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\) \} catch \{\} \}\)/)
+test('core worker is registered for termination when the plugin unloads', async () => {
+  const source = readSource(new URL('../../character/index.ts', import.meta.url))
+  assert.match(source, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\);? \} catch \{\} \}\)/)
+  assert.match(bundle, /w\.terminate\(\)/)
 })
 
 test('update source parsing and version comparison', () => {
@@ -973,9 +1040,9 @@ test('voice settings default to off with no endpoint, model or voice', () => {
 test('Host speech routes read live settings and stay 404 while disabled', async () => {
   const live = (value) => ({ get: () => value, set(next) { value = next } })
   const enabled = live(false), baseUrl = live(''), rate = live(24000)
-  const routes = new Map()
-  hostApply({ connection: { requestRejection: () => undefined }, effect(fn) { fn() }, webServer: { register(route) { routes.set(route.path, route.handler); return () => {} } } },
-    { tts: { enabled, openai: { baseUrl, apiKeyEnv: live('') }, stream: { pcmSampleRate: rate } } })
+  const routes = new Map(), disposers = []
+  hostApply({ connection: { requestRejection: () => undefined }, effect(fn) { disposers.push(fn()) }, webServer: { register(route) { routes.set(route.path, route.handler); return () => {} } } },
+    { tts: { enabled, openai: { baseUrl, apiKeyEnv: live('') }, stream: { pcmSampleRate: rate } } }, { applyIcon: async () => ({}) })
   const server = createServer((req, res) => (routes.get(req.url) ?? ((_, r) => r.writeHead(404).end()))(req, res))
   server.listen(0, '127.0.0.1'); await once(server, 'listening')
   const url = 'http://127.0.0.1:' + server.address().port
@@ -985,7 +1052,7 @@ test('Host speech routes read live settings and stay 404 while disabled', async 
     assert.equal((await (await fetch(url + '/dsh-tts/state')).json()).enabled, false, 'on without a URL stays detached')
     baseUrl.set('http://127.0.0.1:9/v1'); rate.set(44100)
     assert.deepEqual(await (await fetch(url + '/dsh-tts/state')).json(), { enabled: true, pcmSampleRate: 44100, voiceLines: { reactions: true, status: false, mutters: false, others: true } })
-  } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)) }
+  } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); disposers.forEach((dispose) => dispose?.()) }
 })
 
 function voiceFetch(h) {

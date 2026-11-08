@@ -13,12 +13,12 @@
   "files": [
     "plugin/host.js",
     "plugin/app-icon.js",
-    "plugin/client.js",
     "plugins/dsh-tts/src/cache.js",
     "plugins/dsh-tts/src/config.js",
     "plugins/dsh-tts/src/host.js",
     "plugins/dsh-tts/src/index.js",
     "plugin/pet-host.js",
+    "shared/settings.js",
     "lib/client.js",
     "assets/",
     "pet/",
@@ -29,7 +29,9 @@
   "scripts": {
     "build": "node plugin/build.mjs",
     "test": "node --test plugin/test/*.test.js plugins/dsh-tts/test/*.test.js",
-    "locales:extract": "node plugin/extract-locales.mjs"
+    "typecheck": "tsc -p tsconfig.json",
+    "trace:diff": "node plugin/test/trace/harness.mjs --diff",
+    "locales": "node plugin/locales.mjs report"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -55,10 +57,14 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.2.17",
+    "@types/node": "24.10.1",
+    "@types/react": "18.3.26",
     "acorn": "^8.15.0",
+    "esbuild": "0.25.11",
     "jsdom": "^27.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "typescript": "5.9.3"
   },
   "publishConfig": {
     "access": "public"

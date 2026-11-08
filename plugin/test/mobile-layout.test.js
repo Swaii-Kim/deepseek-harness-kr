@@ -1,15 +1,15 @@
 import test from 'node:test'
+import { readSource } from './source.mjs'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import { Config, readLive } from '../host.js'
 
 const root = new URL('../../', import.meta.url)
-const source = await readFile(new URL('assets/dsc.js', root), 'utf8')
+const source = readSource(new URL('character/index.ts', root))
 
 // 배치 계산은 캔버스·DOM과 분리된 순수 함수라, 소스에서 그 구간만 떼어 내 검증한다.
-const slice = source.slice(source.indexOf('const HOME_GAP = 8'), source.indexOf('      let curK = 1, fleeX = 0;'))
-const { homeLayout, bubbleLayout, SHOW_K } = vm.runInContext(slice + '\n({ homeLayout, bubbleLayout, SHOW_K })', vm.createContext({}))
+const { homeLayout, bubbleLayout, SHOW_K } = await import('../../character/layout.ts')
 
 const dims = { W: 300, visW: 300, H: 300, visH: 285 }
 
@@ -176,18 +176,21 @@ test('모드가 다른 자유 위치는 현재 화면에 적용하지 않는다'
 })
 
 test('데스크톱 말풍선 꼬리는 코를 따르고(오른쪽 10px 고정 아님), 아래 공간이 없으면 위로 clamp한다', () => {
-  assert.match(source, /if \(!coarsePointer\(\) && !home\.above\)/)
+  assert.match(source, /else if \(!coarsePointer\(\) && !spot\.home\.above\) placeDesktopBubble\(spot\);/)
   assert.match(source, /bubble\.style\.right = tailRight\(\{ noseX, width: innerWidth, tail \}\)/)
   assert.doesNotMatch(source, /bubble\.style\.right = loose \? Math\.max\(10, innerWidth - \(x \+ W \* k \/ 2 \+ 55\)\)/)
-  assert.match(source, /sideTop \+ bubble\.offsetHeight <= innerHeight - HOME_GAP/)
+  assert.match(source, /belowCard \+ bubble\.offsetHeight <= innerHeight - HOME_GAP/)
   assert.match(source, /bubble\.style\.top = Math\.max\(8, Math\.min\(innerHeight - bubble\.offsetHeight - HOME_GAP/)
 })
 
-test('제자리 최소 크기 보정에서도 말풍선은 화면 오른쪽 기준을 유지한다', () => {
-  const loose = source.slice(source.indexOf('const loose ='), source.indexOf('if (!coarsePointer() && !home.above)'))
-  assert.match(loose, /const loose = PET \|\| \(free\.on && free\.applied\) \|\| !!free\.anim/)
-  assert.doesNotMatch(loose, /dock !== home/)
-  assert.match(source, /bubble\.style\.right = loose \? innerWidth - \(x \+ \(W - visW\) \/ 2 \* k\) \+ 8 \+ "px" : "10px"/)
+test('데스크톱 말풍선이 입력창과 겹치면 입력창 아래·머리 위로 내리고 아래 꼬리로 캐릭터를 가리킨다', () => {
+  // 옆 꼬리(.side)는 말풍선 오른쪽에 캐릭터가 있을 때만 맞는다. 데스크톱은 꼬리를 코에 맞춘 머리 위 배치를 유지한다.
+  const start = source.indexOf('const placeDesktopBubble =')
+  const desktop = source.slice(start, source.indexOf('const placeMobileBubble =', start))
+  assert.doesNotMatch(desktop, /classList\.add\("side"\)/)
+  assert.match(desktop, /const belowCard = cardBox\.bottom \+ 8;/)
+  assert.doesNotMatch(source, /bubble\.style\.right = [^;\n]*: "10px"/)
+  assert.doesNotMatch(source, /looseBubble/)
 })
 
 test('카드 아래 공간이 없을 때 말풍선은 뷰포트 안에 남는다', () => {
@@ -204,16 +207,18 @@ test('모바일에서는 컴포저 포커스만으로 숨기지 않고 키보드
 })
 
 test('캐릭터 바깥에서 시작한 터치 스크롤을 캐릭터 위에서 막지 않는다', () => {
-  const touchMove = source.slice(source.indexOf('document.addEventListener("touchmove"'), source.indexOf('document.addEventListener("wheel"'))
+  const touchMove = source.slice(source.indexOf('life.listen(document, "touchmove"'), source.indexOf('life.listen(document, "wheel"'))
   assert.match(touchMove, /drag\.on \|\| drag\.pending/)
   assert.doesNotMatch(touchMove, /hitAt/)
 })
 
 test('모바일 숨김과 키보드 숨김 상태에서는 시작 인트로를 끝낸다', () => {
-  const hidden = source.slice(source.indexOf('if (mobileHidden())'), source.indexOf('if (typingActive())'))
-  const typing = source.slice(source.indexOf('if (typingActive())'), source.indexOf('const home = homePose();'))
-  assert.match(hidden, /skipIntro\(\)/)
-  assert.match(typing, /skipIntro\(\)/)
+  // 두 경우는 placeBlocked()의 한 분기에서 함께 처리한다
+  const start = source.indexOf('if (mobileHidden() || typingActive()) {')
+  const branch = source.slice(start, source.indexOf('return true;', start))
+  assert.ok(start >= 0, '모바일 숨김·입력 중 분기가 있어야 한다')
+  assert.match(branch, /skipIntro\(\)/)
+  assert.match(branch, /setRender\(false\)/)
 })
 
 test('위로 올린 자리는 panned visualViewport에서도 카드 바로 위에 붙는다', () => {
@@ -240,7 +245,9 @@ test('입력 모드가 바뀌어도 세션의 자유 위치 상태를 지우지 
 
 test('모바일 자유 위치는 카드가 잠깐 없을 때 저장된 크기로 안정된다', () => {
   assert.match(source, /coarsePointer\(\) && home\.r \? home\.k : free\.k/)
-  assert.match(source, /!PET && coarsePointer\(\)\) return;.*모바일에서는 캐릭터 위 휠/)
+  // 모바일에서는 캐릭터 위 휠이 대화 스크롤을 막지 않게 크기 조절에서 뺀다
+  assert.match(source, /const wheelResizes = \(e\) => \(PET \|\| !coarsePointer\(\)\) &&/)
+  assert.match(source, /if \(!wheelResizes\(e\)\) return;/)
 })
 
 test('피할 자리가 없는 제자리는 SHOW_K로 끌어올리지 않는다', () => {

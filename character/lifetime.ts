@@ -1,0 +1,80 @@
+// 타이머·프레임·리스너·DOM 감시·정리 함수를 한데 묶어 dispose 한 번으로 모두 정리하는 수명 객체.
+// 플러그인 화면은 기능마다 하나씩 만들어 끌 때 정리하고, 펫 창은 하나를 만들어 창이 닫힐 때까지 쓴다.
+/** 수명 객체: 등록한 타이머·프레임·리스너·감시·정리 함수를 dispose 한 번으로 정리 */
+export interface Lifetime {
+  add(cleanup: () => void): void
+  timeout(fn: (...args: any[]) => void, ms?: number, ...args: any[]): number
+  interval(fn: (...args: any[]) => void, ms?: number, ...args: any[]): number
+  frame(fn: (time: number) => void): number
+  listen(target: EventTarget, type: string, fn: (event: any) => void, options?: boolean | AddEventListenerOptions): void
+  observe(fn: MutationCallback): MutationObserver
+  own<T>(value: T, cleanup: (value: T) => void): T
+  readonly stopped: boolean
+  dispose(): void
+}
+
+/** 새 수명 객체 생성 */
+export function createLifetime(): Lifetime {
+  let stopped = false
+  const cleanups: Array<() => void> = []
+  const timers = new Set<number>(), intervals = new Set<number>(), frames = new Set<number>()
+  /** 정리 함수 등록 (이미 정리된 뒤면 바로 실행) */
+  const add = (cleanup: () => void) => { if (stopped) cleanup(); else cleanups.push(cleanup) }
+  /**
+   * 정리 때 취소되는 setTimeout
+   * @returns 타이머 id (이미 정리된 뒤면 0)
+   */
+  const timeout: Lifetime['timeout'] = (fn, ms, ...args) => {
+    if (stopped) return 0
+    const id = window.setTimeout(() => { timers.delete(id); if (!stopped) fn(...args) }, ms)
+    timers.add(id); return id
+  }
+  /**
+   * 정리 때 취소되는 setInterval
+   * @returns 타이머 id (이미 정리된 뒤면 0)
+   */
+  const interval: Lifetime['interval'] = (fn, ms, ...args) => {
+    if (stopped) return 0
+    const id = window.setInterval(() => { if (!stopped) fn(...args) }, ms)
+    intervals.add(id); return id
+  }
+  /**
+   * 정리 때 취소되는 requestAnimationFrame
+   * @returns 프레임 요청 id (이미 정리된 뒤면 0)
+   */
+  const frame: Lifetime['frame'] = (fn) => {
+    if (stopped) return 0
+    const id = window.requestAnimationFrame((time) => { frames.delete(id); if (!stopped) fn(time) })
+    frames.add(id); return id
+  }
+  /** 정리 때 떼어지는 이벤트 리스너 등록 (이미 정리된 뒤면 무시) */
+  const listen: Lifetime['listen'] = (target, type, fn, options) => {
+    if (stopped) return
+    target.addEventListener(type, fn, options)
+    add(() => target.removeEventListener(type, fn, options))
+  }
+  /** 정리 때 끊기는 MutationObserver 생성 (정리된 뒤 온 변경은 무시, observe() 호출은 받는 쪽 몫) */
+  const observe: Lifetime['observe'] = (fn) => {
+    const observer = new window.MutationObserver((...args) => { if (!stopped) fn(...args) })
+    add(() => observer.disconnect())
+    return observer
+  }
+  /** 값과 그 정리 함수 등록. 받은 값 그대로 반환 */
+  const own: Lifetime['own'] = (value, cleanup) => { add(() => cleanup(value)); return value }
+  return {
+    add, timeout, interval, frame, listen, observe, own,
+    /** 정리 여부 */
+    get stopped() { return stopped },
+    /** 타이머·프레임 취소 뒤 정리 함수를 등록 역순으로 실행 (한 번만, 실패는 경고만) */
+    dispose() {
+      if (stopped) return
+      stopped = true
+      for (const id of timers) window.clearTimeout(id)
+      for (const id of intervals) window.clearInterval(id)
+      for (const id of frames) window.cancelAnimationFrame(id)
+      for (const cleanup of cleanups.reverse()) {
+        try { cleanup() } catch (error) { console.warn('DeepSeek짱 cleanup:', error) }
+      }
+    },
+  }
+}

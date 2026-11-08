@@ -3,20 +3,22 @@ import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import vm from 'node:vm'
+import { readSource } from './source.mjs'
+import * as walkApi from '../../character/pet-walk.ts'
 
 const require = createRequire(import.meta.url)
 const { createPlacer } = require('../../pet/placement.cjs')
-const source = await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8')
+// 산책 경로 계산(순수 함수)은 character/pet-walk.ts에서 그대로 불러 실행하고,
+// 상태를 다루는 산책 단계 함수는 character/index.ts 소스 구간을 잘라(타입만 지운 채) vm에서 실행한다.
+const source = readSource(new URL('../../character/index.ts', import.meta.url))
 const mainSource = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
-const planStart = source.indexOf('      // ---------- 외부 펫 산책 경로 계산 (순수 함수')
-const planEnd = source.indexOf('      // ---------- 외부 펫 산책 경로 계산 끝 ----------')
-assert.ok(planStart > 0 && planEnd > planStart, 'pure walk-plan block markers must stay in assets/dsc.js')
-const context = vm.createContext({})
-vm.runInContext(source.slice(planStart, planEnd) + `
-  globalThis.api = { walkAreaValid, walkDisplayArea, walkBodySpan, planWalkOut, walkSafePose,
-    planWalkReturn, walkOutAlpha, walkInAlpha, walkClipInset };
-`, context)
-const api = context.api
+/** 소스에서 start 표시부터 end 표시 앞까지 (둘 다 있어야 함) */
+const between = (start, end) => {
+  const from = source.indexOf(start), to = source.indexOf(end)
+  assert.ok(from > 0 && to > from, `character/index.ts 구간 표시를 찾지 못함: ${start.trim()} … ${end.trim()}`)
+  return source.slice(from, to)
+}
+const api = walkApi
 const plain = (value) => JSON.parse(JSON.stringify(value))
 
 // 화면 기하 mock: 실제 Electron/모니터 없이 DIP 사각형만 계산한다. 실기기 검증이 아니다.
@@ -154,10 +156,10 @@ test('표시장치 변경 fallback: 새 workArea 안전 자리로 옮기고 완�
 test('산책 중 표시장치 제거·workArea 변경: 완전 투명 + 새 안전 자리로 복구한다', () => {
   let now = 1000, frames = []
   const ctx = vm.createContext({
+    ...api,   // character/pet-walk.ts 순수 함수 (index.ts가 import하는 이름 그대로)
     performance: { now: () => now }, W: 300, H: 300, visW: 100, PET: true, innerWidth: 300, innerHeight: 450,
     setTimeout: () => 1, clearTimeout: () => {}, requestAnimationFrame: (fn) => frames.push(fn), place: () => {},
   })
-  vm.runInContext(source.slice(planStart, planEnd), ctx)
   vm.runInContext(`
     let fleeX = 0, lastPlaceKey = '';
     const shown = { k: 1, x: 100, y: 200 };
@@ -167,7 +169,7 @@ test('산책 중 표시장치 제거·workArea 변경: 완전 투명 + 새 안�
       base: { k: 1, x: 100, y: 200 }, displayId: '1', displayRequest: 1, alpha: 1, opacityApplied: false, returnFade: 0, recoverTimer: 0 };
     const petDisplay = { id: '1', area: { l: 0, t: 0, r: 1920, b: 1080 }, scaleFactor: 1, request: 1, answered: 1, at: 1000 };
   `, ctx)
-  vm.runInContext(source.slice(source.indexOf('      const startRecoverFade ='), source.indexOf('      const walkBack =')) + `
+  vm.runInContext(between('      const startRecoverFade =', '      const walkBack =') + `
     globalThis.applyDisplay = applyPetDisplay;
     globalThis.startRecoverFade = startRecoverFade;
   `, ctx)
@@ -225,10 +227,10 @@ test('PET 복귀 faceTo: 양방향 모두 실제 이동 방향을 본다 (기존
 
 test('표시장치 추가 알림만으로는 산책 중 출발 monitor를 바꾸지 않는다 (topology 통합)', () => {
   const ctx = vm.createContext({
+    ...api,   // character/pet-walk.ts 순수 함수 (index.ts가 import하는 이름 그대로)
     performance: { now: () => 1000 }, W: 300, H: 300, visW: 100, PET: true, innerWidth: 300, innerHeight: 450,
     setTimeout: () => 1, clearTimeout: () => {}, requestAnimationFrame: () => {}, place: () => {},
   })
-  vm.runInContext(source.slice(planStart, planEnd), ctx)
   vm.runInContext(`
     let fleeX = 0, lastPlaceKey = '';
     const shown = { k: 1, x: 100, y: 200 };
@@ -238,7 +240,7 @@ test('표시장치 추가 알림만으로는 산책 중 출발 monitor를 바꾸
       base: { k: 1, x: 100, y: 200 }, displayId: '1', displayRequest: 1, alpha: 1, opacityApplied: false, returnFade: 0, recoverTimer: 0, safeHold: false, faceDir: null, recover: null };
     const petDisplay = { id: '1', area: { l: 1280, t: 0, r: 3200, b: 1040 }, scaleFactor: 1, request: 1, answered: 1, at: 1000 };
   `, ctx)
-  vm.runInContext(source.slice(source.indexOf('      const startRecoverFade ='), source.indexOf('      const walkBack =')) + `
+  vm.runInContext(between('      const startRecoverFade =', '      const walkBack =') + `
     globalThis.applyDisplay = applyPetDisplay;
     globalThis.startRecoverFade = startRecoverFade;
   `, ctx)
@@ -262,7 +264,8 @@ test('main display → PET.on → startWalk 타이머 통합: top-level request�
   let now = 1000, timerId = 0, seq = 0
   const timers = new Map(), frames = [], sent = []
   const ctx = vm.createContext({
-    performance: { now: () => now }, W: 300, H: 300, visW: 100, WALK_BODY_W: 100, WALK_SPEED: 320, curK: 1, innerWidth: 300, innerHeight: 450,
+    ...api,   // character/pet-walk.ts 순수 함수 (index.ts가 import하는 이름 그대로)
+    performance: { now: () => now }, W: 300, H: 300, visW: 100, WALK_BODY_WIDTH: 100, WALK_SPEED: 320, curK: 1, innerWidth: 300, innerHeight: 450,
     setTimeout: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, at: now + ms }); return id },
     clearTimeout: (id) => timers.delete(id),
     requestAnimationFrame: (fn) => frames.push(fn),
@@ -272,11 +275,10 @@ test('main display → PET.on → startWalk 타이머 통합: top-level request�
     petDisplay: { id: '', area: null, scaleFactor: 0, request: 0, answered: 0, at: 0 },
     shown: { k: 1, x: 100, y: 200 }, free: { on: true, x: 100, y: 200, k: 1, anim: null, applied: true },
   })
-  vm.runInContext(source.slice(planStart, planEnd), ctx)
   vm.runInContext(`let fleeX = 0, lastPlaceKey = '';`, ctx)
-  vm.runInContext(source.slice(source.indexOf('      const requestPetDisplay ='), source.indexOf('      let touchHold =')), ctx)
-  vm.runInContext(source.slice(source.indexOf('      const WALK_SPEED'), source.indexOf('      const startWalk = () =>')), ctx)
-  vm.runInContext(source.slice(source.indexOf('      const startWalk = () =>'), source.indexOf('      walkCheck = (now) =>')) + `
+  vm.runInContext(between('      const requestPetDisplay =', '      let touchHold ='), ctx)
+  vm.runInContext(between('      const WALK_SPEED', '      const startWalk = () =>'), ctx)
+  vm.runInContext(between('      const startWalk = () =>', '      walkCheck = (now) =>') + `
     globalThis.caseApi = { startWalk: () => startWalk(), applyDisplay: (d, c, r, list) => applyPetDisplay(d, c, r, list), state: () => ({ phase: walk.phase, plan: walk.plan, out: walk.out, displayId: walk.displayId, answered: petDisplay.answered, request: walk.displayRequest, at: petDisplay.at, area: petDisplay.area, now: performance.now() }) };
   `, ctx)
   const run = (s) => vm.runInContext(s, ctx)
@@ -307,24 +309,27 @@ test('main display → PET.on → startWalk 타이머 통합: top-level request�
 })
 
 test('in-app 산책과 상태 정리 경로는 기존 outDistance/복귀 인사를 유지한다', () => {
-  const start = source.slice(source.indexOf('      const startWalk = () =>'), source.indexOf('      walkCheck = (now) =>'))
-  const back = source.slice(source.indexOf('      const walkBack = () =>'), source.indexOf('      const startWalk = () =>'))
+  const start = between('      const startWalk = () =>', '      walkCheck = (now) =>')
+  const back = between('      const walkBack = () =>', '      const startWalk = () =>')
   assert.match(start, /walk\.out = outDistance\(walk\.dir\)/, '창 안 산책은 기존 경계 밖 이동을 유지')
   assert.match(start, /walkLater\(walkBack, 8000 \+ Math\.random\(\) \* 6000\)/)
   assert.match(back, /slide\(outDistance\(1\), 0,/)
   assert.match(start, /if \(PET && petPanelOpen\) return;/, '자체 펫 설정 패널이 열린 동안만 산책 금지')
   assert.match(start, /if \(!area\) \{ walk\.phase = ""; walk\.dir = -1; clearWalkVisual\(\); return; \}/, 'main display 응답이 없으면 외부 산책은 fail-closed')
   assert.match(source, /walk\.timers = \[\]; walk\.slideId\+\+; walk\.phase = ""; fleeX = 0; clearWalkVisual\(\); petBounds = null; drag\.pending = null; PET\.press\(false\);/, 'open 재진입 시 산책 상태 정리')
-  assert.match(source, /if \(PET && walk\.base && \(walk\.phase === "out" \|\| walk\.phase === "away" \|\| walk\.phase === "in"\)\)/, '산책 중 제자리는 출발 시 고정')
-  assert.match(source, /const fixed = list && walk\.displayId \? list\.find/, '표시장치 추가만으로 출발 monitor를 바꾸지 않음')
+  assert.match(source, /const walkPose = petWalkPose\(\);\s*if \(walkPose\) return walkPose;\s*if \(free\.anim\)/, '펫 창 산책 자리는 놓은 뒤 애니메이션보다 먼저 결정')
+  assert.match(source, /if \(walk\.base && walking\(\)\) pose = walk\.base;/, '산책 중 제자리는 출발 시 고정')
+  assert.match(source, /const walking = \(\) => walk\.phase === "out" \|\| walk\.phase === "away" \|\| walk\.phase === "in";/)
+  assert.match(source, /const departureDisplay = \(list\) => \(list && walk\.displayId \? list\.find/, '표시장치 추가만으로 출발 monitor를 바꾸지 않음')
+  assert.match(source, /const fixed = departureDisplay\(list\);\s*walkDisplayChange\(area, changed, list, fixed \? walkDisplayArea\(fixed\) : null\);/)
   assert.match(source, /if \(fixedArea\) \{[\s\S]*?recoverWalk\(fixedArea\); return;/, '출발 monitor의 workArea 변경만 복구')
-  assert.match(source, /applyPetDisplay\(m\.display, !!m\.changed, m\.request, m\.displays\)/, 'main의 top-level request와 displays 목록을 page handler가 전달')
+  assert.match(source, /applyPetDisplay\(message\.display, !!message\.changed, message\.request, message\.displays\)/, 'main의 top-level request와 displays 목록을 page handler가 전달')
   assert.match(source, /const faceTo = walk\.phase === "out" \? walk\.dir : walk\.phase === "in" \? \(walk\.faceDir == null \? -walk\.dir : walk\.faceDir\) : 0;/)
   assert.match(back, /walk\.dir = dir; walk\.faceDir = dir;/, 'PET 복귀는 실제 이동 방향을 faceDir로 명시')
   assert.match(source, /\(walk\.safeHold && walkAreaValid\(walk\.area\)\)/, '복구 뒤에도 지정 안전영역 clip 유지')
   assert.match(source, /const limit = walkAreaValid\(walk\.area\) \? walk\.area : petDisplay\.area;/, '복구 뒤 keepIn은 안전영역 기준')
   assert.match(source, /const cancelWalk = \(\) => \{[\s\S]*?clearWalkVisual\(\)/, '출발 전 집기 취소도 산책 상태 정리')
-  assert.match(source, /if \(!m\.on\) \{[\s\S]*?clearWalkVisual\(\)/, '펫 창이 숨을 때 진행 중 산책 상태 정리')
+  assert.match(source, /if \(!message\.on\) \{[\s\S]*?clearWalkVisual\(\)/, '펫 창이 숨을 때 진행 중 산책 상태 정리')
 })
 
 test('main은 DIP workArea와 실제 native bounds를 페이지에 배선한다', () => {
@@ -333,7 +338,7 @@ test('main은 DIP workArea와 실제 native bounds를 페이지에 배선한다'
   assert.match(mainSource, /for \(const name of \['display-added', 'display-removed', 'display-metrics-changed'\]\) screen\.on/)
   assert.match(mainSource, /displays: screen\.getAllDisplays\(\)\.map\(displayView\)/, 'topology 판단용 전체 display 목록')
   assert.match(mainSource, /case 'move': placer\.place\(message\.x, message\.y, message\.walk === true\)/, 'drag tick에는 bounds IPC를 보내지 않음')
-  assert.match(mainSource, /onPlace: \(w\) => toPage\(\{ type: 'bounds', bounds: w\.getBounds\(\) \}\)/)
+  assert.match(mainSource, /onPlace: \(placed\) => toPage\(\{ type: 'bounds', bounds: placed\.getBounds\(\) \}\)/)
 })
 
 test('placer onPlace는 요청값이 아니라 setBounds 뒤 실제 bounds를 알린다', () => {
@@ -353,4 +358,53 @@ test('placer onPlace는 요청값이 아니라 setBounds 뒤 실제 bounds를 �
   assert.equal(seen.at(-1).x, 100, 'settle 보정 뒤 실제 bounds도 다시 알린다')
   const quiet = createPlacer(() => win, { width: 440, height: 540, setTimer: () => {}, clearTimer: () => {}, onPlace: () => { throw new Error('drag tick에서 bounds IPC가 불리면 안 됨') } })
   quiet.place(10, 10); quiet.place(20, 20)   // 일반 drag tick: 기본 send=false
+})
+
+test('pet-walk 보조 함수: clip 결과 객체 재사용·영역 비교·나가기 곡선 끝점', () => {
+  const a = area(0, 0, 100, 100), out = { left: 9, top: 9, right: 9, bottom: 9, any: true }
+  const spec = { area: a, screenX: -20, screenY: 10, width: 60, height: 120 }
+  assert.equal(api.walkClipInset(spec, out), out, '넘긴 객체를 채워 돌려줌 (매 프레임 새 객체 없음)')
+  assert.deepEqual(plain(out), plain(api.walkClipInset(spec)), '재사용해도 새로 만든 결과와 같음')
+  assert.equal(api.walkClipInset({ area: a, screenX: 30, screenY: 30, width: 20, height: 20 }, out).any, false, '안쪽이면 지난 값이 남지 않음')
+  assert.deepEqual(plain(out), { left: 0, top: 0, right: 0, bottom: 0, any: false })
+  assert.equal(api.sameWalkArea(a, area(0, 0, 100, 100)), true)
+  assert.equal(api.sameWalkArea(a, area(0, 0, 100, 99)), false)
+  assert.equal(api.sameWalkArea(a, null), false)
+  assert.equal(api.walkEasePetOut(0), 0)
+  assert.ok(Math.abs(api.walkEasePetOut(1) - 1) < 1e-12)
+  assert.ok(Math.abs(api.walkEasePetOut(0.1 - 1e-9) - api.walkEasePetOut(0.1)) < 1e-6, '출발 구간과 등속 구간이 끊김 없이 이어짐')
+})
+
+test('펫 창 산책 자리: 산책 중엔 출발 때 고정한 제자리, 복구 중엔 자유 위치, 복구 뒤엔 안전 영역으로만 clamp', () => {
+  const ctx = vm.createContext({ ...api, PET: true, keepIn: (p, limit) => ({ k: p.k, x: Math.max(p.x, limit.l), y: p.y }) })
+  vm.runInContext(`
+    let fleeX = 30;
+    const free = { x: -50, y: 200, k: 1, anim: null };
+    const walk = { phase: 'out', base: { k: 2, x: 400, y: 100 }, safeHold: false, area: null };
+    const petDisplay = { area: null };
+    const walking = () => walk.phase === 'out' || walk.phase === 'away' || walk.phase === 'in';
+  ` + between('      const walkDockPose', '      const dockPose =') + `
+    globalThis.pose = () => petWalkPose();
+    globalThis.clipOn = () => petWalkClipOn();
+  `, ctx)
+  const run = (s) => vm.runInContext(s, ctx)
+  assert.deepEqual(plain(run('pose()')), { k: 2, x: 430, y: 100 }, '산책 중: 고정한 제자리 + fleeX')
+  assert.equal(run('pose() === pose()'), true, '같은 객체를 채워 돌려줌 (매 프레임 새 객체 없음)')
+  assert.equal(run('clipOn()'), true)
+  run(`walk.phase = 'recover'`)
+  assert.deepEqual(plain(run('pose()')), { k: 1, x: -20, y: 200 }, '복구 중: DOM keepIn으로 다시 밀지 않음')
+  assert.equal(run('clipOn()'), true)
+  run(`walk.phase = ''; walk.safeHold = true; walk.area = { l: 0, t: 0, r: 1000, b: 800 }`)
+  assert.deepEqual(plain(run('pose()')), { k: 1, x: 30, y: 200 }, '복구 뒤: 고정한 안전 영역으로 clamp')
+  assert.equal(run('clipOn()'), true, '복구 뒤에도 안전 영역 clip 유지')
+  run(`walk.area = null; petDisplay.area = { l: 10, t: 0, r: 1000, b: 800 }`)
+  assert.deepEqual(plain(run('pose()')), { k: 1, x: 40, y: 200 }, '고정 영역이 없으면 마지막 표시장치 workArea')
+  assert.equal(run('clipOn()'), false, 'clip은 고정 영역이 있을 때만')
+  run(`petDisplay.area = null`)
+  assert.equal(run('pose()'), null, '쓸 영역이 없으면 일반 배치')
+  run(`petDisplay.area = { l: 10, t: 0, r: 1000, b: 800 }; free.anim = {}`)
+  assert.equal(run('pose()'), null, '놓은 뒤 애니메이션 중이면 일반 배치')
+  run(`free.anim = null; walk.safeHold = false`)
+  assert.equal(run('pose()'), null)
+  assert.equal(run('clipOn()'), false)
 })
