@@ -20,6 +20,7 @@
 //   idle(): 미리 띄워도 되는 한가한 때인지, hidden(): 캔버스를 숨긴 상태인지, openPose(): 지금 자리(화면 좌표 { k, x, y })
 /** 펫 창으로 보내는 메시지: [이름, 인자 목록] */
 export type PetMessage = [string, unknown[]];
+/** 펫 연결이 캐릭터 쪽에서 받는 환경·콜백 (위 deps 설명 참고) */
 export interface PetLinkDeps {
   url: string | null;
   fetch: (url: string, init?: RequestInit) => Promise<{ ok: boolean; json(): Promise<any> }>;
@@ -40,10 +41,11 @@ export interface PetLinkDeps {
   hidden(): boolean;
   openPose(): { k: number; x: number; y: number };
 }
+/** 펫 연결 상태와 동작 (위 상태 설명 참고) */
 export interface PetLink {
   open: boolean; opening: number; supported: boolean; queue: PetMessage[]; last: string; polling: boolean;
   voiceSent: unknown; follow: { shown: boolean } | null; boot: boolean; petState: string; peek: number; seq: number; dragMod?: string;
-  relay(fn: string, args: unknown[]): void;
+  relay(name: string, args: unknown[]): void;
   post(path: string, body?: unknown): Promise<any>;
   enter(): void;
   leave(): void;
@@ -55,21 +57,31 @@ export interface PetLink {
 /** 펫 창 알림 하나 */
 interface PetEvent { type: string; seq?: number; list?: unknown }
 
+/** 펫 창 연결 생성 (start()를 불러야 조회·주기 동작 시작) */
 export function createPetLink(deps: PetLinkDeps): PetLink {
   const { url, fetch, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now() } = deps;
   // 메서드는 아래에서 채운다
   const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 } as unknown as PetLink;
 
-  // 펫 창이 보이는 동안(따라오는 중 포함)만 반응을 모아 보냄
-  link.relay = (fn, args) => { if (link.open || link.follow?.shown) link.queue.push([fn, args]); };
+  /**
+   * 펫 창으로 보낼 반응 추가. 펫 창이 보이는 동안(따라오는 중 포함)만 모아 보냄
+   * @param name 펫 창에서 부를 캐릭터 동작 이름
+   */
+  link.relay = (name, args) => { if (link.open || link.follow?.shown) link.queue.push([name, args]); };
 
+  /**
+   * 펫 경로로 POST 요청. 응답의 펫 프로세스 상태(state)를 반영
+   * @param path 펫 경로 아래 이름 (open, send, hide, warm)
+   * @returns 응답 JSON (실패하면 null)
+   */
   link.post = (path, body = {}) => {
     deps.onUse();
     return fetch(url! + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-      .then((r) => (r.ok ? r.json() : null)).then((s) => { if (s?.state) link.petState = s.state; return s; }).catch(() => null);
+      .then((response) => (response.ok ? response.json() : null)).then((reply) => { if (reply?.state) link.petState = reply.state; return reply; }).catch(() => null);
   };
 
-  link.enter = () => {   // 펫 창이 보이기 시작함
+  /** 펫 창이 보이기 시작함 처리 */
+  link.enter = () => {
     const already = !!link.follow?.shown;
     link.open = true; link.opening = 0; link.last = ""; deps.onUse();
     deps.onEnter();
@@ -77,7 +89,8 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
     link.queue.push(...deps.dragMessages());   // 펫 창 안에서도 같은 이동 키로 옮길 수 있게
   };
 
-  link.leave = () => {   // 펫 창이 제자리에 붙었거나 닫힘
+  /** 펫 창이 제자리에 붙었거나 닫힘 처리 */
+  link.leave = () => {
     if (!link.open) { link.opening = 0; return; }   // 아직 안 떴으면 창 안 캐릭터는 그대로
     link.open = false; link.opening = 0; link.queue = [];
     deps.onLeave();
@@ -85,49 +98,53 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
     requestAnimationFrame(() => { if (!link.open && !link.follow) link.post("hide"); });
   };
 
-  // 펫 창 알림 하나를 처리한다
-  // 보임: 이쪽이 연(따라오게 했거나 던져서 연) 경우만 받음. 이미 숨기라고 한 뒤 늦게 온 알림은 무시
+  /** 보임 알림 처리. 이쪽이 연(따라오게 했거나 던져서 연) 경우만 받음. 이미 숨기라고 한 뒤 늦게 온 알림은 무시 */
   const onShown = () => {
     if (!link.follow) { if (link.opening) link.enter(); return; }
     if (!link.follow.shown) { link.follow.shown = true; link.queue.push(...deps.snapshot()); }
   };
-  // 숨음: 펫 창이 맡고 있던 때만 돌아옴. 따라오던 펫 창이 숨으면 창 안 캐릭터가 다시 보이게 (방금 이쪽이 숨긴 따라오기 창이면 무시)
+  /** 숨음 알림 처리. 펫 창이 맡고 있던 때만 돌아옴. 따라오던 펫 창이 숨으면 창 안 캐릭터가 다시 보이게 함 (방금 이쪽이 숨긴 따라오기 창이면 무시) */
   const onHidden = () => {
     if (link.open) link.leave();
     else if (link.follow?.shown) link.follow.shown = false;
   };
-  // 펫 창 우클릭 메뉴·설정 패널에서 바꾼 값
+  /**
+   * 펫 창 우클릭 메뉴·설정 패널에서 바꾼 값 반영
+   * @param list [설정 키, 값] 쌍 목록 (형식이 다른 항목은 무시)
+   */
   const onConfig = (list: unknown) => {
     if (!Array.isArray(list)) return;
     for (const pair of list as unknown[]) if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string") {
       try { deps.onConfig(pair[0], pair[1]); } catch {}
     }
   };
-  const handle = (ev: PetEvent) => {
-    if (ev.seq !== undefined && ev.seq !== link.seq) return;   // 이전 회차(붙고 숨은 뒤 늦게 남은) 알림은 버림
-    if (ev.type === "shown") onShown();
+  /** 펫 창 알림 하나 처리 */
+  const handle = (event: PetEvent) => {
+    if (event.seq !== undefined && event.seq !== link.seq) return;   // 이전 회차(붙고 숨은 뒤 늦게 남은) 알림은 버림
+    if (event.type === "shown") onShown();
     // 붙음·닫힘·오류: 창 안 캐릭터로 돌아옴
-    else if (ev.type === "attach" || ev.type === "closed" || ev.type === "error") { link.follow = null; link.leave(); }
-    else if (ev.type === "hidden") onHidden();
-    else if (ev.type === "config") onConfig(ev.list);
+    else if (event.type === "attach" || event.type === "closed" || event.type === "error") { link.follow = null; link.leave(); }
+    else if (event.type === "hidden") onHidden();
+    else if (event.type === "config") onConfig(event.list);
   };
 
+  /** 호스트에 펫 상태·알림 조회 (이전 조회가 끝나기 전이면 건너뜀) */
   link.poll = () => {
     if (link.polling) return;
     link.polling = true;
-    fetch(url! + "poll", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((s) => {
+    fetch(url! + "poll", { cache: "no-store" }).then((response) => (response.ok ? response.json() : null)).then((status) => {
       link.polling = false;
-      if (!s) return;
-      link.supported = !!s.supported; link.petState = s.state || "none";
-      if (link.boot && Number.isInteger(s.seq)) link.seq = Math.max(link.seq, s.seq);   // 새로 불러온 화면은 회차 번호를 이어받음
-      for (const ev of (s.events || []) as PetEvent[]) handle(ev);
+      if (!status) return;
+      link.supported = !!status.supported; link.petState = status.state || "none";
+      if (link.boot && Number.isInteger(status.seq)) link.seq = Math.max(link.seq, status.seq);   // 새로 불러온 화면은 회차 번호를 이어받음
+      for (const event of (status.events || []) as PetEvent[]) handle(event);
       // 이 화면을 새로 불러왔는데 펫 창이 떠 있음 (처음 한 번만: 붙은 직후 잠깐 남은 펫 창 때문에 다시 숨으면 안 됨)
-      if (link.boot && s.state === "shown" && !link.open) { if (Number.isInteger(s.seq)) link.seq = s.seq; link.enter(); }
+      if (link.boot && status.state === "shown" && !link.open) { if (Number.isInteger(status.seq)) link.seq = status.seq; link.enter(); }
       link.boot = false;
     }).catch(() => { link.polling = false; });
   };
 
-  // 150ms마다: 열기 시간 초과 정리, 붙을 자리·소품·옷·이동 키가 바뀌면 보내고, 모인 반응을 한 번에 보낸 뒤 알림을 조회
+  /** 150ms마다 하는 일: 열기 시간 초과 정리, 붙을 자리·소품·옷·이동 키가 바뀌면 전송, 모인 반응을 한 번에 보낸 뒤 알림 조회 */
   link.tick = () => {
     if (link.opening && now() - link.opening > 15000) link.opening = 0;   // 펫 창이 끝내 안 뜨면 포기
     if (!link.open && !link.opening && !link.follow) return;
@@ -143,16 +160,20 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
     link.poll();
   };
 
+  /** 연결 시작: 첫 조회, 미리 띄우기 예약, 150ms 동기화·60ms 입 모양 전송 주기 등록 (url이 없으면 아무것도 안 함) */
   link.start = () => {
     if (!url) return;
     link.poll();
-    // 처음 끌 때 펫 프로세스가 준비되길 기다리지 않게(약 2.5초, 그동안 창 밖에서 캐릭터가 잘리다 튐), 화면이 자리 잡고 한가할 때 숨긴 채 미리 띄워 둠.
-    // 시작 인사·작업 중·창이 안 보일 때는 미루고, 한가한 때(requestIdleCallback)에 한 번만. 시작하는 동안은 호스트가 낮은 우선순위로 돌림
+    /**
+     * 숨긴 펫 창 미리 띄우기. 처음 끌 때 펫 프로세스가 준비되길 기다리지 않게(약 2.5초, 그동안 창 밖에서 캐릭터가 잘리다 튐), 화면이 자리 잡고 한가할 때 숨긴 채 미리 띄워 둠
+     * 시작 인사·작업 중·창이 안 보일 때는 3초씩 미루고, 한가한 때(requestIdleCallback)에 한 번만. 시작하는 동안은 호스트가 낮은 우선순위로 돌림
+     * @param tries 호스트 지원 여부를 다시 물어본 횟수 (8번까지)
+     */
     const warmUp = (tries = 0): void => {
       if (link.open || link.follow || (link.supported && link.petState !== "none")) return;
       if (!link.supported) { link.poll(); if (tries < 8) setTimeout(() => warmUp(tries + 1), 3000); return; }   // 호스트가 늦게 뜨면 처음 조회가 실패했을 수 있어 다시 물어봄 (지원 안 하면 포기)
       if (!deps.idle()) { setTimeout(() => warmUp(tries), 3000); return; }
-      ((globalThis as any).requestIdleCallback || ((f: () => void) => setTimeout(f, 0)))(() => { if (link.petState === "none") link.post("warm"); }, { timeout: 5000 });
+      ((globalThis as any).requestIdleCallback || ((callback: () => void) => setTimeout(callback, 0)))(() => { if (link.petState === "none") link.post("warm"); }, { timeout: 5000 });
     };
     setTimeout(warmUp, 5000);
     setInterval(link.tick, 150);
@@ -165,7 +186,7 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
     }, 60);
   };
 
-  // 단축키: 펫 창으로 내보내기 / 돌아오기. 돌아오기는 펫 창을 숨겨 poll('hidden') → leave()가 창 안 제자리로 되돌린다.
+  /** 단축키 처리: 펫 창으로 내보내기 / 돌아오기. 돌아오기는 펫 창을 숨겨 poll('hidden') → leave()가 창 안 제자리로 되돌림 */
   link.toggle = () => {
     // 캔버스를 숨긴 상태에서는 펫 창으로 내보내지 않는다 (명시적 no-op).
     // 숨김은 '잠시 그리기만 멈춤'이고 복구 칩·설정·단축키로 되돌리는 경로가 이미 있다.

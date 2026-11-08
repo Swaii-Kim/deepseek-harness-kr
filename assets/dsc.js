@@ -30,8 +30,8 @@
     const fit = (k2, above) => {
       const cap = above ? Math.min(maxK, (r.top - vp.top - HOME_GAP) / H) : Math.min(maxK, (vp.w - HOME_GAP) / visW);
       const want = k2 * (above ? MOBILE_ABOVE_SCALE : 1);
-      const kk = Math.max(MIN_SHOW_K, Math.min(cap, want));
-      return above ? { k: kk, x: rightX(kk), y: r.top - HOME_GAP - H * kk, above: true } : { k: kk, x: rightX(kk), y: bottomY(kk), above: false };
+      const scale = Math.max(MIN_SHOW_K, Math.min(cap, want));
+      return above ? { k: scale, x: rightX(scale), y: r.top - HOME_GAP - H * scale, above: true } : { k: scale, x: rightX(scale), y: bottomY(scale), above: false };
     };
     if (!r) {
       const k2 = maxK;
@@ -58,7 +58,7 @@
     return { left: aboveLeft, top: aboveTop, side: false };
   };
   var BUBBLE_TAIL = 55;
-  var bubbleTail = (bw) => Math.min(BUBBLE_TAIL, Math.round((bw || 2 * BUBBLE_TAIL) / 2) + 2);
+  var bubbleTail = (bubbleWidth) => Math.min(BUBBLE_TAIL, Math.round((bubbleWidth || 2 * BUBBLE_TAIL) / 2) + 2);
   var tailRight = ({ noseX, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.max(margin, width - (noseX + tail));
   var tailLeft = ({ noseX, bw, width, margin = HOME_GAP, tail = BUBBLE_TAIL }) => Math.min(
     Math.max(margin, noseX - (bw - tail)),
@@ -80,111 +80,111 @@
     const secondBit = button === 0 ? 1 : button === 2 ? 2 : 0;
     if (!firstBit || !secondBit) return false;
     if (!(buttons & firstBit) || !(buttons & secondBit)) return false;
-    const at = chord.at;
-    return now >= at && now - at <= graceMs;
+    const firstAt = chord.at;
+    return now >= firstAt && now - firstAt <= graceMs;
   };
   var chordUp = (chord, buttons) => (buttons & 3) === 0 ? { at: null, button: null, valid: false } : chord;
 
   // character/motion.ts
-  var clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  var clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
   var hash = (n) => {
-    const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
-    return s - Math.floor(s);
+    const scaled = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+    return scaled - Math.floor(scaled);
   };
-  var vnoise = (t) => {
-    const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f);
-    return (hash(i) * (1 - u) + hash(i + 1) * u) * 2 - 1;
+  var valueNoise = (t) => {
+    const i = Math.floor(t), fraction = t - i, weight = fraction * fraction * (3 - 2 * fraction);
+    return (hash(i) * (1 - weight) + hash(i + 1) * weight) * 2 - 1;
   };
-  var noise = (t, seed) => vnoise(t + seed * 17.31) * 0.72 + vnoise(t * 2.3 + seed * 5.17) * 0.28;
+  var noise = (t, seed) => valueNoise(t + seed * 17.31) * 0.72 + valueNoise(t * 2.3 + seed * 5.17) * 0.28;
   var S = () => ({ x: 0, v: 0 });
-  var spring = (s, target, dt, k, d) => {
-    const n = Math.max(1, Math.ceil(dt / 8e-3)), h = dt / n;
+  var spring = (state, target, dt, stiffness, damping) => {
+    const n = Math.max(1, Math.ceil(dt / 8e-3)), step = dt / n;
     for (let i = 0; i < n; i++) {
-      s.v += ((target - s.x) * k - s.v * d) * h;
-      s.x += s.v * h;
+      state.v += ((target - state.x) * stiffness - state.v * damping) * step;
+      state.x += state.v * step;
     }
-    return s.x;
+    return state.x;
   };
   var sstep = (x) => {
     x = Math.max(0, Math.min(1, x));
     return x * x * x * (x * (x * 6 - 15) + 10);
   };
-  var holdCurve = (p, a = 0.35, b = 0.7) => p < a ? sstep(p / a) : p > b ? sstep((1 - p) / (1 - b)) : 1;
-  function addGesture(GO, name, p, d) {
-    const env = Math.sin(Math.PI * p);
+  var holdCurve = (progress, riseEnd = 0.35, fallStart = 0.7) => progress < riseEnd ? sstep(progress / riseEnd) : progress > fallStart ? sstep((1 - progress) / (1 - fallStart)) : 1;
+  function addGesture(gestureOut, name, progress, direction) {
+    const envelope = Math.sin(Math.PI * progress);
     switch (name) {
       case "nod":
-        GO.pitch -= Math.abs(Math.sin(p * Math.PI * 4)) * 11 * env;
-        GO.bodyY -= Math.abs(Math.sin(p * Math.PI * 4)) * 3 * env;
+        gestureOut.pitch -= Math.abs(Math.sin(progress * Math.PI * 4)) * 11 * envelope;
+        gestureOut.bodyY -= Math.abs(Math.sin(progress * Math.PI * 4)) * 3 * envelope;
         break;
       // 끄덕끄덕 (몸도 살짝 따라 숙임)
       case "tilt":
-        GO.roll += 15 * env * d;
-        GO.bodyZ += 6 * env * d;
-        GO.smile += env;
+        gestureOut.roll += 15 * envelope * direction;
+        gestureOut.bodyZ += 6 * envelope * direction;
+        gestureOut.smile += envelope;
         break;
       // 고개 갸웃
       case "lean": {
-        const h = holdCurve(p, 0.3, 0.72);
-        GO.lean -= 12 * h;
-        GO.pitch += 4 * h;
-        GO.roll += 8 * h * d;
-        GO.bodyX += 4 * h * d;
-        GO.smile += 0.7 * h;
+        const hold = holdCurve(progress, 0.3, 0.72);
+        gestureOut.lean -= 12 * hold;
+        gestureOut.pitch += 4 * hold;
+        gestureOut.roll += 8 * hold * direction;
+        gestureOut.bodyX += 4 * hold * direction;
+        gestureOut.smile += 0.7 * hold;
         break;
       }
       // 다가와 들여다보기: 몸은 앞으로, 턱은 살짝 들어 화면을 봄
       case "sway":
-        GO.bodyZ += Math.sin(p * Math.PI * 6) * 9 * env;
-        GO.roll += Math.sin(p * Math.PI * 6) * 6 * env;
-        GO.bodyX += Math.sin(p * Math.PI * 6) * 5 * env;
-        GO.smile += env;
+        gestureOut.bodyZ += Math.sin(progress * Math.PI * 6) * 9 * envelope;
+        gestureOut.roll += Math.sin(progress * Math.PI * 6) * 6 * envelope;
+        gestureOut.bodyX += Math.sin(progress * Math.PI * 6) * 5 * envelope;
+        gestureOut.smile += envelope;
         break;
       // 흔들흔들 (몸도 좌우로 → 가슴·머리카락 좌우 출렁임)
       case "bounce":
-        GO.bodyY += Math.abs(Math.sin(p * Math.PI * 4)) * 8 * env;
-        GO.bodyZ += Math.sin(p * Math.PI * 4) * 6 * env;
-        GO.smile += env;
+        gestureOut.bodyY += Math.abs(Math.sin(progress * Math.PI * 4)) * 8 * envelope;
+        gestureOut.bodyZ += Math.sin(progress * Math.PI * 4) * 6 * envelope;
+        gestureOut.smile += envelope;
         break;
       // 신나서 통통
       case "droop":
-        GO.pitch -= 14 * env;
-        GO.bodyY -= 6 * env;
+        gestureOut.pitch -= 14 * envelope;
+        gestureOut.bodyY -= 6 * envelope;
         break;
       case "flinch": {
-        const k = p < 0.15 ? p / 0.15 : 1 - (p - 0.15) / 0.85;
-        GO.pitch -= 7 * k;
-        GO.bodyY -= 3 * k;
+        const impact = progress < 0.15 ? progress / 0.15 : 1 - (progress - 0.15) / 0.85;
+        gestureOut.pitch -= 7 * impact;
+        gestureOut.bodyY -= 3 * impact;
         break;
       }
       // 움찔
       case "bonk": {
-        const k = p < 0.08 ? p / 0.08 : Math.pow(1 - (p - 0.08) / 0.92, 2);
-        GO.pitch -= 22 * k;
-        GO.bodyY -= 9 * k;
-        GO.roll += 7 * k * d;
-        GO.eyeClose += 0.6 * k;
+        const impact = progress < 0.08 ? progress / 0.08 : Math.pow(1 - (progress - 0.08) / 0.92, 2);
+        gestureOut.pitch -= 22 * impact;
+        gestureOut.bodyY -= 9 * impact;
+        gestureOut.roll += 7 * impact * direction;
+        gestureOut.eyeClose += 0.6 * impact;
         break;
       }
       // 냄비에 맞음: 순간 푹 숙였다가 천천히 고개를 듦
       case "laugh":
-        GO.eyeSmile += env;
-        GO.eyeClose += env * 0.85;
-        GO.smile += env;
+        gestureOut.eyeSmile += envelope;
+        gestureOut.eyeClose += envelope * 0.85;
+        gestureOut.smile += envelope;
         {
-          const hb = holdCurve(p, 0.25, 0.65), hh = holdCurve(Math.max(0, p - 0.08) / 0.92, 0.3, 0.6);
-          GO.lean -= 10 * hb;
-          GO.pitch -= 9 * hh - (p > 0.7 ? 3 * Math.sin(Math.PI * (p - 0.7) / 0.3) : 0);
-          GO.roll += 7 * hb * d;
+          const bodyHold = holdCurve(progress, 0.25, 0.65), headHold = holdCurve(Math.max(0, progress - 0.08) / 0.92, 0.3, 0.6);
+          gestureOut.lean -= 10 * bodyHold;
+          gestureOut.pitch -= 9 * headHold - (progress > 0.7 ? 3 * Math.sin(Math.PI * (progress - 0.7) / 0.3) : 0);
+          gestureOut.roll += 7 * bodyHold * direction;
         }
-        GO.bodyY += Math.abs(Math.sin(p * Math.PI * 7)) * 7 * env;
-        GO.mouth += 0.45 * env;
+        gestureOut.bodyY += Math.abs(Math.sin(progress * Math.PI * 7)) * 7 * envelope;
+        gestureOut.mouth += 0.45 * envelope;
         break;
     }
   }
-  var blinkClose = (bt) => bt < 0.07 ? bt / 0.07 : bt < 0.1 ? 1 : bt < 0.22 ? 1 - (bt - 0.1) / 0.12 : 0;
-  var seg = (a, b, x) => clamp((x - a) / (b - a), 0, 1);
-  var coverForearm = (q) => q < 0.25 ? 0.15 * sstep(q / 0.25) : q < 0.45 ? 0.15 + 0.55 * seg(0.25, 0.45, q) : q < 0.8 ? 0.7 + 0.19 * sstep(seg(0.45, 0.8, q)) : 0.89 - 0.03 * sstep(seg(0.8, 1, q));
+  var blinkClose = (elapsed) => elapsed < 0.07 ? elapsed / 0.07 : elapsed < 0.1 ? 1 : elapsed < 0.22 ? 1 - (elapsed - 0.1) / 0.12 : 0;
+  var seg = (start, end, x) => clamp((x - start) / (end - start), 0, 1);
+  var coverForearm = (raise) => raise < 0.25 ? 0.15 * sstep(raise / 0.25) : raise < 0.45 ? 0.15 + 0.55 * seg(0.25, 0.45, raise) : raise < 0.8 ? 0.7 + 0.19 * sstep(seg(0.45, 0.8, raise)) : 0.89 - 0.03 * sstep(seg(0.8, 1, raise));
 
   // character/harness-signals.ts
   var TOOLS = {
@@ -233,14 +233,14 @@
     if (node.nodeType !== 1) return found;
     const element = node;
     const t = element.textContent || "";
-    if (t.length < 400 && UI.turnError.some((w) => t.includes(w))) found.error = true;
+    if (t.length < 400 && UI.turnError.some((phrase) => t.includes(phrase))) found.error = true;
     if (running && t.length < 200) {
       const leaves = element.children.length === 0 ? [element] : element.querySelectorAll("span, div");
       for (const el of leaves) {
         if (el.children.length) continue;
-        const s = (el.textContent || "").trim();
-        if (TOOLS[s]) {
-          found.tool = TOOLS[s];
+        const label = (el.textContent || "").trim();
+        if (TOOLS[label]) {
+          found.tool = TOOLS[label];
           break;
         }
       }
@@ -250,15 +250,15 @@
   function readThought(doc) {
     const live = [...doc.querySelectorAll('[class*="VJlF5q_summary"][data-streaming]')].map((e) => (e.textContent || "").trim()).filter(Boolean).pop();
     if (live) return live;
-    const live2 = [...doc.querySelectorAll('button[data-process-activity="thinking"][aria-expanded="false"] [data-shimmer] > span:first-child')].pop();
-    if (live2) {
-      const t = live2.textContent || "", i = t.indexOf(" · ");
+    const groupTitle = [...doc.querySelectorAll('button[data-process-activity="thinking"][aria-expanded="false"] [data-shimmer] > span:first-child')].pop();
+    if (groupTitle) {
+      const t = groupTitle.textContent || "", i = t.indexOf(" · ");
       if (i >= 0 && t.slice(i + 3).trim()) return t.slice(i + 3).trim();
     }
     const body = [...doc.querySelectorAll('[class*="VJlF5q_thinkBody"]')].pop();
     if (!body) return "";
-    const paras = (body.innerText || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-    return paras.length > 1 ? paras[paras.length - 2].split("\n")[0] : "";
+    const paragraphs = (body.innerText || "").split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+    return paragraphs.length > 1 ? paragraphs[paragraphs.length - 2].split("\n")[0] : "";
   }
   var VERB = {
     is: "are",
@@ -276,26 +276,26 @@
     mentioned: "mentioned",
     requested: "requested"
   };
-  var vtuberize = (s) => s.replace(/\b(the|this) user's\b/gi, (m) => m[0] === "T" ? "Your" : "your").replace(/\b(the|this) user (\w+)/gi, (m, d, v) => {
-    const you = d[0] === d[0].toUpperCase() ? "You" : "you";
-    return you + " " + (VERB[v.toLowerCase()] || v);
-  }).replace(/\b(the|this) user\b/gi, (m) => m[0] === m[0].toUpperCase() ? "You" : "you");
-  function thoughtLine(s, random = Math.random) {
-    const t = s.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().replace(/^(?:[-•]|\d+[.)])\s+/, "").replace(/^\([^)]{1,30}\):?\s*/, "");
+  var vtuberize = (text) => text.replace(/\b(the|this) user's\b/gi, (match) => match[0] === "T" ? "Your" : "your").replace(/\b(the|this) user (\w+)/gi, (match, article, word) => {
+    const you = article[0] === article[0].toUpperCase() ? "You" : "you";
+    return you + " " + (VERB[word.toLowerCase()] || word);
+  }).replace(/\b(the|this) user\b/gi, (match) => match[0] === match[0].toUpperCase() ? "You" : "you");
+  function thoughtLine(summary, random = Math.random) {
+    const t = summary.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().replace(/^(?:[-•]|\d+[.)])\s+/, "").replace(/^\([^)]{1,30}\):?\s*/, "");
     const hangul = (t.match(/[가-힣]/g) || []).length;
     const latin = (t.match(/[A-Za-z]/g) || []).length;
     const first = (t.match(/^.{4,}?[.!?。…](\s|$)/) || [t])[0].trim();
     if (hangul >= 4 && latin <= hangul * 0.35)
       return first.length > 42 ? first.slice(0, 40).trim() + "…" : first;
-    const words = first.split(" ").filter((w) => /[A-Za-z]{2,}/.test(w)).length;
+    const words = first.split(" ").filter((word) => /[A-Za-z]{2,}/.test(word)).length;
     const symbols = (first.match(/[{}()\[\];=<>\/\\|$@]/g) || []).length;
     if (latin < 12 || words < 3 || hangul > latin * 0.1 || symbols > first.length * 0.04 || first.includes("://")) return null;
     let line = vtuberize(first);
     const hmm = random() < 0.3 ? "Hmm… " : "";
     const max = 64 - hmm.length;
     if (line.length > max) {
-      const cut = line.slice(0, max - 2), sp = cut.lastIndexOf(" ");
-      line = (sp > 30 ? cut.slice(0, sp) : cut).replace(/[\s,;:]+$/, "") + "…";
+      const cut = line.slice(0, max - 2), lastSpace = cut.lastIndexOf(" ");
+      line = (lastSpace > 30 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:]+$/, "") + "…";
     }
     if ((line.match(/"/g) || []).length % 2) line = line.slice(0, line.lastIndexOf('"')).replace(/[\s,;:]+$/, "") + "…";
     return hmm + line;
@@ -305,14 +305,14 @@
   function createPetLink(deps) {
     const { url, fetch: fetch2, setTimeout, setInterval, requestAnimationFrame, now = () => performance.now() } = deps;
     const link = { open: false, opening: 0, supported: false, queue: [], last: "", polling: false, voiceSent: null, follow: null, boot: true, petState: "none", peek: 0, seq: 0 };
-    link.relay = (fn, args) => {
-      if (link.open || link.follow?.shown) link.queue.push([fn, args]);
+    link.relay = (name, args) => {
+      if (link.open || link.follow?.shown) link.queue.push([name, args]);
     };
     link.post = (path, body = {}) => {
       deps.onUse();
-      return fetch2(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.ok ? r.json() : null).then((s) => {
-        if (s?.state) link.petState = s.state;
-        return s;
+      return fetch2(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.ok ? response.json() : null).then((reply) => {
+        if (reply?.state) link.petState = reply.state;
+        return reply;
       }).catch(() => null);
     };
     link.enter = () => {
@@ -361,27 +361,27 @@
         }
       }
     };
-    const handle = (ev) => {
-      if (ev.seq !== void 0 && ev.seq !== link.seq) return;
-      if (ev.type === "shown") onShown();
-      else if (ev.type === "attach" || ev.type === "closed" || ev.type === "error") {
+    const handle = (event) => {
+      if (event.seq !== void 0 && event.seq !== link.seq) return;
+      if (event.type === "shown") onShown();
+      else if (event.type === "attach" || event.type === "closed" || event.type === "error") {
         link.follow = null;
         link.leave();
-      } else if (ev.type === "hidden") onHidden();
-      else if (ev.type === "config") onConfig(ev.list);
+      } else if (event.type === "hidden") onHidden();
+      else if (event.type === "config") onConfig(event.list);
     };
     link.poll = () => {
       if (link.polling) return;
       link.polling = true;
-      fetch2(url + "poll", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((s) => {
+      fetch2(url + "poll", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((status) => {
         link.polling = false;
-        if (!s) return;
-        link.supported = !!s.supported;
-        link.petState = s.state || "none";
-        if (link.boot && Number.isInteger(s.seq)) link.seq = Math.max(link.seq, s.seq);
-        for (const ev of s.events || []) handle(ev);
-        if (link.boot && s.state === "shown" && !link.open) {
-          if (Number.isInteger(s.seq)) link.seq = s.seq;
+        if (!status) return;
+        link.supported = !!status.supported;
+        link.petState = status.state || "none";
+        if (link.boot && Number.isInteger(status.seq)) link.seq = Math.max(link.seq, status.seq);
+        for (const event of status.events || []) handle(event);
+        if (link.boot && status.state === "shown" && !link.open) {
+          if (Number.isInteger(status.seq)) link.seq = status.seq;
           link.enter();
         }
         link.boot = false;
@@ -426,7 +426,7 @@
           setTimeout(() => warmUp(tries), 3e3);
           return;
         }
-        (globalThis.requestIdleCallback || ((f) => setTimeout(f, 0)))(() => {
+        (globalThis.requestIdleCallback || ((callback) => setTimeout(callback, 0)))(() => {
           if (link.petState === "none") link.post("warm");
         }, { timeout: 5e3 });
       };
@@ -460,26 +460,26 @@
 
   // character/speech.ts
   var JUNG = "AEAEOEOEOAEEOUOEIUUII";
-  var latinVowel = (ch) => {
-    const l = ch.toLowerCase();
-    return l === "a" ? "A" : l === "e" ? "E" : l === "o" ? "O" : l === "u" ? "U" : "I";
+  var latinVowel = (letter) => {
+    const lower = letter.toLowerCase();
+    return lower === "a" ? "A" : lower === "e" ? "E" : lower === "o" ? "O" : lower === "u" ? "U" : "I";
   };
-  function addWord(w, syl, random) {
+  function addWord(word, syl, random) {
     let first = true, prevVowel = false;
-    for (const ch of w) {
-      const c = ch.charCodeAt(0);
-      if (c >= 44032 && c <= 55203) {
-        syl.push({ v: JUNG[Math.floor((c - 44032) % 588 / 28)], d: 0.15 + random() * 0.05, amp: 0.65 + random() * 0.35, stress: first });
+    for (const letter of word) {
+      const code = letter.charCodeAt(0);
+      if (code >= 44032 && code <= 55203) {
+        syl.push({ v: JUNG[Math.floor((code - 44032) % 588 / 28)], d: 0.15 + random() * 0.05, amp: 0.65 + random() * 0.35, stress: first });
         first = false;
-      } else if (/[aeiouy]/i.test(ch)) {
+      } else if (/[aeiouy]/i.test(letter)) {
         if (!prevVowel) {
-          syl.push({ v: latinVowel(ch), d: 0.13 + random() * 0.05, amp: 0.55 + random() * 0.35, stress: first });
+          syl.push({ v: latinVowel(letter), d: 0.13 + random() * 0.05, amp: 0.55 + random() * 0.35, stress: first });
           first = false;
         }
         prevVowel = true;
         continue;
-      } else if (/[.,!?…~。，！？]/.test(ch)) syl.push({ v: null, d: ch === "," || ch === "，" ? 0.12 : 0.24 });
-      else if (/[0-9]/.test(ch)) {
+      } else if (/[.,!?…~。，！？]/.test(letter)) syl.push({ v: null, d: letter === "," || letter === "，" ? 0.12 : 0.24 });
+      else if (/[0-9]/.test(letter)) {
         syl.push({ v: "A", d: 0.12, amp: 0.7, stress: first });
         first = false;
       }
@@ -488,44 +488,44 @@
   }
   function parseSyllables(text, ms, random = Math.random) {
     const syl = [];
-    for (const w of String(text).split(/(\s+)/)) {
-      if (/^\s+$/.test(w)) {
+    for (const part of String(text).split(/(\s+)/)) {
+      if (/^\s+$/.test(part)) {
         syl.push({ v: null, d: 0.07 });
         continue;
       }
-      addWord(w, syl, random);
+      addWord(part, syl, random);
     }
-    let total = syl.reduce((s, x) => s + x.d, 0);
+    let total = syl.reduce((sum, item) => sum + item.d, 0);
     const limit = (ms || 3e3) / 1e3 * 0.92;
     if (total > limit && total > 0) {
       const k = limit / total;
-      for (const x of syl) x.d *= k;
+      for (const item of syl) item.d *= k;
       total = limit;
     }
     return { syl, total };
   }
 
   // character/hit.ts
-  function meshBounds(v) {
+  function meshBounds(vertices) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let k = 0; k < v.length; k += 2) {
-      if (v[k] < x0) x0 = v[k];
-      if (v[k] > x1) x1 = v[k];
-      if (v[k + 1] < y0) y0 = v[k + 1];
-      if (v[k + 1] > y1) y1 = v[k + 1];
+    for (let i = 0; i < vertices.length; i += 2) {
+      if (vertices[i] < x0) x0 = vertices[i];
+      if (vertices[i] > x1) x1 = vertices[i];
+      if (vertices[i + 1] < y0) y0 = vertices[i + 1];
+      if (vertices[i + 1] > y1) y1 = vertices[i + 1];
     }
     return [x0, y0, x1, y1];
   }
-  function meshHit(v, idx, uv, px, py, alphaAt) {
-    for (let k = 0; k < idx.length; k += 3) {
-      const a = idx[k] * 2, b = idx[k + 1] * 2, c = idx[k + 2] * 2;
-      const d = (v[b + 1] - v[c + 1]) * (v[a] - v[c]) + (v[c] - v[b]) * (v[a + 1] - v[c + 1]);
-      if (Math.abs(d) < 1e-9) continue;
-      const l1 = ((v[b + 1] - v[c + 1]) * (px - v[c]) + (v[c] - v[b]) * (py - v[c + 1])) / d;
-      const l2 = ((v[c + 1] - v[a + 1]) * (px - v[c]) + (v[a] - v[c]) * (py - v[c + 1])) / d;
-      const l3 = 1 - l1 - l2;
-      if (l1 < 0 || l2 < 0 || l3 < 0) continue;
-      if (alphaAt(l1 * uv[a] + l2 * uv[b] + l3 * uv[c], l1 * uv[a + 1] + l2 * uv[b + 1] + l3 * uv[c + 1]) > 40) return true;
+  function meshHit(vertices, indices, uvs, px, py, alphaAt) {
+    for (let i = 0; i < indices.length; i += 3) {
+      const cornerA = indices[i] * 2, cornerB = indices[i + 1] * 2, cornerC = indices[i + 2] * 2;
+      const det = (vertices[cornerB + 1] - vertices[cornerC + 1]) * (vertices[cornerA] - vertices[cornerC]) + (vertices[cornerC] - vertices[cornerB]) * (vertices[cornerA + 1] - vertices[cornerC + 1]);
+      if (Math.abs(det) < 1e-9) continue;
+      const weightA = ((vertices[cornerB + 1] - vertices[cornerC + 1]) * (px - vertices[cornerC]) + (vertices[cornerC] - vertices[cornerB]) * (py - vertices[cornerC + 1])) / det;
+      const weightB = ((vertices[cornerC + 1] - vertices[cornerA + 1]) * (px - vertices[cornerC]) + (vertices[cornerA] - vertices[cornerC]) * (py - vertices[cornerC + 1])) / det;
+      const weightC = 1 - weightA - weightB;
+      if (weightA < 0 || weightB < 0 || weightC < 0) continue;
+      if (alphaAt(weightA * uvs[cornerA] + weightB * uvs[cornerB] + weightC * uvs[cornerC], weightA * uvs[cornerA + 1] + weightB * uvs[cornerB + 1] + weightC * uvs[cornerC + 1]) > 40) return true;
     }
     return false;
   }
@@ -4112,9 +4112,11 @@
       listen,
       observe,
       own,
+      /** 정리 여부 */
       get stopped() {
         return stopped;
       },
+      /** 타이머·프레임 취소 뒤 정리 함수를 등록 역순으로 실행 (한 번만, 실패는 경고만) */
       dispose() {
         if (stopped) return;
         stopped = true;
