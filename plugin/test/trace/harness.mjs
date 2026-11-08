@@ -27,6 +27,13 @@ globalThis.__traceCharacter = createCharacter({ base: ${JSON.stringify(BASE)}, l
 // 결정적 난수 (mulberry32)
 const seeded = (seed) => () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
 const r6 = (v) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v)
+// 기록에 남기는 소수는 플랫폼 수학 함수의 마지막 비트 차이(Windows x64 ↔ macOS arm64)가 드러나지 않게 4자리로 반올림
+const r4 = (v) => Math.round(v * 1e4) / 1e4
+/** 문자열 안 긴 소수(예: "645.8496595938394px") 4자리 반올림 */
+const roundText = (text) => String(text).replace(/-?\d+\.\d{5,}/g, (m) => String(r4(Number(m))))
+/** 펫 메시지 등 객체 안 숫자·문자열 소수 4자리 반올림 */
+const roundDeep = (value) => typeof value === 'number' ? r4(value) : typeof value === 'string' ? roundText(value)
+  : Array.isArray(value) ? value.map(roundDeep) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, roundDeep(v)])) : value
 
 function installFakeModel(win, clock, sink) {
   // 파라미터: 처음 쓰는 이름은 자동으로 등록 (범위 -30..30)
@@ -213,7 +220,7 @@ export async function runTrace(code, { pet = false } = {}) {
     await flush()
     const stage = doc.getElementById('dsc-stage'), bubble = doc.getElementById('dsc-bubble')
     const veil = [...doc.body.children].find((el) => el.style?.cssText?.includes('z-index: 29') || el.style?.zIndex === '29')
-    const css = (el, keys) => el ? Object.fromEntries(keys.map((k) => [k, el.style[k] || ''])) : null
+    const css = (el, keys) => el ? Object.fromEntries(keys.map((k) => [k, roundText(el.style[k] || '')])) : null
     frames.push({
       f: frame++, t: clock.now,
       canvas: css(stage, ['display', 'left', 'top', 'width', 'height', 'opacity', 'transform', 'clipPath']),
@@ -222,7 +229,7 @@ export async function runTrace(code, { pet = false } = {}) {
       res: r6(win.__traceRes?.() ?? null),
       renders: sink.renders, resizes: sink.resizes,
       params: sink.params,
-      pet: pet ? petBus.sent.splice(0) : undefined,
+      pet: pet ? roundDeep(petBus.sent.splice(0)) : undefined,
     })
     sink.params = null
   }
