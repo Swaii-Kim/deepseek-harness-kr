@@ -610,7 +610,7 @@ test('client registers Korean independently, mounts once, and rolls back on disa
     assert.equal(h.dictionaries.size, KO_NAMESPACES)
     assert.equal(h.dictionaries.get('settings.theme/ko')['appearance.title'], '모양')
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage').length, 1)
-    assert.equal(h.dom.window.document.querySelectorAll('link').length, 2)
+    assert.equal(h.dom.window.document.querySelectorAll('link').length, 3)   // character.css, theme.css, korean.css
     first.dispose()
     assert.equal(h.dom.window.document.querySelectorAll('#dsc-stage, #dsc-bubble, link').length, 0)
     assert.equal(h.dictionaries.size, 0)
@@ -762,6 +762,7 @@ test('all eight combinations mount only the selected features', () => {
       assert.equal(!!doc.querySelector('link[href$="character.css"]'), character)
       assert.equal(!!doc.querySelector('link[href$="theme.css"]'), theme)
       assert.equal(h.languages.has('ko'), translation)
+      assert.equal(!!doc.querySelector('link[href$="korean.css"]'), translation, '한국어 줄바꿈은 번역 기능과 함께 켜지고 꺼진다')
       assert.equal(h.dictionaries.size, translation ? KO_NAMESPACES : 0)
       assert.equal(doc.body.hasAttribute('data-ds-dark-theme'), true, 'theme and character keep the app dark mode')
       assert.equal(h.pages.size, 1, 'settings remain available even when every feature is off')
@@ -781,6 +782,7 @@ test('live changes preserve unrelated features and dispose character resources i
     assert.equal(h.appDestroyed, 0)
     await h.form.set('translation', false)
     assert.equal(h.dictionaries.size, 0)
+    assert(!doc.querySelector('link[href$="korean.css"]'))
     assert.equal(doc.querySelector('#dsc-stage'), canvas)
     await h.form.set('character', false)
     assert.equal(h.appDestroyed, 1)
@@ -795,6 +797,15 @@ test('live changes preserve unrelated features and dispose character resources i
     ctx.dispose()
     assert.equal(h.pages.size, 0)
   } finally { h.dom.window.close() }
+})
+
+test('한국어 줄바꿈은 한국어 화면에서만 낱말 중간을 끊지 않고, 긴 글자는 넘치지 않게 자른다', async () => {
+  const css = await readFile(new URL('../../assets/korean.css', import.meta.url), 'utf8')
+  const rule = css.match(/html:lang\(ko\) body \{([^}]*)\}/)
+  assert(rule, 'DSH가 넣는 <html lang>으로 한국어 화면만 고른다')
+  assert.match(rule[1], /word-break: keep-all;/)
+  assert.match(rule[1], /overflow-wrap: break-word;/)
+  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ''), /text-wrap/, '검토 결과 text-wrap: pretty는 쓰지 않음')
 })
 
 test('stored disabled values do not flash features while configuration is loading', () => {

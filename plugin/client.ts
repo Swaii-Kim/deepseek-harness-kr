@@ -189,6 +189,7 @@ function mountTheme(ctx: DshContext, life: Lifetime) {
 }
 
 function mountTranslation(ctx: DshContext, life: Lifetime) {
+  stylesheet(life, 'korean.css')   // 한국어 화면 줄바꿈 (낱말 중간에서 끊지 않음)
   if (!ctx.locale.getLocale().locales.some((locale) => locale.id.toLowerCase() === 'ko')) {
     life.add(ctx.locale.addLanguage({ id: 'ko', label: '한국어', fallback: 'en' }))
   }
