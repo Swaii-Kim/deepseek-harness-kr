@@ -156,6 +156,9 @@ npm test
 사용자에게 나가는 변경이면 `package.json`의 `version`도 올려 주세요. 플러그인(Plugins) 화면의 버전 표시로 새 버전인지 구분할 수 있습니다.
 동작을 바꾸지 않는 리팩터링이면 `npm run trace:diff -- <기준 커밋 체크아웃> [--pet]`으로 캐릭터 동작이 프레임마다 같은지 비교할 수 있습니다(기본 테스트에는 들어 있지 않음).
 
+이 Live2D 모델 전용 값(파일 경로·파라미터·파츠·표정·치수)은 `character/model-profile.ts`에 모여 있습니다(소품·체형 파라미터는 `shared/settings.js`). 애니메이션이 모델에 값을 쓰는 지점은 `character/index.ts`의 `setParam`·`addParam`·`multiplyParam`입니다.
+VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(PIXI Live2D), 매 프레임 파라미터 쓰기(위 함수), 메시 정점·알파로 하는 터치 판정과 상반신·전신 기준 좌표 계산, 정점 변형을 맡는 Core Worker(`assets/dsc-core-worker.js`), 표정 파일 섞기, 동물귀 파트 불투명도 조절을 새 렌더러에 맞게 바꿔야 합니다. 렌더러 추상화 계층은 아직 없습니다.
+
 ## 말풍선 음성 (TTS, 옵트인)
 
 0.1.6부터 말풍선 음성(`plugins/dsh-tts`)이 이 플러그인에 포함됩니다. 따로 설치할 것 없이 설정 창의 **말풍선 음성** 칸에서 켜고 설정합니다. YAML을 고칠 필요가 없습니다.
