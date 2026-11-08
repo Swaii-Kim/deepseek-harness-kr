@@ -6,6 +6,7 @@ const path = require('node:path')
 const { connect } = require('node:net')
 const { pathToFileURL } = require('node:url')
 const { createPlacer } = require('./placement.cjs')
+const { chooseProfile, profileInUse } = require('./profile.cjs')
 // 소품·옷·체형 항목: 빌드가 shared/settings.js에서 만든 pet/settings.cjs (펫 앱 폴더째 런타임으로 복사된다)
 const { OUTFIT_ITEMS, BODY_TYPES } = require('./settings.cjs')
 
@@ -30,8 +31,15 @@ app.setName('DeepSeekChan Pet')
 if (MAC) {
   app.setActivationPolicy('accessory')                 // Dock·앱 전환기에 안 나타남 (번들 Info.plist 의 LSUIElement 와 겹쳐 둠)
   app.commandLine.appendSwitch('use-mock-keychain')    // 사본(ad-hoc 서명)이 DSH 의 키체인 항목을 건드려 암호 창이 뜨는 일 방지
-  // 프로필(캐시·로컬 저장소)은 DSH 와 따로 둠
-  if (!app.commandLine.hasSwitch('user-data-dir')) app.setPath('userData', path.join(app.getPath('appData'), 'deepseek-harness-kr', 'pet-profile'))
+}
+// 프로필(캐시·로컬 저장소): macOS 는 DSH 와 따로 둔 pet-profile, 그 밖은 기본(appData/DeepSeekChan Pet).
+// 다른 DSH 가 띄운 펫이 이미 쓰는 중이면 번호 붙은 폴더로. 쓰는 중 판별 = 다른 프로세스의 LevelDB 잠금(예전 펫 포함) 또는
+// 단일 인스턴스 잠금 실패 (잠금은 userData 폴더마다 하나라 동시에 뜨는 새 펫끼리도 갈림)
+if (!app.commandLine.hasSwitch('user-data-dir')) {
+  const base = MAC ? path.join(app.getPath('appData'), 'deepseek-harness-kr', 'pet-profile') : app.getPath('userData')
+  /** 프로필 폴더 잡기: 다른 프로세스가 쓰는 폴더는 건너뛰고, 아니면 그 폴더의 단일 인스턴스 잠금 @param {string} directory */
+  const claimProfile = (directory) => { if (profileInUse(directory)) return false; app.setPath('userData', directory); return app.requestSingleInstanceLock() }
+  app.setPath('userData', chooseProfile(base, claimProfile))
 }
 protocol.registerSchemesAsPrivileged([{ scheme: 'dscpet', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
