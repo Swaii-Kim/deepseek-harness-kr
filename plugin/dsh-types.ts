@@ -73,7 +73,7 @@ export interface PluginManager {
   waitForInstall?(requestId: string): Promise<RemoteResult<InstallOutcome>>
 }
 
-/** remote.credentials: 값은 돌려주지 않고 저장 여부만 알려 준다 */
+/** remote.credentials: 값은 돌려주지 않고 저장 여부만 전달 */
 export interface CredentialView { configured?: boolean; source?: string }
 export interface CredentialService {
   /** 참조 이름별 저장 여부 조회 (값은 돌려주지 않음) */

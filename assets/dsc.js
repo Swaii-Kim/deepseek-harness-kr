@@ -609,17 +609,17 @@
         }
         app.stage.addChild(model);
         app.ticker.add(() => model.update(Math.min(app.ticker.deltaMS, 100)), void 0, PIXI.UPDATE_PRIORITY.HIGH);
-        const im = model.internalModel, core = im.coreModel;
-        im.eyeBlink = void 0;
-        im.breath = void 0;
+        const internalModel = model.internalModel, core = internalModel.coreModel;
+        internalModel.eyeBlink = void 0;
+        internalModel.breath = void 0;
         const CHEST_DRAG_SIGN = 1;
         const dragLift = { x: 0, v: 0 };
         const dragShift = { x: 0, v: 0 };
         let chestFrom = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
         let chestLongTimer = 0;
         const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };
-        if (im.physics) {
-          const evaluate = im.physics.evaluate;
+        if (internalModel.physics) {
+          const evaluate = internalModel.physics.evaluate;
           const param = (id) => {
             const i = core.getParameterIndex(id);
             if (i < 0) return null;
@@ -628,7 +628,7 @@
           };
           const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter((found) => !!found);
           const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter((found) => !!found);
-          im.physics.evaluate = function(...args) {
+          internalModel.physics.evaluate = function(...args) {
             const result = evaluate.apply(this, args);
             const lift = dragLift.x * CHEST_DRAG_SIGN, shift = dragShift.x * CHEST_DRAG_SIGN;
             if (lift) for (const chestParam of chestParams) core.addParameterValueById(chestParam.id, lift * (lift > 0 ? chestParam.max : -chestParam.min));
@@ -638,12 +638,12 @@
         }
         const WHOLE_BODY = !!pet;
         core.update();
-        const cm = core.getModel();
+        const cubismModel = core.getModel();
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         const each = (fn) => {
-          for (let i = 0; i < cm.drawables.count; i++) {
-            if (cm.drawables.opacities[i] < 0.01) continue;
-            const vertices = im.getDrawableVertices(i);
+          for (let i = 0; i < cubismModel.drawables.count; i++) {
+            if (cubismModel.drawables.opacities[i] < 0.01) continue;
+            const vertices = internalModel.getDrawableVertices(i);
             for (let j = 0; j < vertices.length; j += 2) fn(vertices[j], vertices[j + 1]);
           }
         };
@@ -661,19 +661,19 @@
             bustMaxX = Math.max(bustMaxX, x);
           }
         });
-        const sBust = Math.min(W * 0.98 / (bustMaxX - bustMinX), H * 0.95 / (cutY - minY));
-        const sFull = Math.min(W * 0.98 / (maxX - minX), H * 0.95 / (maxY - minY));
-        const PET_HEAD_RATIO = sBust / sFull;
+        const bustScale = Math.min(W * 0.98 / (bustMaxX - bustMinX), H * 0.95 / (cutY - minY));
+        const fullScale = Math.min(W * 0.98 / (maxX - minX), H * 0.95 / (maxY - minY));
+        const PET_HEAD_RATIO = bustScale / fullScale;
         const PET_K_MIN = 0.45, PET_BUBBLE = 150;
         const PET_K_MAX = Math.max(1.2, ((typeof screen !== "undefined" && screen.availHeight ? screen.availHeight : 1080) - PET_BUBBLE) / H);
         const BUST_CX = (bustMinX + bustMaxX) / 2, FULL_CX = (minX + maxX) / 2;
-        const WAIST_PET = H * 0.05 + (cutY - minY) * sFull;
-        const WAIST_WIN = H * 0.05 + (cutY - minY) * sBust;
+        const WAIST_PET = H * 0.05 + (cutY - minY) * fullScale;
+        const WAIST_WIN = H * 0.05 + (cutY - minY) * bustScale;
         const WAIST_PCT = WAIST_PET / H * 100;
         const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;
         const bodyHeight = WHOLE_BODY ? maxY - minY : cutY - minY;
-        const modelScale = WHOLE_BODY ? sFull : sBust;
-        const HEAD_GAIN = sBust / modelScale;
+        const modelScale = WHOLE_BODY ? fullScale : bustScale;
+        const HEAD_GAIN = bustScale / modelScale;
         model.scale.set(modelScale);
         model.x = W / 2 - ((WHOLE_BODY ? minX : bustMinX) + bodyWidth / 2) * modelScale;
         model.y = H * 0.05 - minY * modelScale;
@@ -691,8 +691,8 @@
         const chibiHeadDrop = (chibiMinY - minY) * modelScale + chibiDrop;
         const noseModelX = BUST_CX + (bustMaxX - bustMinX) * 0.055;
         (() => {
-          const drawables2 = cm.drawables, drawableCount = drawables2.count;
-          const localUpdate = () => Object.getPrototypeOf(cm).update.call(cm);
+          const drawables2 = cubismModel.drawables, drawableCount = drawables2.count;
+          const localUpdate = () => Object.getPrototypeOf(cubismModel).update.call(cubismModel);
           let w;
           try {
             w = new Worker(BASE + "dsc-core-worker.js");
@@ -716,7 +716,7 @@
           let ready2 = false, busy = false, result = null, spare = null;
           const stop = () => {
             ready2 = false;
-            delete cm.update;
+            delete cubismModel.update;
             try {
               w.terminate();
             } catch {
@@ -743,14 +743,14 @@
           w.onmessage = (e) => {
             const message = e.data;
             if (message.type === "ready") {
-              if (message.count === drawableCount && message.params === cm.parameters.count && message.parts === cm.parts.count && message.offs.join() === offsets) ready2 = true;
+              if (message.count === drawableCount && message.params === cubismModel.parameters.count && message.parts === cubismModel.parts.count && message.offs.join() === offsets) ready2 = true;
               else stop();
             } else if (message.type === "frame") {
               result = message.buf;
               busy = false;
             } else if (message.type === "fail") stop();
           };
-          cm.update = () => {
+          cubismModel.update = () => {
             if (!ready2) return localUpdate();
             if (result) {
               apply(result);
@@ -758,9 +758,9 @@
               result = null;
             }
             if (!busy) {
-              const paramCount = cm.parameters.count, inputs = new Float32Array(paramCount + cm.parts.count);
-              inputs.set(cm.parameters.values);
-              inputs.set(cm.parts.opacities, paramCount);
+              const paramCount = cubismModel.parameters.count, inputs = new Float32Array(paramCount + cubismModel.parts.count);
+              inputs.set(cubismModel.parameters.values);
+              inputs.set(cubismModel.parts.opacities, paramCount);
               const transfer = [inputs.buffer];
               if (spare) transfer.push(spare);
               w.postMessage({ type: "frame", inp: inputs.buffer, out: spare }, transfer);
@@ -770,12 +770,12 @@
           };
           w.postMessage({ type: "init", url: BASE + "model/model.moc3" });
         })();
-        const exp = {};
+        const expressionParams = {};
         await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (expName) => {
           try {
-            exp[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || [];
+            expressionParams[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || [];
           } catch {
-            exp[expName] = [];
+            expressionParams[expName] = [];
           }
         }));
         if (life.stopped) return;
@@ -783,22 +783,22 @@
         const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on]);
         const OUTFIT_LINE = Object.fromEntries(OUTFIT_ITEMS.filter((item) => item.line).map((item) => [item.key, item.line]));
         const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
-        const outfitW = {};
-        for (const [key] of OUTFIT_PARAMS) outfitW[key] = (prefs.outfit || {})[key] ? 1 : 0;
+        const outfitWeight = {};
+        for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;
         const EAR_PART_ID = "Part159";
         const earPartIndexFor = (ids, id) => {
           if (!ids) return -1;
           const found = Array.from(ids).indexOf(id);
           return found >= 0 ? found : -1;
         };
-        const earPartIndex = earPartIndexFor(cm.parts && cm.parts.ids, EAR_PART_ID);
+        const earPartIndex = earPartIndexFor(cubismModel.parts && cubismModel.parts.ids, EAR_PART_ID);
         const earDrawables = [];
         if (earPartIndex >= 0) {
-          for (let i = 0; i < cm.drawables.count; i++) if (cm.drawables.parentPartIndices[i] === earPartIndex) earDrawables.push(i);
+          for (let i = 0; i < cubismModel.drawables.count; i++) if (cubismModel.drawables.parentPartIndices[i] === earPartIndex) earDrawables.push(i);
         }
         const earSet = new Set(earDrawables);
         const earVisible = (opacity, flags) => opacity >= 0.05 && (flags & 1) !== 0;
-        const earBaseVisible = new Map(earDrawables.map((i) => [i, earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i])]));
+        const earBaseVisible = new Map(earDrawables.map((i) => [i, earVisible(cubismModel.drawables.opacities[i], cubismModel.drawables.dynamicFlags[i])]));
         const earOpacityValue = (w) => Math.max(0, Math.min(1, 1 - w));
         const earOpacityStep = (w, on, dt) => Math.min(1, Math.max(0, w + ((on ? 1 : 0) - w) * Math.min(1, dt * 6)));
         const applyEarOpacity = (parts2, index, w) => {
@@ -806,10 +806,10 @@
           parts2.opacities[index] = earOpacityValue(w);
           return true;
         };
-        let earW = (prefs.outfit || {}).earHide ? 1 : 0;
-        const earHitVisible = (i) => earW > 5e-3 ? earBaseVisible.get(i) === true : earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i]);
-        let basinUntil = 0, basinW = 0;
-        let bodyW = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
+        let earWeight = (prefs.outfit || {}).earHide ? 1 : 0;
+        const earHitVisible = (i) => earWeight > 5e-3 ? earBaseVisible.get(i) === true : earVisible(cubismModel.drawables.opacities[i], cubismModel.drawables.dynamicFlags[i]);
+        let basinUntil = 0, basinWeight = 0;
+        let bodyWeight = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
         const PET = pet;
         const PET_URL = PET ? null : (() => {
           try {
@@ -872,7 +872,7 @@
           clearOtherEyes(name);
           until[name] = performance.now() + ms;
         };
-        const gest = { name: null, start: 0, dur: 0, dir: 1 };
+        const gestureState = { name: null, start: 0, dur: 0, dir: 1 };
         const cover = { until: 0, start: -1e9, q: 0 };
         const coverChest = (ms) => {
           const now = performance.now();
@@ -881,10 +881,10 @@
         };
         const play = (name, dur) => {
           relay("play", [name, dur]);
-          gest.name = name;
-          gest.start = performance.now();
-          gest.dur = dur;
-          gest.dir = Math.random() < 0.5 ? -1 : 1;
+          gestureState.name = name;
+          gestureState.start = performance.now();
+          gestureState.dur = dur;
+          gestureState.dir = Math.random() < 0.5 ? -1 : 1;
           if (BOB_KICK[name]) bobKick(BOB_KICK[name]);
         };
         const BOB_KICK = { bounce: 60, laugh: 50, nod: -45 };
@@ -898,7 +898,7 @@
         let shiverStarted = -1e9, touchLeanUntil = 0, touchLean = 0;
         let shiverBobAt = 0, shiverBobSign = 1;
         let happyMouthUntil = 0, happyMouth = 0;
-        let stareUntil = 0, stareW = 0;
+        let stareUntil = 0, stareWeight = 0;
         let sulkStart = -1e9, sulkUntil = 0, sulkDir = 1, sulkPeeks = [], sulkYaw = 0, sulkRoll = 0;
         const SULK_CHIN = 10;
         const PEEK_RISE = 550, PEEK_HOLD = 450, PEEK_SNAP = 150;
@@ -1371,7 +1371,7 @@
             vp.w,
             vp.h,
             fleeX,
-            Math.round(bodyW * 40),
+            Math.round(bodyWeight * 40),
             cardBox && cardBox.left,
             cardBox && cardBox.right,
             cardBox && cardBox.top,
@@ -1388,7 +1388,7 @@
         };
         const fadeAmounts = (k, y) => {
           const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
-          const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
+          const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyWeight))));
           const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapProgress)) : 0;
           return { fade, petFade };
         };
@@ -1438,7 +1438,7 @@
           if (fleeX !== 0) bubble.style.display = "none";
           canvas.style.left = x + "px";
           canvas.style.top = y + "px";
-          const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;
+          const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyWeight))) * k;
           bubble.classList.remove("side");
           const spot = { k, x, noseX, headTop, vp: viewArea, home, loose };
           placeBubble(introOn, spot);
@@ -1729,7 +1729,7 @@
             mood = "idle";
             moodUntil = 0;
           }
-          const laughing = gest.name === "laugh";
+          const laughing = gestureState.name === "laugh";
           return { now, dt, seconds, introCalm, talking, muttering, laughing };
         };
         const updateEnergy = ({ dt, talking, muttering, laughing }) => {
@@ -1830,7 +1830,7 @@
           const motion = { yaw: headLookX.x * 22 + noise(seconds * 0.33, 1) * 6 * energy };
           motion.pitch = headLookY.x * 13 + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
           motion.roll = noise(seconds * 0.27, 3) * 7.5 * energy - headLookX.x * headLookY.x * 7 + pose.headZ;
-          stareW += ((now < stareUntil ? 1 : 0) - stareW) * Math.min(1, dt * 6);
+          stareWeight += ((now < stareUntil ? 1 : 0) - stareWeight) * Math.min(1, dt * 6);
           talkSway += ((talking && !muttering && now >= stareUntil ? 1 : 0) - talkSway) * Math.min(1, dt * 2.5);
           motion.swayYaw = Math.sin(seconds * Math.PI * 2 * 0.31 + 1.3) * 4.5 * talkSway;
           motion.swayPitch = Math.sin(seconds * Math.PI * 2 * 0.47 + 0.6) * 1.5 * talkSway;
@@ -1853,12 +1853,12 @@
         };
         const applyGesture = (motion, { now, dt }) => {
           const gestureOut = { yaw: 0, pitch: 0, roll: 0, bodyX: 0, bodyY: 0, bodyZ: 0, lean: 0, smile: 0, eyeSmile: 0, eyeClose: 0, mouth: 0 };
-          if (gest.name) {
-            const progress = (now - gest.start) / gest.dur;
+          if (gestureState.name) {
+            const progress = (now - gestureState.start) / gestureState.dur;
             if (progress >= 1) {
-              gest.name = null;
+              gestureState.name = null;
               nextIdleGesture = Math.max(nextIdleGesture, now + 2500 + Math.random() * 3500);
-            } else addGesture(gestureOut, gest.name, progress, gest.dir);
+            } else addGesture(gestureOut, gestureState.name, progress, gestureState.dir);
           }
           for (const channel of Object.keys(gestureOut)) {
             const springParams = GESTURE_SPRING[channel];
@@ -1875,7 +1875,7 @@
           motion.eyeSmileAdd += gestureSprings.eyeSmile.x;
           motion.eyeClose += gestureSprings.eyeClose.x;
           motion.mouthAdd += gestureSprings.mouth.x;
-          if (!gest.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {
+          if (!gestureState.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {
             const chance = Math.random();
             const pick = chance < 0.3 ? "tilt" : chance < 0.5 ? "sway" : chance < 0.72 ? "lean" : chance < 0.88 ? "nod" : "laugh";
             play(pick, pick === "lean" ? 2600 : pick === "sway" ? 2300 : pick === "laugh" ? 1500 : 1800);
@@ -1957,9 +1957,9 @@
           return { sulkWeight, peek, sulkEye };
         };
         const writeHeadBody = (motion) => {
-          if (stareW > 0.01) {
-            const k = 1 - stareW * 0.92;
-            motion.yaw = headLookX.x * 22 * (1 - stareW) + (motion.yaw - headLookX.x * 22) * k;
+          if (stareWeight > 0.01) {
+            const k = 1 - stareWeight * 0.92;
+            motion.yaw = headLookX.x * 22 * (1 - stareWeight) + (motion.yaw - headLookX.x * 22) * k;
             motion.pitch *= k;
             motion.roll *= k;
             motion.bodyX *= k;
@@ -2023,7 +2023,7 @@
           core.setParameterValueById("ParamEyeROpen", eyeOpen);
         };
         const writeExpressions = ({ now, dt }) => {
-          for (const [name, params] of Object.entries(exp)) {
+          for (const [name, params] of Object.entries(expressionParams)) {
             const target = hold[name] || (until[name] || 0) > now ? 1 : 0;
             const EYE_SWAP = name === "heart" || name === "squint" || name === "smug" || name === "dizzy";
             if (EYE_SWAP && weight[name] > 0.5 !== target > 0.5) {
@@ -2041,7 +2041,7 @@
         };
         const writeCoverChest = ({ now, dt, seconds }) => {
           const leaning = now < touchLeanUntil || touchLean < -2;
-          const want = now >= cover.start && now < cover.until && bodyW < 0.5 && fleeX === 0 && !leaning;
+          const want = now >= cover.start && now < cover.until && bodyWeight < 0.5 && fleeX === 0 && !leaning;
           const coverBefore = cover.q;
           cover.q = clamp(cover.q + (want ? 1 : -1) * dt / 0.38, 0, 1);
           if (cover.q > 0) {
@@ -2058,25 +2058,25 @@
         };
         const writeOutfitParams = (outfit, dt) => {
           for (const [key, id, value] of OUTFIT_PARAMS) {
-            const w = outfitW[key] = (outfitW[key] || 0) + ((outfit[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
+            const w = outfitWeight[key] = (outfitWeight[key] || 0) + ((outfit[key] ? 1 : 0) - (outfitWeight[key] || 0)) * Math.min(1, dt * 6);
             if (w > 5e-3) core.addParameterValueById(id, value * w);
           }
         };
         const writeEarHide = (outfit, dt) => {
-          const earWas = earW;
-          earW = earOpacityStep(earW, outfit.earHide === true, dt);
+          const earWas = earWeight;
+          earWeight = earOpacityStep(earWeight, outfit.earHide === true, dt);
           if (earPartIndex >= 0) {
-            if (earW > 5e-3) applyEarOpacity(cm.parts, earPartIndex, earW);
-            else if (earWas > 5e-3) cm.parts.opacities[earPartIndex] = 1;
+            if (earWeight > 5e-3) applyEarOpacity(cubismModel.parts, earPartIndex, earWeight);
+            else if (earWas > 5e-3) cubismModel.parts.opacities[earPartIndex] = 1;
           }
         };
         const writeBodyShape = (outfit, now, dt) => {
           const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";
-          basinW += ((now < basinUntil ? 1 : 0) - basinW) * Math.min(1, dt * 4);
-          if (basinW > 5e-3) core.addParameterValueById("key10", basinW);
-          bodyW += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyW) * Math.min(1, dt * 4);
-          if (bodyW > 2e-3) core.addParameterValueById("Clothes2", bodyW);
-          model.y = baseY + chibiDrop * clamp(bodyW, 0, 1);
+          basinWeight += ((now < basinUntil ? 1 : 0) - basinWeight) * Math.min(1, dt * 4);
+          if (basinWeight > 5e-3) core.addParameterValueById("key10", basinWeight);
+          bodyWeight += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyWeight) * Math.min(1, dt * 4);
+          if (bodyWeight > 2e-3) core.addParameterValueById("Clothes2", bodyWeight);
+          model.y = baseY + chibiDrop * clamp(bodyWeight, 0, 1);
         };
         const talkOutfitChange = (outfit) => {
           if (outfitPrev && outfitTalk) {
@@ -2092,7 +2092,7 @@
           writeBodyShape(outfit, now, dt);
           talkOutfitChange(outfit);
         };
-        im.motionManager.expressionManager = {
+        internalModel.motionManager.expressionManager = {
           /** 정리할 것 없음 (Live2D 표정 매니저 자리 채우기용) */
           destroy() {
           },
@@ -2579,7 +2579,7 @@
           Part88: "chestpart",
           Part136: "tail"
         };
-        const drawables = cm.drawables, parts = cm.parts;
+        const drawables = cubismModel.drawables, parts = cubismModel.parts;
         const drawRegion = Array.from({ length: drawables.count }, (_, i) => {
           for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PART_REGION[parts.ids[part]]) return PART_REGION[parts.ids[part]];
           return null;
@@ -2593,7 +2593,7 @@
           let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
           for (const i of chestDraw) {
             if (drawables.opacities[i] < 0.05) continue;
-            const vertices = im.getDrawableVertices(i);
+            const vertices = internalModel.getDrawableVertices(i);
             for (let j = 0; j < vertices.length; j += 2) {
               x0 = Math.min(x0, vertices[j]);
               x1 = Math.max(x1, vertices[j]);
@@ -2636,7 +2636,7 @@
             if (!touchable(i)) continue;
             const order = drawables.renderOrders[i];
             if (order <= bestOrder) continue;
-            const vertices = im.getDrawableVertices(i);
+            const vertices = internalModel.getDrawableVertices(i);
             const [x0, y0, x1, y1] = meshBounds(vertices);
             if (px < x0 || px > x1 || py < y0 || py > y1) continue;
             if (meshHit(vertices, drawables.indices[i], drawables.vertexUvs[i], px, py, (u, v) => alphaAt(drawables.textureIndices[i], u, v))) {
@@ -2650,7 +2650,7 @@
           let y0 = Infinity, y1 = -Infinity;
           for (let i = 0; i < drawables.count; i++) {
             if (drawables.opacities[i] < 0.05) continue;
-            const vertices = im.getDrawableVertices(i);
+            const vertices = internalModel.getDrawableVertices(i);
             for (let j = 1; j < vertices.length; j += 2) {
               if (vertices[j] < y0) y0 = vertices[j];
               if (vertices[j] > y1) y1 = vertices[j];
@@ -2669,7 +2669,7 @@
           return ratioY < 0.4 ? "chest" : "body";
         };
         const touchRegion = (x, y, drawable) => {
-          if (bodyW > 0.5) return chibiRegion(y);
+          if (bodyWeight > 0.5) return chibiRegion(y);
           const scale = model.scale.x, currentChest = chestCenter();
           const shiftX = currentChest && chestBase ? currentChest.x - chestBase.x : 0, shiftY = currentChest && chestBase ? currentChest.y - chestBase.y : 0;
           const ratioX = (x - model.x - (bodyBounds.minX + shiftX) * scale) / (bodyBounds.w * scale);
@@ -3027,7 +3027,7 @@
           clicks = [];
           headClicks = [];
           until.dark = until.smug = 0;
-          gest.name = null;
+          gestureState.name = null;
           sulkStart = now;
           sulkUntil = inputLockedUntil = now + SULK_MS;
           sulkDir = Math.random() < 0.5 ? 1 : -1;
@@ -3085,14 +3085,14 @@
         };
         const POT_MS = 130;
         let swallowClick = false, strokeFrom = null;
-        const pt = (e) => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];
+        const pointerPoint = (e) => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];
         const overBody = (cx, cy) => {
           if (canvas.style.display === "none" || fleeX !== 0) return false;
           const canvasRect = canvas.getBoundingClientRect(), body = bodyRect(canvasRect.left, canvasRect.top, curK);
           return cx >= body.l && cx <= body.r && cy >= body.t && cy <= body.b;
         };
         const walking = () => walk.phase === "out" || walk.phase === "away" || walk.phase === "in";
-        const canPullChest = (now) => bodyW <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
+        const canPullChest = (now) => bodyWeight <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
         const armChestLong = () => {
           clearInterval(chestLongTimer);
           const startedAt = performance.now();
@@ -3139,7 +3139,7 @@
           strokeFrom = null;
           chestFrom = null;
           if (!drag.pending) {
-            const [px, py] = pt(e);
+            const [px, py] = pointerPoint(e);
             drag.pending = { id: pointerId, sx: px, sy: py, h: null, ox: px - shown.x, oy: py - shown.y };
           }
           chord.valid = true;
@@ -3231,7 +3231,7 @@
             if (h && !head) onTouch(h[0], h[1], h[2]);
             return;
           }
-          const [px, py] = pt(e);
+          const [px, py] = pointerPoint(e);
           drag.pending = { id: e.pointerId, sx: px, sy: py, h, ox: px - shown.x, oy: py - shown.y };
           chord.valid = true;
           if (e.pointerType === "touch") armTouchHold(e);
@@ -3249,7 +3249,7 @@
           if (e.button !== 0) return;
           if (e.buttons & 2 && rightPress?.hit && Number.isFinite(rightPress.id) && !drag.pending && !drag.on) {
             chord = chordDown(chord, 0, e.buttons, now);
-            const [px, py] = pt(e);
+            const [px, py] = pointerPoint(e);
             drag.pending = { id: rightPress.id, sx: px, sy: py, h: null, ox: px - shown.x, oy: py - shown.y };
             chord.valid = true;
             if (PET) PET.press(true);
@@ -3407,7 +3407,7 @@
         const carryMove = (e, pending) => {
           strokeFrom = null;
           chestFrom = null;
-          const [px, py] = pt(e), now = performance.now();
+          const [px, py] = pointerPoint(e), now = performance.now();
           if (!drag.on) beginCarry(e, pending, px, py, now);
           if (PET && petTracking) {
             e.preventDefault();
@@ -3871,7 +3871,7 @@
           const topLeft = screenOf(0, 0), bottomRight = screenOf(innerWidth, innerHeight);
           const dock = {
             k: +petK.toFixed(3),
-            x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
+            x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * fullScale)),
             y: Math.round(waistY - petK * WAIST_PET),
             win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) }
           };

@@ -29,7 +29,7 @@ function harness() {
     performance: { now: () => context.clock },
     hitAt: () => (context.hit ? [1, 2, 3] : null),
     overBody: () => false,
-    pt: (event) => [event.clientX, event.clientY],
+    pointerPoint: (event) => [event.clientX, event.clientY],
     clearInterval: () => {},
     ...chordFns,
     // 캐릭터 소스가 쓰는 수명 객체(character/lifetime.js) 대역: 리스너는 대상에 그대로 붙이고 DOM 노드는 그대로 돌려준다

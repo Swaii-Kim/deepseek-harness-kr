@@ -551,7 +551,7 @@ const sectionStyle: React.CSSProperties = { display: 'grid', gap: 10, borderTop:
 const fieldStyle: React.CSSProperties = { display: 'grid', gap: 4 }
 const inputStyle: React.CSSProperties = { width: '100%', boxSizing: 'border-box' }
 
-/** TtsField 속성. commit은 저장하고 문제가 있으면 안내 문구를 돌려준다 */
+/** TtsField 속성. commit은 저장 후 문제가 있으면 안내 문구 반환 */
 interface TtsFieldProps {
   label: string; hint?: string; value?: string; placeholder?: string; disabled?: boolean; multiline?: boolean
   type?: string; min?: number; max?: number; step?: number

@@ -134,16 +134,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       app.stage.addChild(model);
       // 전용 티커로 모델도 갱신하고 긴 프레임은 제한
       app.ticker.add(() => model.update(Math.min(app.ticker.deltaMS, 100)), undefined, PIXI.UPDATE_PRIORITY.HIGH);
-      const im = model.internalModel, core = im.coreModel;
-      im.eyeBlink = undefined; im.breath = undefined;
+      const internalModel = model.internalModel, core = internalModel.coreModel;
+      internalModel.eyeBlink = undefined; internalModel.breath = undefined;
       const CHEST_DRAG_SIGN = 1;   // 화면에서 확인 후 -1로 바꿀 수 있음
       const dragLift = { x: 0, v: 0 };    // 위아래로 끌어올린 정도 (0~1)
       const dragShift = { x: 0, v: 0 };   // 좌우로 끌어당긴 정도 (-1~1)
       let chestFrom: { x: number; y: number; id: number; h: number[] } | null = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
       let chestLongTimer = 0;   // 3초 넘게 '흔들었을' 때 자극적인 대사로 넘어가는 감시 타이머
       const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };   // acc = 흔든 양, last = 마지막으로 흔든 시각
-      if (im.physics) {
-        const evaluate = im.physics.evaluate;
+      if (internalModel.physics) {
+        const evaluate = internalModel.physics.evaluate;
         /** 모델 파라미터의 id·최솟값·최댓값 (파라미터가 없거나 범위가 유한하지 않으면 null) */
         const param = (id: string) => {
           const i = core.getParameterIndex(id);
@@ -154,7 +154,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter((found): found is { id: string; min: number; max: number } => !!found);   // 위아래
         const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter((found): found is { id: string; min: number; max: number } => !!found);              // 좌우
         /** 물리 계산 뒤 끌어올린·끌어당긴 정도만큼 가슴 파라미터에 더하기 */
-        im.physics.evaluate = function (this: unknown, ...args: unknown[]) {
+        internalModel.physics.evaluate = function (this: unknown, ...args: unknown[]) {
           const result = evaluate.apply(this, args);
           // 물리가 덮어쓴 뒤 가슴에만 더함 (파라미터 범위를 꽉 쓰고, 좌우는 방향 따라)
           const lift = dragLift.x * CHEST_DRAG_SIGN, shift = dragShift.x * CHEST_DRAG_SIGN;
@@ -168,13 +168,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 바깥 펫 창(PET)은 다리·신발까지 전신이 보이도록 모델 전체를 캔버스에 맞춘다.
       const WHOLE_BODY = !!pet;
       core.update();
-      const cm = core.getModel();
+      const cubismModel = core.getModel();
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       /** 보이는(불투명도 0.01 이상) drawable의 모든 정점(모델 좌표) 순회 */
       const each = (fn: (x: number, y: number) => void) => {
-        for (let i = 0; i < cm.drawables.count; i++) {
-          if (cm.drawables.opacities[i] < 0.01) continue;
-          const vertices = im.getDrawableVertices(i);
+        for (let i = 0; i < cubismModel.drawables.count; i++) {
+          if (cubismModel.drawables.opacities[i] < 0.01) continue;
+          const vertices = internalModel.getDrawableVertices(i);
           for (let j = 0; j < vertices.length; j += 2) fn(vertices[j], vertices[j + 1]);
         }
       };
@@ -183,24 +183,24 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       let bustMinX = Infinity, bustMaxX = -Infinity;   // 상반신(cutY 위) 정점의 가로 범위 (모델 좌표)
       each((x: number, y: number) => { if (y < cutY) { bustMinX = Math.min(bustMinX, x); bustMaxX = Math.max(bustMaxX, x); } });
       // 창 안(상반신 크롭) 배율. 펫 창은 전신을 담아 이보다 작게 그려지므로, 이 값과의 비율만큼 배율을 올려 머리 크기를 맞춘다
-      const sBust = Math.min((W * 0.98) / (bustMaxX - bustMinX), (H * 0.95) / (cutY - minY));
+      const bustScale = Math.min((W * 0.98) / (bustMaxX - bustMinX), (H * 0.95) / (cutY - minY));
       // 펫 창(전신) 배율과, 창 안↔펫 창의 머리 크기 비율 (붙을 때·넘길 때 같은 비율을 쓴다)
-      const sFull = Math.min((W * 0.98) / (maxX - minX), (H * 0.95) / (maxY - minY));
-      const PET_HEAD_RATIO = sBust / sFull;
+      const fullScale = Math.min((W * 0.98) / (maxX - minX), (H * 0.95) / (maxY - minY));
+      const PET_HEAD_RATIO = bustScale / fullScale;
       // 펫 창 배율 범위. 상한은 '화면에 들어가는 만큼'뿐이고, 창 크기는 캐릭터에 맞춰 스스로 바뀐다 (pet/main.cjs 의 fit)
       const PET_K_MIN = 0.45, PET_BUBBLE = 150;
       const PET_K_MAX = Math.max(1.2, ((typeof screen !== "undefined" && screen.availHeight ? screen.availHeight : 1080) - PET_BUBBLE) / H);
       // 허리(잘린 단면) 기준 정렬용 값. 펫 창과 창 안은 배율이 달라 캔버스 안 허리 높이도 다르다
       const BUST_CX = (bustMinX + bustMaxX) / 2, FULL_CX = (minX + maxX) / 2;   // 모델 좌표에서 상반신·전신의 가로 중심
-      const WAIST_PET = H * 0.05 + (cutY - minY) * sFull;   // 펫 창 캔버스(k=1)에서 허리 y
-      const WAIST_WIN = H * 0.05 + (cutY - minY) * sBust;   // 창 안 캔버스(k=1)에서 허리 y
+      const WAIST_PET = H * 0.05 + (cutY - minY) * fullScale;   // 펫 창 캔버스(k=1)에서 허리 y
+      const WAIST_WIN = H * 0.05 + (cutY - minY) * bustScale;   // 창 안 캔버스(k=1)에서 허리 y
       const WAIST_PCT = WAIST_PET / H * 100;                // 하반신 페이드를 시작할 높이(%)
       // 펫 창(전신): 모델 전체의 가로·세로를 캔버스에 맞추고 몸 가운데를 캔버스 가운데에 둔다
       const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;   // 캔버스에 담을 몸의 가로·세로 (모델 좌표)
       const bodyHeight = WHOLE_BODY ? maxY - minY : cutY - minY;
-      const modelScale = WHOLE_BODY ? sFull : sBust;
+      const modelScale = WHOLE_BODY ? fullScale : bustScale;
       // 화면상 크기는 모델 배율 × 캔버스 배율(k). HEAD_GAIN을 곱하면 펫 창의 머리 크기가 창 안과 같아진다
-      const HEAD_GAIN = sBust / modelScale;
+      const HEAD_GAIN = bustScale / modelScale;
       model.scale.set(modelScale);
       model.x = W / 2 - ((WHOLE_BODY ? minX : bustMinX) + bodyWidth / 2) * modelScale;
       model.y = H * 0.05 - minY * modelScale;
@@ -218,9 +218,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 정점 변형(Core update)은 Worker의 같은 모델이 맡고, 메인은 받은 결과를 Core 배열에 복사만 한다.
       // 렌더러·터치 판정은 그대로 Core 배열을 읽는다. Worker를 못 쓰거나 실패하면 원래대로 메인에서 계산.
       (() => {
-        const drawables = cm.drawables, drawableCount = drawables.count;
+        const drawables = cubismModel.drawables, drawableCount = drawables.count;
         /** 원래 Core update를 메인에서 실행 (Worker를 못 쓸 때) */
-        const localUpdate = () => Object.getPrototypeOf(cm).update.call(cm);
+        const localUpdate = () => Object.getPrototypeOf(cubismModel).update.call(cubismModel);
         let w;
         try { w = new Worker(BASE + "dsc-core-worker.js"); } catch { return; }
         life.add(() => { try { w.terminate(); } catch {} });   // Worker는 PIXI 앱과 수명이 달라 따로 정리
@@ -230,7 +230,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const vertexBytes = new Uint8Array(drawables.vertexPositions[0].buffer, lo, hi - lo);
         let ready = false, busy = false, result: ArrayBuffer | null = null, spare: ArrayBuffer | null = null;
         /** Worker 사용 중단: 메인 계산으로 되돌리고 Worker 종료 */
-        const stop = () => { ready = false; delete cm.update; try { w.terminate(); } catch {} };
+        const stop = () => { ready = false; delete cubismModel.update; try { w.terminate(); } catch {} };
         /**
          * Worker가 계산한 결과를 Core 배열에 복사
          * @param buf 정점·불투명도·그리기 순서·렌더 순서·곱 색·스크린 색·동적 플래그를 이어 붙인 버퍼
@@ -250,17 +250,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         w.onmessage = (e) => {
           const message = e.data;
           if (message.type === "ready") {   // 같은 모델인지(개수·정점 배치) 확인한 뒤에만 넘김
-            if (message.count === drawableCount && message.params === cm.parameters.count && message.parts === cm.parts.count && message.offs.join() === offsets) ready = true; else stop();
+            if (message.count === drawableCount && message.params === cubismModel.parameters.count && message.parts === cubismModel.parts.count && message.offs.join() === offsets) ready = true; else stop();
           } else if (message.type === "frame") { result = message.buf; busy = false; }
           else if (message.type === "fail") stop();
         };
         /** Core update 대체: 지난 결과를 반영하고 이번 파라미터를 Worker로 보냄 (결과는 1프레임 늦게 반영) */
-        cm.update = () => {
+        cubismModel.update = () => {
           if (!ready) return localUpdate();
           if (result) { apply(result); spare = result; result = null; }
           if (!busy) {   // 이전 결과가 오기 전엔 새로 보내지 않음 (밀리지 않게)
-            const paramCount = cm.parameters.count, inputs = new Float32Array(paramCount + cm.parts.count);
-            inputs.set(cm.parameters.values); inputs.set(cm.parts.opacities, paramCount);
+            const paramCount = cubismModel.parameters.count, inputs = new Float32Array(paramCount + cubismModel.parts.count);
+            inputs.set(cubismModel.parameters.values); inputs.set(cubismModel.parts.opacities, paramCount);
             const transfer = [inputs.buffer]; if (spare) transfer.push(spare);
             w.postMessage({ type: "frame", inp: inputs.buffer, out: spare }, transfer);
             spare = null; busy = true;
@@ -270,9 +270,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       })();
 
       // 표정
-      const exp: Record<string, Array<{ Id: string; Value: number; Blend?: string }>> = {};
+      const expressionParams: Record<string, Array<{ Id: string; Value: number; Blend?: string }>> = {};
       await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (expName) => {
-        try { exp[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || []; } catch { exp[expName] = []; }
+        try { expressionParams[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || []; } catch { expressionParams[expName] = []; }
       }));
       if (life.stopped) return;   // 표정 파일을 받는 사이 꺼졌으면 여기서 멈춤
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};
@@ -281,8 +281,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on] as [string, string, number]);
       const OUTFIT_LINE = Object.fromEntries(OUTFIT_ITEMS.filter((item) => item.line).map((item) => [item.key, item.line])) as Record<string, string>;
       const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
-      const outfitW: Record<string, number> = {};
-      for (const [key] of OUTFIT_PARAMS) outfitW[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
+      const outfitWeight: Record<string, number> = {};
+      for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
       // 동물귀(#22): 파라미터가 아니라 모델의 별도 파트(Part159)다. 파트 ID로 런타임 인덱스를 찾고,
       // 파트가 없으면(다른 모델) 조용히 아무 것도 하지 않는다. 실제 적용은 bbox 계산이 끝난 뒤 프레임에서만 한다.
       const EAR_PART_ID = "Part159";
@@ -295,16 +295,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const found = Array.from(ids).indexOf(id);
         return found >= 0 ? found : -1;
       };
-      const earPartIndex = earPartIndexFor(cm.parts && cm.parts.ids, EAR_PART_ID);
+      const earPartIndex = earPartIndexFor(cubismModel.parts && cubismModel.parts.ids, EAR_PART_ID);
       const earDrawables = [];
-      if (earPartIndex >= 0) for (let i = 0; i < cm.drawables.count; i++) if (cm.drawables.parentPartIndices[i] === earPartIndex) earDrawables.push(i);
+      if (earPartIndex >= 0) for (let i = 0; i < cubismModel.drawables.count; i++) if (cubismModel.drawables.parentPartIndices[i] === earPartIndex) earDrawables.push(i);
       const earSet = new Set(earDrawables);
       /**
        * drawable이 보이는지 여부 (불투명도 0.05 이상이고 보임 플래그가 켜짐)
        * @param flags drawable의 동적 플래그 (1번 비트 = 보임)
        */
       const earVisible = (opacity: number, flags: number) => opacity >= 0.05 && (flags & 1) !== 0;
-      const earBaseVisible = new Map(earDrawables.map((i) => [i, earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i])]));
+      const earBaseVisible = new Map(earDrawables.map((i) => [i, earVisible(cubismModel.drawables.opacities[i], cubismModel.drawables.dynamicFlags[i])]));
       /**
        * 귀 숨김 정도에 맞춘 귀 파트 불투명도
        * @param w 귀 숨김 정도 (0~1, 1이면 완전히 숨김)
@@ -327,17 +327,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         parts.opacities[index] = earOpacityValue(w);
         return true;
       };
-      let earW = (prefs.outfit || {}).earHide ? 1 : 0;   // 처음엔 저장된 상태 그대로 (로드 직후 깜빡이지 않게)
+      let earWeight = (prefs.outfit || {}).earHide ? 1 : 0;   // 처음엔 저장된 상태 그대로 (로드 직후 깜빡이지 않게)
       /**
        * 터치 판정용 drawable 보임 여부. 귀 drawable은 earHide로 감쇠되기 전의 가시성을 hit 판정에만 유지(이슈 #22: 터치 영역 불변)
        * earHide가 꺼져 있으면 평소처럼 현재 opacity/플래그로 판정하므로, 다른 원인으로 숨겨진 메시는 클릭 불가
        * @param i drawable 번호
        */
-      const earHitVisible = (i: number) => earW > 0.005
+      const earHitVisible = (i: number) => earWeight > 0.005
         ? earBaseVisible.get(i) === true
-        : earVisible(cm.drawables.opacities[i], cm.drawables.dynamicFlags[i]);
-      let basinUntil = 0, basinW = 0;   // 세숫대야 (머리를 천천히 쓸어내리면)
-      let bodyW = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev: Record<string, any> | null = null, outfitTalk: ((key: string) => void) | null = null;
+        : earVisible(cubismModel.drawables.opacities[i], cubismModel.drawables.dynamicFlags[i]);
+      let basinUntil = 0, basinWeight = 0;   // 세숫대야 (머리를 천천히 쓸어내리면)
+      let bodyWeight = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev: Record<string, any> | null = null, outfitTalk: ((key: string) => void) | null = null;
       // ---------- 바깥 펫 창 ----------
       // PET: 이 코드가 바깥 펫 창 안에서 도는 중 (preload가 window.dscPet을 넣어 줌). 좌표 = 화면 px, 창이 캐릭터를 따라 움직임.
       // link: 창 안 캐릭터 쪽에서 펫 창이 열려 있으면 캐릭터를 숨기고, 반응(말·몸짓·표정)을 플러그인 호스트를 거쳐 펫 창으로 보냄.
@@ -391,7 +391,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const flashExp = (name: string, ms: number) => { relay("flashExp", [name, ms]); clearOtherEyes(name); until[name] = performance.now() + ms; };
 
       // 버튜버식 몸짓: 한 번씩 재생하는 동작(gesture) + 지금 상태에 따른 자세(mood)
-      const gest: { name: string | null; start: number; dur: number; dir: number } = { name: null, start: 0, dur: 0, dir: 1 };
+      const gestureState: { name: string | null; start: number; dur: number; dir: number } = { name: null, start: 0, dur: 0, dir: 1 };
       // 왼손으로 가슴 가리기 (데스크톱 펫의 "가슴에 손" 값): Param59 위팔 원근, Param60 아래팔, Param61 손목, Param62 위팔, Movement2 = 몸 앞용 팔 그림
       const cover = { until: 0, start: -1e9, q: 0 };   // q: 0 = 팔 내림, 1 = 가슴을 가림
       /**
@@ -403,7 +403,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 몸짓 한 번 재생 (펫 창에도 전달, 방향은 무작위, 튕김이 있는 몸짓은 몸도 튕김)
        * @param dur 몸짓 길이(ms)
        */
-      const play = (name: string, dur: number) => { relay("play", [name, dur]); gest.name = name; gest.start = performance.now(); gest.dur = dur; gest.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
+      const play = (name: string, dur: number) => { relay("play", [name, dur]); gestureState.name = name; gestureState.start = performance.now(); gestureState.dur = dur; gestureState.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
       const BOB_KICK: Record<string, number> = { bounce: 60, laugh: 50, nod: -45 };   // 몸짓 시작 때 몸 튕김 세기
       let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6000, talkUntil = 0;
       /**
@@ -416,7 +416,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       let shiverBobAt = 0, shiverBobSign = 1;
       let happyMouthUntil = 0, happyMouth = 0;   // 가슴 터치 2번째부터 "헤~" 입   // 떨릴 때 가슴을 출렁이게 하는 위아래 툭툭
       // 머리를 계속 만지면 삐짐: 턱을 들고 고개를 홱 돌림. 삐진 동안 몇 번 사용자를 몰래 보다가 빠르게 다시 외면
-      let stareUntil = 0, stareW = 0;   // 정면을 똑바로 보는 동안 (삐짐이 풀리며 한마디)
+      let stareUntil = 0, stareWeight = 0;   // 정면을 똑바로 보는 동안 (삐짐이 풀리며 한마디)
       let sulkStart = -1e9, sulkUntil = 0, sulkDir = 1, sulkPeeks: { at: number; flip: boolean; done?: boolean }[] = [], sulkYaw = 0, sulkRoll = 0;
       const SULK_CHIN = 10;                                        // 턱을 드는 정도 (AngleY, 위가 +)
       const PEEK_RISE = 550, PEEK_HOLD = 450, PEEK_SNAP = 150;     // 몰래 보기: 천천히 돌아봄 → 잠깐 봄 → 홱 외면 (ms)
@@ -959,7 +959,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 배치에 쓰는 값을 한 줄로 묶은 비교용 키 (같으면 이번 프레임 배치를 건너뜀) */
       const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox }: { k: number; x: number; y: number; vp: Viewport; home: Home; noseX: number; fade: number; petFade: number; loose: unknown; winBox: PetBox | null }) => {
         const cardBox = home.r;
-        return [k, x, y, vp.left, vp.top, vp.w, vp.h, fleeX, Math.round(bodyW * 40), cardBox && cardBox.left, cardBox && cardBox.right, cardBox && cardBox.top, cardBox && cardBox.bottom,
+        return [k, x, y, vp.left, vp.top, vp.w, vp.h, fleeX, Math.round(bodyWeight * 40), cardBox && cardBox.left, cardBox && cardBox.right, cardBox && cardBox.top, cardBox && cardBox.bottom,
           Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60), loose,
           winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""].join("|");
       };
@@ -972,7 +972,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         // 허리 아래가 잘린 창 안 그림은 화면 아래에서 띄우면 띄운 만큼 아래쪽을 흐리게 (꼬마 모습은 발까지 그려져 안 흐림)
         // 펫 창은 전신을 그리지만, 제자리로 붙는 동안에는 하반신을 서서히 지워 도착할 때 창 안 상반신 그림과 이어지게 한다
         const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
-        const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
+        const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyWeight))));
         const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapProgress)) : 0;   // 붙는 진행도 (0 = 전신 그대로, 1 = 하반신 완전히 사라짐)
         return { fade, petFade };
       };
@@ -1031,7 +1031,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         canvas.style.width = W * k + "px"; canvas.style.height = H * k + "px";
         if (fleeX !== 0) bubble.style.display = "none";
         canvas.style.left = x + "px"; canvas.style.top = y + "px";
-        const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
+        const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyWeight))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
         const spot = { k, x, noseX, headTop, vp: viewArea, home, loose };
         placeBubble(introOn, spot);
@@ -1316,7 +1316,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const talking = (voiceState?.speaking === true) || (bubble.classList.contains("show") && fleeX === 0);
         const muttering = talking && bubble.classList.contains("mutter");
         if (moodUntil && now > moodUntil) { mood = "idle"; moodUntil = 0; }
-        const laughing = gest.name === "laugh";
+        const laughing = gestureState.name === "laugh";
         return { now, dt, seconds, introCalm, talking, muttering, laughing };
       };
       /** 움직임 크기 갱신: 대기 < 작업 < 말하기, 웃을 땐 크게, 시무룩하면 작게 */
@@ -1408,7 +1408,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // ---- 고개 (AngleX/Y/Z): 시선 + 잔잔한 흔들림 + 말할 때 끄덕 / 몸: 숨쉬기 + 튕김 ----
       /**
        * 이 프레임의 기본 고개·몸 값 계산: 시선 + 잔잔한 흔들림 + 말할 때 끄덕·기울임, 숨쉬기 + 튕김
-       * 눈 맞춤 정도(stareW)와 말할 때 흔들림 정도(talkSway) 갱신도 함께
+       * 눈 맞춤 정도(stareWeight)와 말할 때 흔들림 정도(talkSway) 갱신도 함께
        * @returns 다음 단계들이 더해 갈 고개·몸 값
        */
       const baseMotion = ({ now, dt, seconds, talking, muttering }: Frame) => {
@@ -1416,7 +1416,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         motion.pitch = headLookY.x * 13 + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
         motion.roll = noise(seconds * 0.27, 3) * 7.5 * energy - headLookX.x * headLookY.x * 7 + pose.headZ;
         // 말하는 동안 고개를 천천히 좌우로 기울이고 살짝 돌림 (입만 움직이고 얼굴이 굳어 보이지 않게)
-        stareW += ((now < stareUntil ? 1 : 0) - stareW) * Math.min(1, dt * 6);
+        stareWeight += ((now < stareUntil ? 1 : 0) - stareWeight) * Math.min(1, dt * 6);
         talkSway += ((talking && !muttering && now >= stareUntil ? 1 : 0) - talkSway) * Math.min(1, dt * 2.5);
         motion.swayYaw = Math.sin(seconds * Math.PI * 2 * 0.31 + 1.3) * 4.5 * talkSway; motion.swayPitch = Math.sin(seconds * Math.PI * 2 * 0.47 + 0.6) * 1.5 * talkSway;
         if (talkSway > 0.01) { motion.roll += Math.sin(seconds * Math.PI * 2 * 0.55) * 4 * talkSway; motion.yaw += motion.swayYaw; motion.pitch += motion.swayPitch; }
@@ -1435,19 +1435,19 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        */
       const applyGesture = (motion: Motion, { now, dt }: Frame) => {
         const gestureOut = { yaw: 0, pitch: 0, roll: 0, bodyX: 0, bodyY: 0, bodyZ: 0, lean: 0, smile: 0, eyeSmile: 0, eyeClose: 0, mouth: 0 };
-        if (gest.name) {
-          const progress = (now - gest.start) / gest.dur;
+        if (gestureState.name) {
+          const progress = (now - gestureState.start) / gestureState.dur;
           if (progress >= 1) {
-            gest.name = null;
+            gestureState.name = null;
             nextIdleGesture = Math.max(nextIdleGesture, now + 2500 + Math.random() * 3500);   // 복귀 직후 대기 몸짓이 곧바로 붙어 다시 움직이지 않게
-          } else addGesture(gestureOut, gest.name, progress, gest.dir);
+          } else addGesture(gestureOut, gestureState.name, progress, gestureState.dir);
         }
         // 스프링을 거친 게스처 출력을 더한다 (게스처가 없을 땐 목표가 0이라 현재 속도에서 감속하며 대기 자세로 돌아간다)
         for (const channel of Object.keys(gestureOut) as (keyof typeof gestureOut)[]) { const springParams = GESTURE_SPRING[channel]; spring(gestureSprings[channel], gestureOut[channel], dt, springParams[0], springParams[1]); }
         motion.yaw += gestureSprings.yaw.x; motion.pitch += gestureSprings.pitch.x; motion.roll += gestureSprings.roll.x;
         motion.bodyX += gestureSprings.bodyX.x; motion.bodyY += gestureSprings.bodyY.x; motion.bodyZ += gestureSprings.bodyZ.x; motion.lean += gestureSprings.lean.x;
         motion.smile += gestureSprings.smile.x; motion.eyeSmileAdd += gestureSprings.eyeSmile.x; motion.eyeClose += gestureSprings.eyeClose.x; motion.mouthAdd += gestureSprings.mouth.x;
-        if (!gest.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {   // 가만히 있을 때 가끔 몸짓 (삐진 동안은 안 함)
+        if (!gestureState.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {   // 가만히 있을 때 가끔 몸짓 (삐진 동안은 안 함)
           const chance = Math.random();
           const pick = chance < 0.3 ? "tilt" : chance < 0.5 ? "sway" : chance < 0.72 ? "lean" : chance < 0.88 ? "nod" : "laugh";
           play(pick, pick === "lean" ? 2600 : pick === "sway" ? 2300 : pick === "laugh" ? 1500 : 1800);
@@ -1519,7 +1519,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /** 눈 맞춤 동안 얼굴·몸 흔들림을 거의 멈추고 고개·몸 파라미터 쓰기 (±30으로 자름) */
       const writeHeadBody = (motion: Motion) => {
-        if (stareW > 0.01) { const k = 1 - stareW * 0.92; motion.yaw = headLookX.x * 22 * (1 - stareW) + (motion.yaw - headLookX.x * 22) * k; motion.pitch *= k; motion.roll *= k; motion.bodyX *= k; motion.bodyZ *= k; }
+        if (stareWeight > 0.01) { const k = 1 - stareWeight * 0.92; motion.yaw = headLookX.x * 22 * (1 - stareWeight) + (motion.yaw - headLookX.x * 22) * k; motion.pitch *= k; motion.roll *= k; motion.bodyX *= k; motion.bodyZ *= k; }
         motion.yaw = clamp(motion.yaw, -30, 30); motion.pitch = clamp(motion.pitch, -30, 30); motion.roll = clamp(motion.roll, -30, 30);
         for (const [id, value] of [["AngleX", motion.yaw], ["AngleY", motion.pitch], ["AngleZ", motion.roll], ["ParamAngleX", motion.yaw], ["ParamAngleY", motion.pitch], ["ParamAngleZ", motion.roll],
           ["PositionX", clamp(motion.bodyX, -30, 30)], ["PositionY", clamp(motion.bodyY, -30, 30)], ["PositionZ", clamp(motion.bodyZ, -30, 30)], ["LeanInput", clamp(motion.lean, -30, 30)]]) core.addParameterValueById(id, value);
@@ -1575,7 +1575,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /** 표정 파일(하트·눈물·땀 등)을 무게에 따라 섞기 */
       const writeExpressions = ({ now, dt }: Frame) => {
-        for (const [name, params] of Object.entries(exp)) {
+        for (const [name, params] of Object.entries(expressionParams)) {
           const target = hold[name] || (until[name] || 0) > now ? 1 : 0;
           // 하트·><·얄미운·빙글빙글 눈은 눈 그림 자체를 바꾸므로 한 번에 바꾸고, 그 순간 깜빡여 감춤
           const EYE_SWAP = name === "heart" || name === "squint" || name === "smug" || name === "dizzy";
@@ -1593,7 +1593,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 왼손 가슴 가리기 진행(올리는 데 0.38초, 내릴 땐 같은 길을 거꾸로)과 팔 파라미터 쓰기 */
       const writeCoverChest = ({ now, dt, seconds }: Frame) => {
         const leaning = now < touchLeanUntil || touchLean < -2;   // 앞으로 숙이는 동안엔 손을 움직이지 않음
-        const want = now >= cover.start && now < cover.until && bodyW < 0.5 && fleeX === 0 && !leaning;   // 꼬마·산책·도망 중에도 안 함
+        const want = now >= cover.start && now < cover.until && bodyWeight < 0.5 && fleeX === 0 && !leaning;   // 꼬마·산책·도망 중에도 안 함
         const coverBefore = cover.q;
         cover.q = clamp(cover.q + (want ? 1 : -1) * dt / 0.38, 0, 1);   // 올리는 데 0.38초
         if (cover.q > 0) {
@@ -1609,10 +1609,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
       };
       // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
-      /** 소품·옷 파라미터를 켠 정도(outfitW)만큼 서서히 더하기 */
+      /** 소품·옷 파라미터를 켠 정도(outfitWeight)만큼 서서히 더하기 */
       const writeOutfitParams = (outfit: Record<string, any>, dt: number) => {
         for (const [key, id, value] of OUTFIT_PARAMS) {
-          const w = outfitW[key] = (outfitW[key] || 0) + ((outfit[key] ? 1 : 0) - (outfitW[key] || 0)) * Math.min(1, dt * 6);
+          const w = outfitWeight[key] = (outfitWeight[key] || 0) + ((outfit[key] ? 1 : 0) - (outfitWeight[key] || 0)) * Math.min(1, dt * 6);
           if (w > 0.005) core.addParameterValueById(id, value * w);
         }
       };
@@ -1621,21 +1621,21 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * bbox·크기·다른 파트는 건드리지 않음. 완전히 복구된 프레임에서만 opacity를 1로 되돌림
        */
       const writeEarHide = (outfit: Record<string, any>, dt: number) => {
-        const earWas = earW;
-        earW = earOpacityStep(earW, outfit.earHide === true, dt);
+        const earWas = earWeight;
+        earWeight = earOpacityStep(earWeight, outfit.earHide === true, dt);
         if (earPartIndex >= 0) {
-          if (earW > 0.005) applyEarOpacity(cm.parts, earPartIndex, earW);
-          else if (earWas > 0.005) cm.parts.opacities[earPartIndex] = 1;
+          if (earWeight > 0.005) applyEarOpacity(cubismModel.parts, earPartIndex, earWeight);
+          else if (earWas > 0.005) cubismModel.parts.opacities[earPartIndex] = 1;
         }
       };
       /** 세숫대야와 체형 파라미터 쓰기 (산책·절전으로 나갈 때는 꼬마 모습, 꼬마 모습만큼 모델을 아래로) */
       const writeBodyShape = (outfit: Record<string, any>, now: number, dt: number) => {
         const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
-        basinW += ((now < basinUntil ? 1 : 0) - basinW) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
-        if (basinW > 0.005) core.addParameterValueById("key10", basinW);
-        bodyW += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyW) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
-        if (bodyW > 0.002) core.addParameterValueById("Clothes2", bodyW);
-        model.y = baseY + chibiDrop * clamp(bodyW, 0, 1);
+        basinWeight += ((now < basinUntil ? 1 : 0) - basinWeight) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
+        if (basinWeight > 0.005) core.addParameterValueById("key10", basinWeight);
+        bodyWeight += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyWeight) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
+        if (bodyWeight > 0.002) core.addParameterValueById("Clothes2", bodyWeight);
+        model.y = baseY + chibiDrop * clamp(bodyWeight, 0, 1);
       };
       /** 소품·옷·체형을 켜는 순간 한마디 (처음 불러올 때는 말 안 함), 이번 설정을 다음 비교용으로 보관 */
       const talkOutfitChange = (outfit: Record<string, any>) => {
@@ -1653,7 +1653,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         writeBodyShape(outfit, now, dt);
         talkOutfitChange(outfit);
       };
-      im.motionManager.expressionManager = {
+      internalModel.motionManager.expressionManager = {
         /** 정리할 것 없음 (Live2D 표정 매니저 자리 채우기용) */
         destroy() {},
         /** 한 프레임의 절차 애니메이션: 위 단계들을 정해진 순서대로 실행 (dt는 0.05초 상한) */
@@ -2122,7 +2122,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         Part114: "leg", Part97: "lower", Part107: "lower", Part125: "lower", Part126: "lower",
         Part89: "waist", Part85: "chestpart", Part88: "chestpart", Part136: "tail",
       };
-      const drawables = cm.drawables, parts = cm.parts;
+      const drawables = cubismModel.drawables, parts = cubismModel.parts;
       const drawRegion = Array.from({ length: drawables.count }, (_, i) => {
         for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PART_REGION[parts.ids[part]]) return PART_REGION[parts.ids[part]];
         return null;
@@ -2134,7 +2134,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const i of chestDraw) {
           if (drawables.opacities[i] < 0.05) continue;
-          const vertices = im.getDrawableVertices(i);
+          const vertices = internalModel.getDrawableVertices(i);
           for (let j = 0; j < vertices.length; j += 2) { x0 = Math.min(x0, vertices[j]); x1 = Math.max(x1, vertices[j]); y0 = Math.min(y0, vertices[j + 1]); y1 = Math.max(y1, vertices[j + 1]); }
         }
         return x0 === Infinity ? null : { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
@@ -2182,7 +2182,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           if (!touchable(i)) continue;
           const order = drawables.renderOrders[i];
           if (order <= bestOrder) continue;
-          const vertices = im.getDrawableVertices(i);
+          const vertices = internalModel.getDrawableVertices(i);
           const [x0, y0, x1, y1] = meshBounds(vertices);
           if (px < x0 || px > x1 || py < y0 || py > y1) continue;
           if (meshHit(vertices, drawables.indices[i], drawables.vertexUvs[i], px, py, (u, v) => alphaAt(drawables.textureIndices[i], u, v))) { best = i; bestOrder = order; }
@@ -2197,7 +2197,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         let y0 = Infinity, y1 = -Infinity;
         for (let i = 0; i < drawables.count; i++) {
           if (drawables.opacities[i] < 0.05) continue;
-          const vertices = im.getDrawableVertices(i);
+          const vertices = internalModel.getDrawableVertices(i);
           for (let j = 1; j < vertices.length; j += 2) { if (vertices[j] < y0) y0 = vertices[j]; if (vertices[j] > y1) y1 = vertices[j]; }
         }
         return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < 0.45 ? "head" : "body";
@@ -2225,7 +2225,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @param drawable 누른 메시 번호
        */
       const touchRegion = (x: number, y: number, drawable: number) => {
-        if (bodyW > 0.5) return chibiRegion(y);
+        if (bodyWeight > 0.5) return chibiRegion(y);
         const scale = model.scale.x, currentChest = chestCenter();
         const shiftX = currentChest && chestBase ? currentChest.x - chestBase.x : 0, shiftY = currentChest && chestBase ? currentChest.y - chestBase.y : 0;
         const ratioX = (x - model.x - (bodyBounds.minX + shiftX) * scale) / (bodyBounds.w * scale);
@@ -2609,7 +2609,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const sulk = (now: number) => {
         clicks = []; headClicks = [];
         until.dark = until.smug = 0;   // 정색 표정을 지우고 삐진 얼굴로
-        gest.name = null;
+        gestureState.name = null;
         sulkStart = now; sulkUntil = inputLockedUntil = now + SULK_MS;
         sulkDir = Math.random() < 0.5 ? 1 : -1; sulkYaw = sulkRoll = 0;
         // 15초 동안 몰래 보기 3번 (약 3초·7초·11초, 조금씩 어긋나게)
@@ -2652,7 +2652,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const POT_MS = 130;   // 머리에서 이 시간(ms) 안에 55px 넘게 쓸어내리면 냄비, 아니면 세숫대야
       let swallowClick = false, strokeFrom: { x: number; y: number; t: number; h: number[] } | null = null;   // strokeFrom: 머리를 누른 채 쓸어내리는지 지켜보는 중
       /** 이벤트의 포인터 좌표. 창 안 = 창 좌표, 펫 창 = 화면 좌표 */
-      const pt = (e: MouseEvent): [number, number] => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];
+      const pointerPoint = (e: MouseEvent): [number, number] => PET ? [e.screenX, e.screenY] : [e.clientX, e.clientY];
       /**
        * 몸 전체 영역(캔버스 양옆 빈 곳·머리 위 여백 제외) 안 여부. 펫 창은 클릭을 통과시키다 이 안에 커서가 오면 받기 시작하므로,
        * 반투명한 머리카락 끝처럼 그림 판정이 빗나가는 곳도 집을 수 있게 이 영역으로 판단
@@ -2670,7 +2670,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 가슴 끌기를 시작할 수 있는지 여부. 놓은 직후 부끄러워 떠는 동안에도 바로 다시 잡을 수 있음 (inputLockedUntil은 머리 터치에만 적용)
        * @param now performance.now() 시각(ms)
        */
-      const canPullChest = (now: number) => bodyW <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
+      const canPullChest = (now: number) => bodyWeight <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
       /**
        * 가슴을 잡은 동안의 흔들기 대사 감시 시작
        * 3초 넘게 잡은 채로 '흔들어야' 더 자극적인 대사가 나옴 (잡고만 있으면 안 나옴), 4초를 넘겨 계속 흔들면 어지러워하는 대사로 바뀜
@@ -2712,7 +2712,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (chestDragging) { clearInterval(chestLongTimer); chestDragging = false; chestTarget = 0; chestShiftTarget = 0; }
         strokeFrom = null; chestFrom = null;
         if (!drag.pending) {
-          const [px, py] = pt(e);
+          const [px, py] = pointerPoint(e);
           drag.pending = { id: pointerId, sx: px, sy: py, h: null, ox: px - shown.x, oy: py - shown.y };
         }
         chord.valid = true;
@@ -2809,7 +2809,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         e.preventDefault(); e.stopPropagation(); swallowClick = true;
         const head = armHeadOrChest(e, h);
         if (intro.phase !== "done" || fleeX !== 0 || link.opening) { if (h && !head) onTouch(h[0], h[1], h[2]); return; }   // 시작 연출·도망·펫 창 여는 중엔 끌기 없음 (머리는 떼는 순간 터치)
-        const [px, py] = pt(e);
+        const [px, py] = pointerPoint(e);
         drag.pending = { id: e.pointerId, sx: px, sy: py, h, ox: px - shown.x, oy: py - shown.y };
         chord.valid = true;   // 캐릭터 위에서 시작한 누름만 코드 그레이스 대상 (빈 곳 클릭은 제외)
         if (e.pointerType === "touch") armTouchHold(e);
@@ -2832,7 +2832,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         // 우→좌: 첫 오른쪽이 캐릭터 위였고 왼쪽이 아직 pending을 만들지 않았으면 여기서 만든다.
         if ((e.buttons & 2) && rightPress?.hit && Number.isFinite(rightPress.id) && !drag.pending && !drag.on) {
           chord = chordDown(chord, 0, e.buttons, now);   // 첫 버튼(오른쪽) 시각 유지
-          const [px, py] = pt(e);
+          const [px, py] = pointerPoint(e);
           drag.pending = { id: rightPress.id, sx: px, sy: py, h: null, ox: px - shown.x, oy: py - shown.y };
           chord.valid = true;
           if (PET) PET.press(true);
@@ -3001,7 +3001,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        */
       const carryMove = (e: PointerEvent, pending: DragPending) => {
         strokeFrom = null; chestFrom = null;   // 좌우 함께 = 무조건 집어 옮기기 (남아 있던 제스처 예약을 버림)
-        const [px, py] = pt(e), now = performance.now();
+        const [px, py] = pointerPoint(e), now = performance.now();
         if (!drag.on) beginCarry(e, pending, px, py, now);
         if (PET && petTracking) { e.preventDefault(); return; }   // 이후 위치·속도는 펫 프로세스가 보내는 cursor 메시지로 갱신
         drag.x = px - pending.ox; drag.y = py - pending.oy;
@@ -3448,7 +3448,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const topLeft = screenOf(0, 0), bottomRight = screenOf(innerWidth, innerHeight);   // DSH 창 영역 (펫 창이 다시 붙을지 판단)
         const dock = {
           k: +petK.toFixed(3),
-          x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * sFull)),
+          x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * fullScale)),
           y: Math.round(waistY - petK * WAIST_PET),
           win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) },
         };

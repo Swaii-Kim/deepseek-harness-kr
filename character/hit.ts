@@ -8,7 +8,7 @@ export function meshBounds(vertices: ArrayLike<number>): [number, number, number
 }
 
 /**
- * (px, py)를 덮는 삼각형을 찾아, 그 자리의 텍스처 좌표(u, v)를 alphaAt에 물어 그림이 있는지(알파 40 초과) 확인.
+ * (px, py)를 덮는 삼각형을 찾아, 그 자리의 텍스처 좌표(u, v)를 alphaAt에 물어 그림이 있는지(알파 40 초과) 확인
  * 삼각형 안이어도 투명하면 다음 삼각형 확인
  * @param vertices 정점 좌표 [x, y, ...] (모델 좌표)
  * @param indices 삼각형 정점 번호 (3개씩)
