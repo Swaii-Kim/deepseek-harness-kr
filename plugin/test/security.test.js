@@ -43,7 +43,7 @@ test('invalid TTS initialization and partial registration preserve assets and pe
       if (partial && route.path === '/dsh-tts/speak') throw Error('registration failed')
       routes.set(route.path, route.handler); return () => routes.delete(route.path)
     } } }
-    assert.doesNotThrow(() => apply(ctx, { tts: { enabled: true, openai: { timeoutMs: partial ? 30000 : 601000 } } }))
+    assert.doesNotThrow(() => apply(ctx, { tts: { enabled: true, openai: { timeoutMs: partial ? 30000 : 601000 } } }, { applyIcon: async () => ({}) }))
     assert.deepEqual([...routes.keys()], [ASSET_PATH, STATUS_PATH, PET_PATH])
     disposers.reverse().forEach((fn) => fn?.()); assert.equal(routes.size, 0)
   }

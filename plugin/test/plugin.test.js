@@ -739,8 +739,10 @@ test('Host asset route serves only its files and unregisters with the plugin', a
     assert.equal((await fetch(url + ASSET_PATH + '/..%5coutside.json')).status, 404)
     assert.equal((await fetch(url + ASSET_PATH + '/model.json', { method: 'POST' })).status, 405)
     assert.equal((await fetch(url + ASSET_PATH + '/%zz')).status, 400)
-    const registrations = new Map(), disposers = []
-    hostApply({ effect(fn) { disposers.push(fn()) }, webServer: { register(route) { registrations.set(route.path, route); return () => registrations.delete(route.path) } } })
+    const registrations = new Map(), disposers = [], icons = []
+    const applyIcon = async (options) => { icons.push(options.enabled); return {} }
+    hostApply({ effect(fn) { disposers.push(fn()) }, webServer: { register(route) { registrations.set(route.path, route); return () => registrations.delete(route.path) } } }, undefined, { applyIcon })
+    assert.deepEqual(icons, [true], 'app icon defaults to on, through the injected function only')
     assert.equal(registrations.get(ASSET_PATH).kind, 'prefix')
     assert.deepEqual([...registrations.keys()].sort(), [ASSET_PATH, STATUS_PATH, PET_PATH, '/dsh-tts/speak', '/dsh-tts/state'].sort())
     for (const dispose of disposers) dispose()
@@ -1031,9 +1033,9 @@ test('voice settings default to off with no endpoint, model or voice', () => {
 test('Host speech routes read live settings and stay 404 while disabled', async () => {
   const live = (value) => ({ get: () => value, set(next) { value = next } })
   const enabled = live(false), baseUrl = live(''), rate = live(24000)
-  const routes = new Map()
-  hostApply({ connection: { requestRejection: () => undefined }, effect(fn) { fn() }, webServer: { register(route) { routes.set(route.path, route.handler); return () => {} } } },
-    { tts: { enabled, openai: { baseUrl, apiKeyEnv: live('') }, stream: { pcmSampleRate: rate } } })
+  const routes = new Map(), disposers = []
+  hostApply({ connection: { requestRejection: () => undefined }, effect(fn) { disposers.push(fn()) }, webServer: { register(route) { routes.set(route.path, route.handler); return () => {} } } },
+    { tts: { enabled, openai: { baseUrl, apiKeyEnv: live('') }, stream: { pcmSampleRate: rate } } }, { applyIcon: async () => ({}) })
   const server = createServer((req, res) => (routes.get(req.url) ?? ((_, r) => r.writeHead(404).end()))(req, res))
   server.listen(0, '127.0.0.1'); await once(server, 'listening')
   const url = 'http://127.0.0.1:' + server.address().port
@@ -1043,7 +1045,7 @@ test('Host speech routes read live settings and stay 404 while disabled', async 
     assert.equal((await (await fetch(url + '/dsh-tts/state')).json()).enabled, false, 'on without a URL stays detached')
     baseUrl.set('http://127.0.0.1:9/v1'); rate.set(44100)
     assert.deepEqual(await (await fetch(url + '/dsh-tts/state')).json(), { enabled: true, pcmSampleRate: 44100, voiceLines: { reactions: true, status: false, mutters: false, others: true } })
-  } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)) }
+  } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); disposers.forEach((dispose) => dispose?.()) }
 })
 
 function voiceFetch(h) {

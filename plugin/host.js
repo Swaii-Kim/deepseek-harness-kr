@@ -177,8 +177,9 @@ export function createStatusHandler(read, rejection) {
 /**
  * 플러그인 시작: 자산·음성·펫 경로 등록, 앱 바로가기 아이콘 동기화
  * @param {HostContext} ctx @param {HostConfig | undefined} config 플러그인 설정 (volatile 참조가 섞임)
+ * @param {{ applyIcon?: typeof applyShortcutIcon }} [options] 앱 아이콘 적용 함수 대체 (시험용, DSH는 넘기지 않음)
  */
-export function apply(ctx, config) {
+export function apply(ctx, config, { applyIcon = applyShortcutIcon } = {}) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ASSET_PATH, handler: createAssetHandler() }), 'deepseek-harness-kr: assets')
   // 말풍선 음성: 설정 화면에서 바꾼 값(volatile)을 요청마다 다시 읽는다. 꺼져 있으면 404.
   registerSpeechRoutes(ctx, () => normalizeTts(readLive(config?.tts)))
@@ -202,7 +203,7 @@ export function apply(ctx, config) {
       const enabled = readLive(config?.appIcon) !== false
       if (enabled === last) return
       last = enabled
-      applyShortcutIcon({ assetsDir: assets, enabled })
+      applyIcon({ assetsDir: assets, enabled })
         .then((result) => { appIconProblem = iconProblem(result) })
         .catch((error) => { appIconProblem = { reason: 'failed', message: String(error?.message ?? error) } })
     }
