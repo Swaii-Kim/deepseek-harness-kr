@@ -574,14 +574,14 @@
         if (found.tool) listeners.tool(found.tool);
       };
       if (!pet) new MutationObserver((records) => {
-        for (const r of records) for (const n of r.addedNodes) scanAdded(n);
+        for (const record of records) for (const n of record.addedNodes) scanAdded(n);
       }).observe(document.body, { childList: true, subtree: true });
-      const load = (src) => new Promise((ok, no) => {
-        const s = life.own(document.createElement("script"), (node) => node.remove());
-        s.src = BASE + src;
-        s.onload = ok;
-        s.onerror = () => no(new Error(src));
-        document.head.appendChild(s);
+      const load = (src) => new Promise((ok, fail) => {
+        const script = life.own(document.createElement("script"), (node) => node.remove());
+        script.src = BASE + src;
+        script.onload = ok;
+        script.onerror = () => fail(new Error(src));
+        document.head.appendChild(script);
       });
       (async () => {
         if (!window.Live2DCubismCore) await load("vendor/live2dcubismcore.min.js");
@@ -626,13 +626,13 @@
             const min = core.getParameterMinimumValue(i), max = core.getParameterMaximumValue(i);
             return Number.isFinite(min) && Number.isFinite(max) ? { id, min, max } : null;
           };
-          const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter((p) => !!p);
-          const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter((p) => !!p);
+          const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter((found) => !!found);
+          const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter((found) => !!found);
           im.physics.evaluate = function(...args) {
             const result = evaluate.apply(this, args);
             const lift = dragLift.x * CHEST_DRAG_SIGN, shift = dragShift.x * CHEST_DRAG_SIGN;
-            if (lift) for (const p of chestParams) core.addParameterValueById(p.id, lift * (lift > 0 ? p.max : -p.min));
-            if (shift) for (const p of chestXParams) core.addParameterValueById(p.id, shift * (shift > 0 ? p.max : -p.min) * 0.9);
+            if (lift) for (const chestParam of chestParams) core.addParameterValueById(chestParam.id, lift * (lift > 0 ? chestParam.max : -chestParam.min));
+            if (shift) for (const chestParam of chestXParams) core.addParameterValueById(chestParam.id, shift * (shift > 0 ? chestParam.max : -chestParam.min) * 0.9);
             return result;
           };
         }
@@ -643,8 +643,8 @@
         const each = (fn) => {
           for (let i = 0; i < cm.drawables.count; i++) {
             if (cm.drawables.opacities[i] < 0.01) continue;
-            const v = im.getDrawableVertices(i);
-            for (let k = 0; k < v.length; k += 2) fn(v[k], v[k + 1]);
+            const vertices = im.getDrawableVertices(i);
+            for (let j = 0; j < vertices.length; j += 2) fn(vertices[j], vertices[j + 1]);
           }
         };
         each((x, y) => {
@@ -654,29 +654,29 @@
           maxY = Math.max(maxY, y);
         });
         const cutY = minY + (maxY - minY) * 0.47;
-        let ux0 = Infinity, ux1 = -Infinity;
+        let bustMinX = Infinity, bustMaxX = -Infinity;
         each((x, y) => {
           if (y < cutY) {
-            ux0 = Math.min(ux0, x);
-            ux1 = Math.max(ux1, x);
+            bustMinX = Math.min(bustMinX, x);
+            bustMaxX = Math.max(bustMaxX, x);
           }
         });
-        const sBust = Math.min(W * 0.98 / (ux1 - ux0), H * 0.95 / (cutY - minY));
+        const sBust = Math.min(W * 0.98 / (bustMaxX - bustMinX), H * 0.95 / (cutY - minY));
         const sFull = Math.min(W * 0.98 / (maxX - minX), H * 0.95 / (maxY - minY));
         const PET_HEAD_RATIO = sBust / sFull;
         const PET_K_MIN = 0.45, PET_BUBBLE = 150;
         const PET_K_MAX = Math.max(1.2, ((typeof screen !== "undefined" && screen.availHeight ? screen.availHeight : 1080) - PET_BUBBLE) / H);
-        const BUST_CX = (ux0 + ux1) / 2, FULL_CX = (minX + maxX) / 2;
+        const BUST_CX = (bustMinX + bustMaxX) / 2, FULL_CX = (minX + maxX) / 2;
         const WAIST_PET = H * 0.05 + (cutY - minY) * sFull;
         const WAIST_WIN = H * 0.05 + (cutY - minY) * sBust;
         const WAIST_PCT = WAIST_PET / H * 100;
-        const bw = WHOLE_BODY ? maxX - minX : ux1 - ux0;
-        const bh = WHOLE_BODY ? maxY - minY : cutY - minY;
-        const s = WHOLE_BODY ? sFull : sBust;
-        const HEAD_GAIN = sBust / s;
-        model.scale.set(s);
-        model.x = W / 2 - ((WHOLE_BODY ? minX : ux0) + bw / 2) * s;
-        model.y = H * 0.05 - minY * s;
+        const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;
+        const bodyHeight = WHOLE_BODY ? maxY - minY : cutY - minY;
+        const modelScale = WHOLE_BODY ? sFull : sBust;
+        const HEAD_GAIN = sBust / modelScale;
+        model.scale.set(modelScale);
+        model.x = W / 2 - ((WHOLE_BODY ? minX : bustMinX) + bodyWidth / 2) * modelScale;
+        model.y = H * 0.05 - minY * modelScale;
         core.setParameterValueById("Clothes2", 1);
         core.update();
         let chibiMinY = Infinity, chibiMaxY = -Infinity;
@@ -687,11 +687,12 @@
         core.setParameterValueById("Clothes2", 0);
         core.update();
         const baseY = model.y;
-        const chibiDrop = Math.max(0, H * 0.99 - chibiMaxY * s - baseY);
-        const chibiHeadDrop = (chibiMinY - minY) * s + chibiDrop;
-        const noseModelX = BUST_CX + (ux1 - ux0) * 0.055;
+        const chibiDrop = Math.max(0, H * 0.99 - chibiMaxY * modelScale - baseY);
+        const chibiHeadDrop = (chibiMinY - minY) * modelScale + chibiDrop;
+        const noseModelX = BUST_CX + (bustMaxX - bustMinX) * 0.055;
         (() => {
-          const d = cm.drawables, N = d.count, localUpdate = () => Object.getPrototypeOf(cm).update.call(cm);
+          const drawables2 = cm.drawables, drawableCount = drawables2.count;
+          const localUpdate = () => Object.getPrototypeOf(cm).update.call(cm);
           let w;
           try {
             w = new Worker(BASE + "dsc-core-worker.js");
@@ -705,13 +706,13 @@
             }
           });
           let lo = Infinity, hi = 0;
-          for (let i = 0; i < N; i++) {
-            const a = d.vertexPositions[i];
-            lo = Math.min(lo, a.byteOffset);
-            hi = Math.max(hi, a.byteOffset + a.byteLength);
+          for (let i = 0; i < drawableCount; i++) {
+            const positions = drawables2.vertexPositions[i];
+            lo = Math.min(lo, positions.byteOffset);
+            hi = Math.max(hi, positions.byteOffset + positions.byteLength);
           }
-          const offs = Array.from(d.vertexPositions, (a) => a.byteOffset - lo).join();
-          const vBytes = new Uint8Array(d.vertexPositions[0].buffer, lo, hi - lo);
+          const offsets = Array.from(drawables2.vertexPositions, (positions) => positions.byteOffset - lo).join();
+          const vertexBytes = new Uint8Array(drawables2.vertexPositions[0].buffer, lo, hi - lo);
           let ready2 = false, busy = false, result = null, spare = null;
           const stop = () => {
             ready2 = false;
@@ -722,32 +723,32 @@
             }
           };
           const apply = (buf) => {
-            const u8 = new Uint8Array(buf);
-            let o = 0;
-            vBytes.set(u8.subarray(0, vBytes.length));
-            o += vBytes.length;
-            d.opacities.set(new Float32Array(buf, o, N));
-            o += N * 4;
-            d.drawOrders.set(new Int32Array(buf, o, N));
-            o += N * 4;
-            d.renderOrders.set(new Int32Array(buf, o, N));
-            o += N * 4;
-            d.multiplyColors.set(new Float32Array(buf, o, N * 4));
-            o += N * 16;
-            d.screenColors.set(new Float32Array(buf, o, N * 4));
-            o += N * 16;
-            d.dynamicFlags.set(u8.subarray(o, o + N));
+            const bytes = new Uint8Array(buf);
+            let offset = 0;
+            vertexBytes.set(bytes.subarray(0, vertexBytes.length));
+            offset += vertexBytes.length;
+            drawables2.opacities.set(new Float32Array(buf, offset, drawableCount));
+            offset += drawableCount * 4;
+            drawables2.drawOrders.set(new Int32Array(buf, offset, drawableCount));
+            offset += drawableCount * 4;
+            drawables2.renderOrders.set(new Int32Array(buf, offset, drawableCount));
+            offset += drawableCount * 4;
+            drawables2.multiplyColors.set(new Float32Array(buf, offset, drawableCount * 4));
+            offset += drawableCount * 16;
+            drawables2.screenColors.set(new Float32Array(buf, offset, drawableCount * 4));
+            offset += drawableCount * 16;
+            drawables2.dynamicFlags.set(bytes.subarray(offset, offset + drawableCount));
           };
           w.onerror = stop;
           w.onmessage = (e) => {
-            const m = e.data;
-            if (m.type === "ready") {
-              if (m.count === N && m.params === cm.parameters.count && m.parts === cm.parts.count && m.offs.join() === offs) ready2 = true;
+            const message = e.data;
+            if (message.type === "ready") {
+              if (message.count === drawableCount && message.params === cm.parameters.count && message.parts === cm.parts.count && message.offs.join() === offsets) ready2 = true;
               else stop();
-            } else if (m.type === "frame") {
-              result = m.buf;
+            } else if (message.type === "frame") {
+              result = message.buf;
               busy = false;
-            } else if (m.type === "fail") stop();
+            } else if (message.type === "fail") stop();
           };
           cm.update = () => {
             if (!ready2) return localUpdate();
@@ -757,12 +758,12 @@
               result = null;
             }
             if (!busy) {
-              const P = cm.parameters.count, inp = new Float32Array(P + cm.parts.count);
-              inp.set(cm.parameters.values);
-              inp.set(cm.parts.opacities, P);
-              const tr = [inp.buffer];
-              if (spare) tr.push(spare);
-              w.postMessage({ type: "frame", inp: inp.buffer, out: spare }, tr);
+              const paramCount = cm.parameters.count, inputs = new Float32Array(paramCount + cm.parts.count);
+              inputs.set(cm.parameters.values);
+              inputs.set(cm.parts.opacities, paramCount);
+              const transfer = [inputs.buffer];
+              if (spare) transfer.push(spare);
+              w.postMessage({ type: "frame", inp: inputs.buffer, out: spare }, transfer);
               spare = null;
               busy = true;
             }
@@ -770,11 +771,11 @@
           w.postMessage({ type: "init", url: BASE + "model/model.moc3" });
         })();
         const exp = {};
-        await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (f) => {
+        await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (expName) => {
           try {
-            exp[f] = (await (await fetch(`${BASE}model/exp/${f}.exp3.json`)).json()).Parameters || [];
+            exp[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || [];
           } catch {
-            exp[f] = [];
+            exp[expName] = [];
           }
         }));
         if (life.stopped) return;
@@ -819,24 +820,36 @@
         })();
         const link = createPetLink({
           url: PET_URL,
+          /** 전역 fetch 호출 (window에 묶인 채로 부르도록 감쌈) */
           fetch: (...args) => fetch(...args),
           setTimeout,
           setInterval,
           requestAnimationFrame,
+          /** 펫 창 사용 기록 (플러그인이 내려갈 때 펫 창을 숨길지 판단) */
           onUse: () => {
             petUsed = true;
           },
-          // 플러그인이 내려갈 때 펫 창을 숨길지 판단
+          /** 펫 창 메뉴에서 바꾼 설정을 플러그인 설정에 저장하도록 전달 */
           onConfig: (key, value) => onSetting?.(key, value),
+          /** 펫 창이 열려 창 안 캐릭터가 물러날 때 */
           onEnter: () => petLinkEnter(),
+          /** 펫 창이 닫혀 창 안 캐릭터가 돌아올 때 */
           onLeave: () => petLinkLeave(),
+          /** 펫 창에 넘길 지금 상태 */
           snapshot: () => petLinkSnapshot(),
+          /** 끌어서 넘기는 동안 펫 창에 보낼 메시지 */
           dragMessages: () => petLinkDragMessages(),
+          /** 펫 창이 붙을 자리 */
           dockState: () => petLinkDock(),
+          /** 지금 끌기 상태의 비교용 키 */
           dragKey: () => dragKeyRaw(),
+          /** 외부 음성 상태 */
           voice: () => voiceState,
+          /** 시작 연출이 끝났고 작업 중이 아니며 화면이 보이는 상태 여부 */
           idle: () => intro.phase === "done" && !running && !document.hidden,
+          /** 캔버스만 숨김 상태 여부 */
           hidden: () => hidden,
+          /** 펫 창을 열 때 쓸 화면 좌표 자리 */
           openPose: () => petOpenScreenPose()
         });
         const relay = link.relay;
@@ -876,9 +889,9 @@
         };
         const BOB_KICK = { bounce: 60, laugh: 50, nod: -45 };
         let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6e3, talkUntil = 0;
-        const setMood = (m, ms = 0) => {
-          relay("setMood", [m, ms]);
-          mood = m;
+        const setMood = (moodName, ms = 0) => {
+          relay("setMood", [moodName, ms]);
+          mood = moodName;
           moodUntil = ms ? performance.now() + ms : 0;
         };
         const pose = { lean: 0, headZ: 0, headY: 0, bodyY: 0, swayAmp: 0 };
@@ -889,7 +902,7 @@
         let sulkStart = -1e9, sulkUntil = 0, sulkDir = 1, sulkPeeks = [], sulkYaw = 0, sulkRoll = 0;
         const SULK_CHIN = 10;
         const PEEK_RISE = 550, PEEK_HOLD = 450, PEEK_SNAP = 150;
-        const visW = bw * s, visH = H * 0.95;
+        const visW = bodyWidth * modelScale, visH = H * 0.95;
         let coarseMql = null;
         const coarsePointer = () => {
           if (typeof matchMedia !== "function") return false;
@@ -898,14 +911,14 @@
         };
         const mobileHidden = () => !!prefs.mobile && prefs.mobile.enabled === false && coarsePointer();
         const keyboardOpen = () => {
-          const vv = typeof visualViewport !== "undefined" && visualViewport ? visualViewport : null;
-          if (!vv || vv.scale !== 1) return false;
-          return innerHeight - vv.height > 120 || vv.offsetTop > 4;
+          const visualVp = typeof visualViewport !== "undefined" && visualViewport ? visualViewport : null;
+          if (!visualVp || visualVp.scale !== 1) return false;
+          return innerHeight - visualVp.height > 120 || visualVp.offsetTop > 4;
         };
         const typingActive = () => coarsePointer() && keyboardOpen();
         const viewport = () => {
-          const vv = typeof visualViewport !== "undefined" && visualViewport ? visualViewport : null;
-          return vv ? { w: vv.width, h: vv.height, top: vv.offsetTop, left: vv.offsetLeft } : { w: innerWidth, h: innerHeight, top: 0, left: 0 };
+          const visualVp = typeof visualViewport !== "undefined" && visualViewport ? visualViewport : null;
+          return visualVp ? { w: visualVp.width, h: visualVp.height, top: visualVp.offsetTop, left: visualVp.offsetLeft } : { w: innerWidth, h: innerHeight, top: 0, left: 0 };
         };
         const layoutViewport = () => coarsePointer() ? viewport() : { w: innerWidth, h: innerHeight, top: 0, left: 0 };
         let curK = 1, fleeX = 0;
@@ -917,7 +930,7 @@
         const carry = { vx: 0, vy: 0 };
         const shown = { k: 1, x: 0, y: 0 };
         let touchHold = 0;
-        let petDock = null, petDocked = false, snapP = 0;
+        let petDock = null, petDocked = false, snapProgress = 0;
         const PET_SIZE_KEY = "dsc-pet-size";
         let petPanel = null, petPanelOpen = false, petPanelWin = { w: 0, h: 0 };
         let petBaseK = 1, petPendingRatio = null, petSizeTimer = 0, petMenuSig = "";
@@ -931,9 +944,9 @@
         };
         if (!PET) try {
           const mode = freeMode();
-          const s2 = JSON.parse(localStorage.getItem(freeStorageKey(mode)) || "null");
-          if (s2 && isFinite(s2.fx) && isFinite(s2.fy) && s2.k > 0 && (!s2.mode || s2.mode === mode)) {
-            Object.assign(free, { on: true, fx: s2.fx, fy: s2.fy, k: s2.k, mode, applied: true });
+          const saved = JSON.parse(localStorage.getItem(freeStorageKey(mode)) || "null");
+          if (saved && isFinite(saved.fx) && isFinite(saved.fy) && saved.k > 0 && (!saved.mode || saved.mode === mode)) {
+            Object.assign(free, { on: true, fx: saved.fx, fy: saved.fy, k: saved.k, mode, applied: true });
           }
         } catch {
         }
@@ -964,31 +977,31 @@
           app.renderer.resolution = res;
           app.renderer.resize(W, H);
         };
-        const ease = (p) => p < 0 ? 0 : p > 1 ? 1 : p * p * (3 - 2 * p);
+        const ease = (progress) => progress < 0 ? 0 : progress > 1 ? 1 : progress * progress * (3 - 2 * progress);
         const findCard = () => document.querySelector(".dsc-composer") || [...document.querySelectorAll('[class*="_card"]')].find((e) => e.closest('[class*="_root"]') && e.querySelector('[class*="_input"]'));
         const cardRect = (card) => {
-          const r = card.getBoundingClientRect();
-          if (r.width) return r;
+          const rect = card.getBoundingClientRect();
+          if (rect.width) return rect;
           const seat = card.closest('[class*="composerSeat"]');
           for (const alt of seat ? seat.querySelectorAll('[class*="_card"]') : []) {
             if (alt === card) continue;
-            const ar = alt.getBoundingClientRect();
-            if (ar.width) return ar;
+            const altRect = alt.getBoundingClientRect();
+            if (altRect.width) return altRect;
           }
           return null;
         };
         const homePose = () => {
           const card = findCard();
-          const vp = layoutViewport();
-          const maxK = Math.min(PET_K_MAX / PET_HEAD_RATIO, vp.h * 0.92 / visH);
-          const r = card ? cardRect(card) : null;
-          const pose2 = homeLayout({ vp, r, maxK, W, visW, H, visH, minK: SHOW_K, allowAbove: coarsePointer() });
-          return { k: pose2.k, x: pose2.x + fleeX, y: pose2.y, card, r, above: pose2.above, noSafe: !!pose2.noSafe, vp };
+          const viewArea = layoutViewport();
+          const maxK = Math.min(PET_K_MAX / PET_HEAD_RATIO, viewArea.h * 0.92 / visH);
+          const cardBox = card ? cardRect(card) : null;
+          const pose2 = homeLayout({ vp: viewArea, r: cardBox, maxK, W, visW, H, visH, minK: SHOW_K, allowAbove: coarsePointer() });
+          return { k: pose2.k, x: pose2.x + fleeX, y: pose2.y, card, r: cardBox, above: pose2.above, noSafe: !!pose2.noSafe, vp: viewArea };
         };
         const centerPose = () => {
-          const vp = layoutViewport();
-          const k = Math.min(vp.h * 0.74 / visH, vp.w * 0.55 / visW, 3.2);
-          return { k, x: vp.left + vp.w / 2 - W * k / 2, y: vp.top + vp.h - H * k };
+          const viewArea = layoutViewport();
+          const k = Math.min(viewArea.h * 0.74 / visH, viewArea.w * 0.55 / visW, 3.2);
+          return { k, x: viewArea.left + viewArea.w / 2 - W * k / 2, y: viewArea.top + viewArea.h - H * k };
         };
         const introOff = !!prefs.intro && prefs.intro.enabled === false;
         if (!introOff) {
@@ -1010,39 +1023,39 @@
           const side = (W - visW) / 2 * k;
           return { l: x + side, t: y + H * 0.05 * k, r: x + W * k - side, b: y + H * k };
         };
-        const easeOut = (p) => 1 - Math.pow(1 - p, 3);
-        const easeBack = (p) => {
-          const c = 1.25, q = p - 1;
-          return 1 + (c + 1) * q * q * q + c * q * q;
+        const easeOut = (progress) => 1 - Math.pow(1 - progress, 3);
+        const easeBack = (progress) => {
+          const overshoot = 1.25, fromEnd = progress - 1;
+          return 1 + (overshoot + 1) * fromEnd * fromEnd * fromEnd + overshoot * fromEnd * fromEnd;
         };
         const area = () => PET ? { l: screen.availLeft, t: screen.availTop, r: screen.availLeft + screen.availWidth, b: screen.availTop + screen.availHeight } : { l: 0, t: 0, r: innerWidth, b: innerHeight };
-        const keepIn = (p) => {
-          const a = area(), side = (W - visW) / 2 * p.k;
-          return { k: p.k, x: Math.min(Math.max(p.x, a.l - side), a.r - W * p.k + side), y: Math.min(Math.max(p.y, a.t - H * p.k * 0.05), a.b - H * p.k * 0.3) };
+        const keepIn = (candidate) => {
+          const bounds = area(), side = (W - visW) / 2 * candidate.k;
+          return { k: candidate.k, x: Math.min(Math.max(candidate.x, bounds.l - side), bounds.r - W * candidate.k + side), y: Math.min(Math.max(candidate.y, bounds.t - H * candidate.k * 0.05), bounds.b - H * candidate.k * 0.3) };
         };
         const screenOf = (x, y) => {
-          const bx = (outerWidth - innerWidth) / 2;
-          return { x: screenX + bx + x, y: screenY + Math.max(0, outerHeight - innerHeight - bx) + y };
+          const border = (outerWidth - innerWidth) / 2;
+          return { x: screenX + border + x, y: screenY + Math.max(0, outerHeight - innerHeight - border) + y };
         };
         const dockTarget = (home) => home.k >= SHOW_K || home.above || home.noSafe ? home : { k: SHOW_K, x: innerWidth - 4 - (W + visW) / 2 * SHOW_K + fleeX, y: innerHeight - H * SHOW_K };
-        const bodyOut = (q, entering = true) => {
-          const side = (W - visW) / 2 * q.k, edge = visW * q.k * (entering ? 0.15 : -0.02), low2 = entering ? 0.5 : 0.8;
-          return q.x + side < -edge || q.x + W * q.k - side > innerWidth + edge || q.y < -edge || q.y + H * q.k * low2 > innerHeight;
+        const bodyOut = (candidate, entering = true) => {
+          const side = (W - visW) / 2 * candidate.k, edge = visW * candidate.k * (entering ? 0.15 : -0.02), low2 = entering ? 0.5 : 0.8;
+          return candidate.x + side < -edge || candidate.x + W * candidate.k - side > innerWidth + edge || candidate.y < -edge || candidate.y + H * candidate.k * low2 > innerHeight;
         };
-        const inWindow = (q, w) => {
-          const side = (W - visW) / 2 * q.k, edge = visW * q.k * 0.02;
-          return q.x + side >= w.l + edge && q.x + W * q.k - side <= w.r - edge && q.y >= w.t + edge && q.y + H * q.k * 0.8 <= w.b;
+        const inWindow = (candidate, w) => {
+          const side = (W - visW) / 2 * candidate.k, edge = visW * candidate.k * 0.02;
+          return candidate.x + side >= w.l + edge && candidate.x + W * candidate.k - side <= w.r - edge && candidate.y >= w.t + edge && candidate.y + H * candidate.k * 0.8 <= w.b;
         };
-        const finishFreeAnim = (a, to) => {
+        const finishFreeAnim = (anim, to) => {
           free.anim = null;
-          if (a.snap && !PET) {
+          if (anim.snap && !PET) {
             free.on = false;
             saveFree();
           } else {
             Object.assign(free, { on: true, x: to.x, y: to.y, k: to.k });
             saveFree();
           }
-          if (a.snap && PET) {
+          if (anim.snap && PET) {
             petDocked = true;
             PET.send({ type: "attach" });
           }
@@ -1051,13 +1064,13 @@
             renderPetPanel();
           }
         };
-        const freeAnimPose = (a, home, now) => {
-          const p = Math.min(1, (now - a.t0) / a.ms), to = a.snap ? (PET ? petDock : dockTarget(home)) || a.from : a.to;
-          const e = a.snap ? easeBack(p) : easeOut(p), ek = easeOut(p);
-          const tp = to;
-          const pose2 = { k: a.from.k + (tp.k - a.from.k) * ek, x: a.from.x + (tp.x - a.from.x) * e, y: a.from.y + (tp.y - a.from.y) * e };
-          if (a.snap) snapP = ek;
-          if (p >= 1) finishFreeAnim(a, tp);
+        const freeAnimPose = (anim, home, now) => {
+          const progress = Math.min(1, (now - anim.t0) / anim.ms), to = anim.snap ? (PET ? petDock : dockTarget(home)) || anim.from : anim.to;
+          const e = anim.snap ? easeBack(progress) : easeOut(progress), scaleEase = easeOut(progress);
+          const target = to;
+          const pose2 = { k: anim.from.k + (target.k - anim.from.k) * scaleEase, x: anim.from.x + (target.x - anim.from.x) * e, y: anim.from.y + (target.y - anim.from.y) * e };
+          if (anim.snap) snapProgress = scaleEase;
+          if (progress >= 1) finishFreeAnim(anim, target);
           return pose2;
         };
         const freeWindowPose = (home) => {
@@ -1068,7 +1081,7 @@
           return { k, x: free.fx * innerWidth - W * k / 2, y: free.fy * innerHeight - H * k };
         };
         const dockPose = (home, now) => {
-          snapP = 0;
+          snapProgress = 0;
           if (drag.on) return { k: free.k, x: drag.x, y: drag.y };
           if (free.anim) return freeAnimPose(free.anim, home, now);
           const currentMode = freeMode();
@@ -1078,34 +1091,34 @@
           }
           free.applied = true;
           if (!free.on) return dockTarget(home);
-          const p = keepIn(PET ? free : freeWindowPose(home));
-          return { k: p.k, x: p.x + fleeX, y: p.y };
+          const kept = keepIn(PET ? free : freeWindowPose(home));
+          return { k: kept.k, x: kept.x + fleeX, y: kept.y };
         };
         const GLIDE = 0.066;
         const release = (vx, vy, touch = false) => {
-          const k = free.k, from = { k, x: drag.x, y: drag.y }, p = { k, x: from.x + vx * GLIDE, y: from.y + vy * GLIDE };
+          const k = free.k, from = { k, x: drag.x, y: drag.y }, glided = { k, x: from.x + vx * GLIDE, y: from.y + vy * GLIDE };
           const home = PET ? petDock : dockTarget(homePose());
-          const mid = (q, kk) => [q.x + W * kk / 2, q.y + H * kk * 0.5];
-          const [px, py] = mid(p, k);
-          const outside = !PET && bodyOut(p);
-          const backIn = !PET || !home?.win || inWindow(p, home.win);
+          const mid = (at, scale) => [at.x + W * scale / 2, at.y + H * scale * 0.5];
+          const [px, py] = mid(glided, k);
+          const outside = !PET && bodyOut(glided);
+          const backIn = !PET || !home?.win || inWindow(glided, home.win);
           const snapRange = touch ? Math.max(80, visW * k * 0.35) : Math.max(140, visW * k * 0.7);
           const snap = !outside && backIn && !!home && Math.hypot(px - mid(home, home.k)[0], py - mid(home, home.k)[1]) < snapRange;
           if (Math.hypot(vx, vy) > 2600) flashExp("dizzy", 1500);
           if (outside && link.supported) {
-            const a = screenOf(from.x, from.y), b = screenOf(p.x, p.y);
+            const fromScreen = screenOf(from.x, from.y), toScreen = screenOf(glided.x, glided.y);
             link.opening = performance.now();
-            link.post("open", { from: { k, x: a.x, y: a.y }, to: { k, x: b.x, y: b.y }, seq: ++link.seq });
+            link.post("open", { from: { k, x: fromScreen.x, y: fromScreen.y }, to: { k, x: toScreen.x, y: toScreen.y }, seq: ++link.seq });
           }
           free.on = true;
           if (snap) {
             free.anim = { t0: performance.now(), ms: 650, from, to: null, snap: true };
             return;
           }
-          const to = keepIn(p);
+          const to = keepIn(glided);
           let target = to;
           if (PET && petPendingRatio != null) {
-            target = keepIn(petSizedPose(p, k, petPendingRatio));
+            target = keepIn(petSizedPose(glided, k, petPendingRatio));
             petPendingRatio = null;
           }
           if (target.x !== from.x || target.y !== from.y || target.k !== from.k) free.anim = { t0: performance.now(), ms: 300, from, to: target, snap: false };
@@ -1128,12 +1141,12 @@
         let petBox = "";
         const movePet = (pose2) => {
           const cx = (innerWidth - W * pose2.k) / 2, cy = innerHeight - H * pose2.k;
-          const wx = Math.round(pose2.x - cx), wy = Math.round(pose2.y - cy);
+          const winX = Math.round(pose2.x - cx), winY = Math.round(pose2.y - cy);
           if (petTracking) petWin.x = petWin.y = NaN;
-          else if (wx !== petWin.x || wy !== petWin.y) {
-            petWin.x = wx;
-            petWin.y = wy;
-            PET.move(wx, wy);
+          else if (winX !== petWin.x || winY !== petWin.y) {
+            petWin.x = winX;
+            petWin.y = winY;
+            PET.move(winX, winY);
           }
           return { x: cx, y: cy };
         };
@@ -1183,7 +1196,7 @@
         };
         const introPose = (home, dock, now) => {
           let { k, x, y } = dock;
-          let introOn = intro.phase !== "done", vo = 0;
+          let introOn = intro.phase !== "done", veilOpacity = 0;
           if (introOn && !intro.begun) {
             if (home.card && !intro.cardAt) intro.cardAt = now;
             if (!(intro.cardAt && now - intro.cardAt > 300) && now - intro.start < 8e3) {
@@ -1195,24 +1208,24 @@
             intro.start = now;
           }
           if (introOn) {
-            const c = centerPose();
+            const center = centerPose();
             if (intro.phase === "center") {
-              vo = 1;
-              k = c.k;
-              x = c.x;
-              y = c.y;
+              veilOpacity = 1;
+              k = center.k;
+              x = center.x;
+              y = center.y;
               if (intro.skip) {
                 intro.phase = "move";
                 intro.moveStart = now;
-                intro.from = c;
+                intro.from = center;
               }
             } else {
-              const p = ease((now - intro.moveStart) / 900);
-              vo = 1 - p;
-              k = intro.from.k + (dock.k - intro.from.k) * p;
-              x = intro.from.x + (dock.x - intro.from.x) * p;
-              y = intro.from.y + (dock.y - intro.from.y) * p;
-              if (p >= 1) {
+              const progress = ease((now - intro.moveStart) / 900);
+              veilOpacity = 1 - progress;
+              k = intro.from.k + (dock.k - intro.from.k) * progress;
+              x = intro.from.x + (dock.x - intro.from.x) * progress;
+              y = intro.from.y + (dock.y - intro.from.y) * progress;
+              if (progress >= 1) {
                 intro.phase = "done";
                 introOn = false;
                 setRes(1);
@@ -1222,7 +1235,7 @@
                 bubble.style.padding = "";
               }
             }
-            veil.style.opacity = String(vo);
+            veil.style.opacity = String(veilOpacity);
             veil.style.pointerEvents = intro.phase === "center" ? "auto" : "none";
             canvas.style.opacity = intro.phase === "center" ? String(ease((now - intro.start) / 300)) : "";
           }
@@ -1243,12 +1256,12 @@
             petPanelWin = { w: innerWidth, h: innerHeight };
             fitPetPanel();
           }
-          const r = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
-          const b = petPanelBox(body);
-          const sig = JSON.stringify(b);
+          const bodyBox = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(bodyBox.l), t: Math.round(bodyBox.t), r: Math.round(bodyBox.r), b: Math.round(bodyBox.b) };
+          const hitBox = petPanelBox(body);
+          const sig = JSON.stringify(hitBox);
           if (sig !== petBox) {
             petBox = sig;
-            PET.send({ type: "hitbox", box: b });
+            PET.send({ type: "hitbox", box: hitBox });
           }
           return { x, y };
         };
@@ -1257,12 +1270,13 @@
           const popup = seat && seat.querySelector('[class*="_card"]:not(.dsc-composer)');
           let clip = "";
           if (popup) {
-            const pr = popup.getBoundingClientRect(), cs = getComputedStyle(popup), cw = W * k, ch = H * k;
-            const l = pr.left - x, t = pr.top - y, rr = pr.right - x, bb = pr.bottom - y;
-            if (rr > 0 && bb > 0 && l < cw && t < ch) {
-              const rad = (v) => Math.min(parseFloat(v) || 0, pr.width / 2, pr.height / 2), f = (n) => +n.toFixed(2);
-              const tl = rad(cs.borderTopLeftRadius), tr = rad(cs.borderTopRightRadius), br = rad(cs.borderBottomRightRadius), bl = rad(cs.borderBottomLeftRadius);
-              clip = `path(evenodd, "M0 0H${f(cw)}V${f(ch)}H0Z M${f(l + tl)} ${f(t)}H${f(rr - tr)}A${f(tr)} ${f(tr)} 0 0 1 ${f(rr)} ${f(t + tr)}V${f(bb - br)}A${f(br)} ${f(br)} 0 0 1 ${f(rr - br)} ${f(bb)}H${f(l + bl)}A${f(bl)} ${f(bl)} 0 0 1 ${f(l)} ${f(bb - bl)}V${f(t + tl)}A${f(tl)} ${f(tl)} 0 0 1 ${f(l + tl)} ${f(t)}Z")`;
+            const popupRect = popup.getBoundingClientRect(), popupStyle = getComputedStyle(popup), canvasWidth = W * k, canvasHeight = H * k;
+            const left = popupRect.left - x, top = popupRect.top - y, right = popupRect.right - x, bottom = popupRect.bottom - y;
+            if (right > 0 && bottom > 0 && left < canvasWidth && top < canvasHeight) {
+              const radius = (value) => Math.min(parseFloat(value) || 0, popupRect.width / 2, popupRect.height / 2);
+              const fixed = (n) => +n.toFixed(2);
+              const topLeftRadius = radius(popupStyle.borderTopLeftRadius), topRightRadius = radius(popupStyle.borderTopRightRadius), bottomRightRadius = radius(popupStyle.borderBottomRightRadius), bottomLeftRadius = radius(popupStyle.borderBottomLeftRadius);
+              clip = `path(evenodd, "M0 0H${fixed(canvasWidth)}V${fixed(canvasHeight)}H0Z M${fixed(left + topLeftRadius)} ${fixed(top)}H${fixed(right - topRightRadius)}A${fixed(topRightRadius)} ${fixed(topRightRadius)} 0 0 1 ${fixed(right)} ${fixed(top + topRightRadius)}V${fixed(bottom - bottomRightRadius)}A${fixed(bottomRightRadius)} ${fixed(bottomRightRadius)} 0 0 1 ${fixed(right - bottomRightRadius)} ${fixed(bottom)}H${fixed(left + bottomLeftRadius)}A${fixed(bottomLeftRadius)} ${fixed(bottomLeftRadius)} 0 0 1 ${fixed(left)} ${fixed(bottom - bottomLeftRadius)}V${fixed(top + topLeftRadius)}A${fixed(topLeftRadius)} ${fixed(topLeftRadius)} 0 0 1 ${fixed(left + topLeftRadius)} ${fixed(top)}Z")`;
             }
           }
           if (clip !== lastClip) {
@@ -1272,17 +1286,17 @@
         };
         const canvasMask = ({ winBox, petFade, fade, x, y }) => {
           if (winBox && petFade > 1e-3) {
-            const o = screenOf(0, 0), A = (1 - petFade).toFixed(3);
-            const l = (winBox.l - o.x - x).toFixed(1), r = (winBox.r - o.x - x).toFixed(1);
-            const t = (winBox.t - o.y - y).toFixed(1), b = (winBox.b - o.y - y).toFixed(1);
+            const origin = screenOf(0, 0), outsideAlpha = (1 - petFade).toFixed(3);
+            const left = (winBox.l - origin.x - x).toFixed(1), right = (winBox.r - origin.x - x).toFixed(1);
+            const top = (winBox.t - origin.y - y).toFixed(1), bottom = (winBox.b - origin.y - y).toFixed(1);
             return {
-              mask: `linear-gradient(to right, rgba(0,0,0,${A}) 0 ${l}px, #000 ${l}px ${r}px, rgba(0,0,0,${A}) ${r}px 100%), linear-gradient(to bottom, rgba(0,0,0,${A}) 0 ${t}px, #000 ${t}px ${b}px, rgba(0,0,0,${A}) ${b}px 100%)`,
+              mask: `linear-gradient(to right, rgba(0,0,0,${outsideAlpha}) 0 ${left}px, #000 ${left}px ${right}px, rgba(0,0,0,${outsideAlpha}) ${right}px 100%), linear-gradient(to bottom, rgba(0,0,0,${outsideAlpha}) 0 ${top}px, #000 ${top}px ${bottom}px, rgba(0,0,0,${outsideAlpha}) ${bottom}px 100%)`,
               maskComposite: "intersect"
             };
           }
           if (petFade > 1e-3) {
-            const alpha = (1 - petFade).toFixed(3), b0 = Math.max(0, WAIST_PCT - 2.5).toFixed(2), b1 = Math.min(100, WAIST_PCT + 2.5).toFixed(2);
-            return { mask: `linear-gradient(to bottom, #000 0 ${b0}%, rgba(0,0,0,${alpha}) ${b1}% 100%)`, maskComposite: "" };
+            const alpha = (1 - petFade).toFixed(3), fadeFrom = Math.max(0, WAIST_PCT - 2.5).toFixed(2), fadeTo = Math.min(100, WAIST_PCT + 2.5).toFixed(2);
+            return { mask: `linear-gradient(to bottom, #000 0 ${fadeFrom}%, rgba(0,0,0,${alpha}) ${fadeTo}% 100%)`, maskComposite: "" };
           }
           return { mask: fade > 0 ? `linear-gradient(to bottom, #000 calc(100% - ${fade}px), transparent)` : "", maskComposite: "" };
         };
@@ -1306,15 +1320,15 @@
           bubble.style.fontSize = "22px";
           bubble.style.padding = "14px 24px";
           bubble.style.maxWidth = "560px";
-          const bw0 = bubble.offsetWidth, bh0 = bubble.offsetHeight, tail = fitTail();
+          const bubbleWidth = bubble.offsetWidth, bubbleHeight = bubble.offsetHeight, tail = fitTail();
           if (!coarsePointer()) {
-            bubble.style.left = tailLeft({ noseX, bw: bw0, width: innerWidth, tail }) + "px";
-            bubble.style.top = Math.max(8, headTop - bh0 - 6) + "px";
+            bubble.style.left = tailLeft({ noseX, bw: bubbleWidth, width: innerWidth, tail }) + "px";
+            bubble.style.top = Math.max(8, headTop - bubbleHeight - 6) + "px";
             return;
           }
-          const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bh0 - HOME_GAP));
-          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bw0, width: vp.w, tail }) + "px";
-          bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bh0 - 6)) + "px";
+          const clampY = (top) => Math.min(Math.max(vp.top + HOME_GAP, top), Math.max(vp.top + HOME_GAP, vp.top + vp.h - bubbleHeight - HOME_GAP));
+          bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bubbleWidth, width: vp.w, tail }) + "px";
+          bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bubbleHeight - 6)) + "px";
         };
         const placeDesktopBubble = ({ k, x, noseX, headTop, home, loose }) => {
           const card = home.card;
@@ -1324,12 +1338,12 @@
           bubble.style.right = tailRight({ noseX, width: innerWidth, tail }) + "px";
           bubble.style.top = Math.max(8, headTop - bubble.offsetHeight - 10) + "px";
           if (!(card && home.r)) return;
-          const r = home.r, bl = bubble.offsetLeft, bt = bubble.offsetTop, b = { left: bl, top: bt, right: bl + bubble.offsetWidth, bottom: bt + bubble.offsetHeight };
-          if (!(b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top)) return;
+          const cardBox = home.r, bubbleLeft = bubble.offsetLeft, bubbleTop = bubble.offsetTop, bubbleBox = { left: bubbleLeft, top: bubbleTop, right: bubbleLeft + bubble.offsetWidth, bottom: bubbleTop + bubble.offsetHeight };
+          if (!(bubbleBox.left < cardBox.right && bubbleBox.right > cardBox.left && bubbleBox.top < cardBox.bottom && bubbleBox.bottom > cardBox.top)) return;
           bubble.classList.add("side");
           bubble.style.maxWidth = "220px";
           bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
-          const sideTop = Math.max(r.bottom + 8, headTop + 4);
+          const sideTop = Math.max(cardBox.bottom + 8, headTop + 4);
           if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
           else {
             bubble.classList.remove("side");
@@ -1341,13 +1355,13 @@
           const card = home.card;
           bubble.style.right = "auto";
           bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) + "px";
-          const bl = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
-          bubble.style.left = bl.left + "px";
-          bubble.style.top = bl.top + "px";
-          if (bl.side && !home.above) bubble.classList.add("side");
+          const placement = bubbleLayout({ vp, headX: noseX, headTop, bw: bubble.offsetWidth, bh: bubble.offsetHeight, r: card && home.r ? home.r : null, above: home.above, tail: fitTail() });
+          bubble.style.left = placement.left + "px";
+          bubble.style.top = placement.top + "px";
+          if (placement.side && !home.above) bubble.classList.add("side");
         };
         const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox }) => {
-          const r0 = home.r;
+          const cardBox = home.r;
           return [
             k,
             x,
@@ -1358,10 +1372,10 @@
             vp.h,
             fleeX,
             Math.round(bodyW * 40),
-            r0 && r0.left,
-            r0 && r0.right,
-            r0 && r0.top,
-            r0 && r0.bottom,
+            cardBox && cardBox.left,
+            cardBox && cardBox.right,
+            cardBox && cardBox.top,
+            cardBox && cardBox.bottom,
             Math.round(noseX / 3),
             home.above ? 1 : 0,
             bubble.textContent,
@@ -1375,7 +1389,7 @@
         const fadeAmounts = (k, y) => {
           const lift = PET ? 0 : Math.max(0, innerHeight - (y + H * k));
           const fade = PET ? 0 : Math.round(Math.max(0, Math.min(lift, H * k * 0.18)) * (1 - Math.min(1, Math.max(0, bodyW))));
-          const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapP)) : 0;
+          const petFade = PET ? Math.min(1, Math.max(0, petDocked ? 1 : snapProgress)) : 0;
           return { fade, petFade };
         };
         const showAt = (introOn, k, home) => {
@@ -1414,8 +1428,8 @@
           const { fade, petFade } = fadeAmounts(k, y);
           const winBox = petWinBox();
           const noseX = x + (model.x + noseModelX * model.scale.x) * k;
-          const vp = home.vp || viewport();
-          const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox });
+          const viewArea = home.vp || viewport();
+          const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp: viewArea, home, noseX, fade, petFade, loose, winBox });
           if (placeKey && placeKey === lastPlaceKey) return;
           lastPlaceKey = placeKey;
           applyCanvasMask({ winBox, petFade, fade, x, y });
@@ -1426,7 +1440,7 @@
           canvas.style.top = y + "px";
           const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyW))) * k;
           bubble.classList.remove("side");
-          const spot = { k, x, noseX, headTop, vp, home, loose };
+          const spot = { k, x, noseX, headTop, vp: viewArea, home, loose };
           placeBubble(introOn, spot);
         };
         const hideChipVisible = ({ pet: pet2 = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet2 && isHidden && !mobileHiddenNow && !pageHiddenNow();
@@ -1767,12 +1781,12 @@
             t -= tk.syl[i].d;
             i++;
           }
-          const s2 = tk.syl[i];
-          if (!(s2 && s2.v)) return 0;
-          const p = t / s2.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
-          const open = env * s2.amp * (tk.quiet ? 0.3 : 1);
-          vowel[s2.v] = Math.max(vowel[s2.v], open);
-          if (s2.stress && i !== lastStressIdx) {
+          const s = tk.syl[i];
+          if (!(s && s.v)) return 0;
+          const p = t / s.d, env = Math.pow(Math.sin(Math.PI * Math.min(1, p)), 0.7);
+          const open = env * s.amp * (tk.quiet ? 0.3 : 1);
+          vowel[s.v] = Math.max(vowel[s.v], open);
+          if (s.stress && i !== lastStressIdx) {
             lastStressIdx = i;
             if (!tk.quiet) stressKick(introCalm);
           }
@@ -3433,7 +3447,7 @@
           if (!link.supported || link.open) return;
           const k = free.k;
           const out = bodyOut({ k, x: drag.x, y: drag.y });
-          const s2 = screenOf(drag.x, drag.y), pose2 = { k, x: s2.x, y: s2.y };
+          const s = screenOf(drag.x, drag.y), pose2 = { k, x: s.x, y: s.y };
           if (!link.follow) {
             if (!out) return;
             if (link.petState !== "hidden") {
@@ -3790,8 +3804,8 @@
         }, walking: () => walk.phase, sleep: () => SLEEP.state, regionAt: (cx, cy) => {
           const h = hitAt(cx, cy);
           return h && touchRegion(h[0], h[1], h[2]);
-        }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s2) => {
-          voiceState = s2 && s2.speaking !== false ? s2 : null;
+        }, fleeX: () => fleeX, bubble: () => bubble.classList.contains("show") ? bubble.textContent : "", lines: TEXT, voice: (s) => {
+          voiceState = s && s.speaking !== false ? s : null;
         } };
         const petLinkEnter = () => {
           skipIntro();
@@ -3838,8 +3852,8 @@
         };
         const petOpenScreenPose = () => {
           const pose2 = SLEEP.state === "active" && shown.k > 0 ? { k: shown.k, x: shown.x, y: shown.y } : dockTarget(homePose());
-          const s2 = screenOf(pose2.x, pose2.y);
-          return { k: pose2.k, x: s2.x, y: s2.y };
+          const s = screenOf(pose2.x, pose2.y);
+          return { k: pose2.k, x: s.x, y: s.y };
         };
         link.start();
         if (!PET) hooks.togglePet = link.toggle;
