@@ -21,7 +21,7 @@ export const inject = ['webServer', 'connection']
  * DSH 컨텍스트 중 이 플러그인이 쓰는 범위 (registerSpeechRoutes 에도 그대로 넘김)
  * @typedef {object} HostContext
  * @property {(fn: () => (() => void) | void | undefined, label: string) => void} effect
- * @property {{ register(route: { kind: 'prefix', path: string, handler: RequestHandler }): (() => void) | undefined }} webServer
+ * @property {{ register(route: { kind: 'prefix' | 'exact', path: string, handler: RequestHandler }): (() => void) | undefined }} webServer
  * @property {{ requestRejection?: (req: IncomingMessage) => number | undefined } | undefined} connection
  */
 /**
@@ -103,6 +103,8 @@ export const Config = z.object({
   canvasToggleKey: z.string().default('Ctrl+Shift+H').volatile(),
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
+/** 호스트 쪽 진단 상태 조회 경로 (설정 화면이 시작 후 한 번 읽어 콘솔에 남김) */
+export const STATUS_PATH = '/deepseek-harness-kr/status'
 const assets = fileURLToPath(new URL('../assets/', import.meta.url))
 /** @type {Record<string, string | undefined>} */
 const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream' }
@@ -147,6 +149,32 @@ export function createAssetHandler(root = assets) {
 }
 
 /**
+ * 앱 바로가기 아이콘 적용 결과 중 알릴 만한 실패만 추림 (Windows가 아니거나 실행 경로가 없는 경우는 정상으로 봄)
+ * @param {{ skipped?: string, message?: string } | undefined} result applyShortcutIcon 결과
+ * @returns {{ reason: string, message?: string } | null} 실패면 사유, 아니면 null
+ */
+export function iconProblem(result) {
+  if (!result?.skipped || result.skipped === 'platform' || result.skipped === 'no-exec-path') return null
+  return { reason: result.skipped, ...(result.message ? { message: result.message } : {}) }
+}
+
+/**
+ * 진단 상태 요청 처리기 생성. 인증을 통과한 GET만 받아 지금 상태를 JSON으로 응답
+ * @param {() => object} read 지금 상태 읽기
+ * @param {(req: IncomingMessage) => number | undefined} rejection 거절할 HTTP 상태 코드 (통과면 undefined)
+ * @returns {RequestHandler}
+ */
+export function createStatusHandler(read, rejection) {
+  return async (req, res) => {
+    const denied = rejection(req)
+    if (denied !== undefined) { res.writeHead(denied); res.end(); return }
+    if (req.method !== 'GET') { res.writeHead(405, { Allow: 'GET' }); res.end(); return }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(read()))
+  }
+}
+
+/**
  * 플러그인 시작: 자산·음성·펫 경로 등록, 앱 바로가기 아이콘 동기화
  * @param {HostContext} ctx @param {HostConfig | undefined} config 플러그인 설정 (volatile 참조가 섞임)
  */
@@ -154,10 +182,13 @@ export function apply(ctx, config) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ASSET_PATH, handler: createAssetHandler() }), 'deepseek-harness-kr: assets')
   // 말풍선 음성: 설정 화면에서 바꾼 값(volatile)을 요청마다 다시 읽는다. 꺼져 있으면 404.
   registerSpeechRoutes(ctx, () => normalizeTts(readLive(config?.tts)))
+  /** 펫·상태 경로 요청의 거절 상태 코드. DSH 연결 서비스 검사기 결과(통과면 undefined), 검사기가 없으면 503 @param {IncomingMessage} req */
+  const rejection = (req) => { const connection = ctx.connection; return typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : 503 }
+  /** 앱 바로가기 아이콘의 마지막 실패 사유 (성공하거나 해당 없으면 null) */
+  let appIconProblem = /** @type {{ reason: string, message?: string } | null} */ (null)
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: STATUS_PATH, handler: createStatusHandler(() => ({ appIcon: appIconProblem }), rejection) }), 'deepseek-harness-kr: status')
   ctx.effect(() => {
     const pet = createPetManager({ assets })
-    /** 펫 경로 요청의 거절 상태 코드. DSH 연결 서비스 검사기 결과(통과면 undefined), 검사기가 없으면 503 @param {IncomingMessage} req */
-    const rejection = (req) => { const connection = ctx.connection; return typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : 503 }
     const unregister = ctx.webServer.register({ kind: 'prefix', path: PET_PATH, handler: createPetHandler(pet, rejection) })
     return () => { unregister?.(); pet.dispose() }
   }, 'deepseek-harness-kr: pet')
@@ -171,7 +202,9 @@ export function apply(ctx, config) {
       const enabled = readLive(config?.appIcon) !== false
       if (enabled === last) return
       last = enabled
-      applyShortcutIcon({ assetsDir: assets, enabled }).catch(() => {})
+      applyShortcutIcon({ assetsDir: assets, enabled })
+        .then((result) => { appIconProblem = iconProblem(result) })
+        .catch((error) => { appIconProblem = { reason: 'failed', message: String(error?.message ?? error) } })
     }
     sync()
     const timer = setInterval(sync, 4000)

@@ -4,6 +4,7 @@ import React from 'react'
 import { name as PLUGIN_ID } from '../package.json'
 import { createCharacter } from '../character/index.ts'
 import { createLifetime } from '../character/lifetime.ts'
+import { log } from '../character/log.ts'
 import * as ttsClient from '../plugins/dsh-tts/src/client/index.js'
 import KOREAN_DICTIONARIES from './locales.ko.json'
 import { OUTFIT_ITEMS, BODY_TYPES as BODY_TYPE_ITEMS } from '../shared/settings.js'
@@ -1042,6 +1043,25 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
   }
 }
 
+/** 시작 후 호스트 진단 상태를 읽을 때까지 기다리는 시간 (앱 아이콘 적용에 걸리는 시간보다 넉넉히) */
+const HOST_STATUS_DELAY_MS = 15000
+
+/**
+ * 호스트 진단 상태 한 번 조회 후 실패만 콘솔 경고. 조회 자체가 안 되면 디버그 로그만
+ * @param fetchImpl 시험용 fetch 대체
+ */
+async function reportHostStatus(fetchImpl: typeof fetch = (...args) => window.fetch(...args)) {
+  try {
+    const response = await fetchImpl('/deepseek-harness-kr/status', { cache: 'no-store' })
+    if (!response.ok) { log.debug('호스트 상태 조회 실패: HTTP', response.status); return }
+    const status = await response.json() as { appIcon?: { reason: string; message?: string } | null }
+    const problem = status?.appIcon
+    if (problem) log.warnOnce('app-icon:' + problem.reason + ':' + (problem.message ?? ''), '앱 바로가기 아이콘 적용 실패:', problem.reason, problem.message ?? '')
+  } catch (error) {
+    log.debug('호스트 상태 조회 실패:', (error as Error)?.message ?? error)
+  }
+}
+
 /**
  * 플러그인 화면 쪽 시작. 같은 페이지에 남은 이전 apply를 먼저 정리하고, 설정값에 맞춰 기능별 수명을 붙이고 뗌
  * 설정 화면·단축키·펫 창 설정 반영·업데이트·음성 키 저장소 연결
@@ -1158,6 +1178,8 @@ function apply(ctx: DshContext) {
       if (value.canvasToggle !== true && link.character?.canvasHidden() === true) link.character.toggleCanvas?.()
     }
     life.add(form.subscribe(sync))
+    // 앱 바로가기 아이콘은 호스트가 PowerShell로 몇 초 뒤에 적용하므로, 시작하고 잠시 뒤 결과를 한 번 받아 실패만 콘솔에 남김
+    life.timeout(() => { void reportHostStatus() }, HOST_STATUS_DELAY_MS)
     let lastToggleAt = -Infinity, togglePending = false
     /**
      * 단축키로 캐릭터 토글: 설정의 character 스위치 뒤집기 (설정 화면과 같은 저장소·같은 마운트/정리 경로)
