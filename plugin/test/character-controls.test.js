@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import * as layout from '../../character/layout.ts'
 import * as chordFns from '../../character/chord.ts'
+import { PARTS } from '../../character/model-profile.ts'
 
 // dsc.js의 순수 계산/상태 조각을 그대로 실행해 확인한다. DOM·캔버스 없이 돌 수 있게
 // 필요한 값만 vm 컨텍스트에 넣고, 실제 소스 구간(문자열 경계)을 잘라 쓴다.
@@ -220,16 +221,17 @@ test('렌더 해상도는 실제로 바뀔 때만 버퍼를 다시 만든다', (
 // 캔버스를 숨긴 동안의 펫 창 단축키는 plugin/test/pet-link.test.js에서 연결 모듈을 직접 실행해 확인한다
 
 test('동물귀 파트 lookup: Part159 인덱스를 찾고, 없으면 -1로 안전하게 넘긴다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinWeight = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const cm = {
     parts: { ids: ['Part81', 'Part156', 'Part159'] },
     drawables: { count: 1, parentPartIndices: [2], opacities: [1], dynamicFlags: [1] },
   }
-  const api = runScript(slice, { cubismModel: cm, prefs: {} }, `({
+  const api = runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, `({
     earPartIndexFor, earPartIndex, earDrawables,
     earPartIndexMissing: earPartIndexFor(['Part81'], 'Part159'),
     earPartIndexNull: earPartIndexFor(null, 'Part159'),
   })`)
+  assert.equal(PARTS.animalEars, 'Part159')   // 이 모델의 동물귀 파트 ID (model-profile.ts)
   assert.equal(api.earPartIndex, 2)
   assert.equal(api.earPartIndexMissing, -1)
   assert.equal(api.earPartIndexNull, -1)
@@ -237,10 +239,10 @@ test('동물귀 파트 lookup: Part159 인덱스를 찾고, 없으면 -1로 안�
 })
 
 test('귀 파트 opacity만 바꾸고 다른 파트·기하(model.x/scale)는 건드리지 않는다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinWeight = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const cm = { parts: { ids: ['Part159'], opacities: new Float32Array([1]) }, drawables: { count: 0, parentPartIndices: [], opacities: [], dynamicFlags: [] } }
   const model = { x: 12.5, y: -3, scale: { x: 0.42, y: 0.42 } }
-  const { applyEarOpacity, earOpacityValue } = runScript(slice, { cubismModel: cm, prefs: {} }, '({ applyEarOpacity, earOpacityValue })')
+  const { applyEarOpacity, earOpacityValue } = runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, '({ applyEarOpacity, earOpacityValue })')
   const parts = { opacities: new Float32Array([1, 1, 1, 1]) }
   const before = { x: model.x, y: model.y, sx: model.scale.x, sy: model.scale.y }
   assert.equal(applyEarOpacity(parts, 2, 1), true)
@@ -257,9 +259,9 @@ test('귀 파트 opacity만 바꾸고 다른 파트·기하(model.x/scale)는 �
 })
 
 test('귀 숨김은 부드럽게 0..1 사이로 보간되고, 끄면 원래대로 돌아온다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinWeight = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const cm = { parts: { ids: ['Part159'] }, drawables: { count: 0, parentPartIndices: [], opacities: [], dynamicFlags: [] } }
-  const { earOpacityStep, earOpacityValue, setEarW, getEarW } = runScript(slice, { cubismModel: cm, prefs: {} }, '({ earOpacityStep, earOpacityValue, setEarW: (v) => { earWeight = v }, getEarW: () => earWeight })')
+  const { earOpacityStep, earOpacityValue, setEarW, getEarW } = runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, '({ earOpacityStep, earOpacityValue, setEarW: (v) => { earWeight = v }, getEarW: () => earWeight })')
   let w = 0
   w = earOpacityStep(w, true, 0.1)
   assert.ok(w > 0 && w < 1, '한 프레임에 1로 점프하지 않는다')
@@ -277,13 +279,13 @@ test('귀 숨김은 부드럽게 0..1 사이로 보간되고, 끄면 원래대�
 })
 
 test('귀 터치 판정: earHide 감쇠 전 가시성을 유지하되, 다른 원인으로 숨은 귀는 되살리지 않는다', () => {
-  const slice = sliceBetween('const EAR_PART_ID = "Part159";', 'let basinUntil = 0, basinWeight = 0;')
+  const slice = sliceBetween('const EAR_PART_ID = PARTS.animalEars;', 'let basinUntil = 0, basinWeight = 0;')
   const make = (opacities, flags) => {
     const cm = {
       parts: { ids: ['Part159'] },
       drawables: { count: 2, parentPartIndices: [0, 0], opacities: new Float32Array(opacities), dynamicFlags: new Uint8Array(flags) },
     }
-    return { cm, api: runScript(slice, { cubismModel: cm, prefs: {} }, '({ earHitVisible, earBaseVisible, setEarW: (v) => { earWeight = v } })') }
+    return { cm, api: runScript(slice, { cubismModel: cm, prefs: {}, PARTS }, '({ earHitVisible, earBaseVisible, setEarW: (v) => { earWeight = v } })') }
   }
   const normal = make([1, 1], [1, 1])
   assert.equal(normal.api.earBaseVisible.get(0), true)

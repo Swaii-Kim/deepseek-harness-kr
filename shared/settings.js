@@ -7,6 +7,8 @@
 // 항목을 더하거나 바꿀 때는 이 파일만 고친다.
 
 // key: 설정 저장 키. param/on: 켰을 때 모델 파라미터 값. line: 켤 때 말하는 대사 묶음.
+// param·체형 value는 이 Live2D 모델 전용 값 (다른 모델로 바꿀 때 character/model-profile.ts와 함께 고침).
+// 호스트(plugin/host.js)가 빌드 없이 Node로 바로 읽는 파일이라 TypeScript인 model-profile.ts를 가져오지 않고 ID를 직접 둠.
 export const OUTFIT_ITEMS = [
   { key: 'glasses', ko: '뿔테 안경', en: 'Glasses', param: 'key11', on: 1, line: 'outfit_glasses' },
   { key: 'monocle', ko: '외눈 안경', en: 'Monocle', param: 'key12', on: 1, line: 'outfit_glasses' },

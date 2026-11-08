@@ -16,6 +16,7 @@ import { createPetLink, type PetMessage } from "./pet-link.ts";
 import { log } from "./log.ts";
 import { parseSyllables } from "./speech.ts";
 import { meshBounds, meshHit } from "./hit.ts";
+import { MODEL_FILES, PARAMS, CHEST_DRAG_SIGN, VOWEL_EYE_SAFE, PARTS, PART_REGIONS, EXPRESSION_FILES, EYE_SWAP_EXPRESSIONS, GEOMETRY } from "./model-profile.ts";
 import type { Lifetime } from "./lifetime.ts";
 import type { CharacterApi, CharacterPrefs, Motion, PetBridge, Pose, Rect, Viewport } from "./types.ts";
 import type { Syllable } from "./speech.ts";
@@ -128,14 +129,42 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        */
       const systemTicker = (on: boolean) => { try { app.renderer.plugins.interaction.useSystemTicker = on; } catch {} };
       life.add(() => app.destroy(true, { children: true }));   // 플러그인을 끄면 PIXI 앱·WebGL 자원 해제
-      const model = await PIXI.live2d.Live2DModel.from(BASE + "model/model.model3.json", { autoUpdate: false, autoInteract: false, idleMotionGroup: "Idle" });
+      const model = await PIXI.live2d.Live2DModel.from(BASE + MODEL_FILES.model, { autoUpdate: false, autoInteract: false, idleMotionGroup: MODEL_FILES.idleMotionGroup });
       if (life.stopped) { model.destroy(); return; }
       app.stage.addChild(model);
       // 전용 티커로 모델도 갱신하고 긴 프레임은 제한
       app.ticker.add(() => model.update(Math.min(app.ticker.deltaMS, 100)), undefined, PIXI.UPDATE_PRIORITY.HIGH);
       const internalModel = model.internalModel, core = internalModel.coreModel;
       internalModel.eyeBlink = undefined; internalModel.breath = undefined;
-      const CHEST_DRAG_SIGN = 1;   // 화면에서 확인 후 -1로 바꿀 수 있음
+      // ---- 모델 파라미터 통로: 애니메이션이 모델 파라미터를 읽고 쓰는 곳은 아래 함수들뿐 (ID는 model-profile.ts의 PARAMS) ----
+      /**
+       * 모델 파라미터 값 덮어쓰기
+       * @param id 파라미터 ID (PARAMS 값, 표정·소품 정의의 ID)
+       * @param value 쓸 값
+       * @param weight 지금 값과 섞는 비율 (1이면 그대로 덮어씀)
+       */
+      const setParam = (id: string, value: number, weight = 1) => core.setParameterValueById(id, value, weight);
+      /**
+       * 모델 파라미터에 값 더하기
+       * @param id 파라미터 ID (PARAMS 값, 표정·소품 정의의 ID)
+       * @param value 더할 값
+       * @param weight 더할 값에 곱하는 비율
+       */
+      const addParam = (id: string, value: number, weight = 1) => core.addParameterValueById(id, value, weight);
+      /**
+       * 모델 파라미터에 값 곱하기 (표정 파일의 Multiply 섞기)
+       * @param id 파라미터 ID (표정 정의의 ID)
+       * @param value 곱할 값
+       * @param weight 곱하는 정도 (0이면 그대로, 1이면 value를 그대로 곱함)
+       */
+      const multiplyParam = (id: string, value: number, weight = 1) => core.multiplyParameterValueById(id, value, weight);
+      /** 모델 파라미터의 id·최솟값·최댓값 (파라미터가 없거나 범위가 유한하지 않으면 null) */
+      const paramRange = (id: string) => {
+        const i = core.getParameterIndex(id);
+        if (i < 0) return null;
+        const min = core.getParameterMinimumValue(i), max = core.getParameterMaximumValue(i);
+        return Number.isFinite(min) && Number.isFinite(max) ? { id, min, max } : null;
+      };
       const dragLift = { x: 0, v: 0 };    // 위아래로 끌어올린 정도 (0~1)
       const dragShift = { x: 0, v: 0 };   // 좌우로 끌어당긴 정도 (-1~1)
       let chestFrom: { x: number; y: number; id: number; h: number[] } | null = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
@@ -143,22 +172,15 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };   // acc = 흔든 양, last = 마지막으로 흔든 시각
       if (internalModel.physics) {
         const evaluate = internalModel.physics.evaluate;
-        /** 모델 파라미터의 id·최솟값·최댓값 (파라미터가 없거나 범위가 유한하지 않으면 null) */
-        const param = (id: string) => {
-          const i = core.getParameterIndex(id);
-          if (i < 0) return null;
-          const min = core.getParameterMinimumValue(i), max = core.getParameterMaximumValue(i);
-          return Number.isFinite(min) && Number.isFinite(max) ? { id, min, max } : null;
-        };
-        const chestParams = ["ChestY1", "ChestY2", "ChestY3", "ChestY4"].map(param).filter((found): found is { id: string; min: number; max: number } => !!found);   // 위아래
-        const chestXParams = ["ChestX1", "ChestX2", "ChestX3"].map(param).filter((found): found is { id: string; min: number; max: number } => !!found);              // 좌우
+        const chestParams = PARAMS.chestSwayVertical.map(paramRange).filter((found): found is { id: string; min: number; max: number } => !!found);     // 위아래
+        const chestXParams = PARAMS.chestSwayHorizontal.map(paramRange).filter((found): found is { id: string; min: number; max: number } => !!found);   // 좌우
         /** 물리 계산 뒤 끌어올린·끌어당긴 정도만큼 가슴 파라미터에 더하기 */
         internalModel.physics.evaluate = function (this: unknown, ...args: unknown[]) {
           const result = evaluate.apply(this, args);
           // 물리가 덮어쓴 뒤 가슴에만 더함 (파라미터 범위를 꽉 쓰고, 좌우는 방향 따라)
           const lift = dragLift.x * CHEST_DRAG_SIGN, shift = dragShift.x * CHEST_DRAG_SIGN;
-          if (lift) for (const chestParam of chestParams) core.addParameterValueById(chestParam.id, lift * (lift > 0 ? chestParam.max : -chestParam.min));
-          if (shift) for (const chestParam of chestXParams) core.addParameterValueById(chestParam.id, shift * (shift > 0 ? chestParam.max : -chestParam.min) * 0.9);
+          if (lift) for (const chestParam of chestParams) addParam(chestParam.id, lift * (lift > 0 ? chestParam.max : -chestParam.min));
+          if (shift) for (const chestParam of chestXParams) addParam(chestParam.id, shift * (shift > 0 ? chestParam.max : -chestParam.min) * 0.9);
           return result;
         };
       }
@@ -178,7 +200,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
       };
       each((x: number, y: number) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); });
-      const cutY = minY + (maxY - minY) * 0.47;
+      const cutY = minY + (maxY - minY) * GEOMETRY.bustCut;
       let bustMinX = Infinity, bustMaxX = -Infinity;   // 상반신(cutY 위) 정점의 가로 범위 (모델 좌표)
       each((x: number, y: number) => { if (y < cutY) { bustMinX = Math.min(bustMinX, x); bustMaxX = Math.max(bustMaxX, x); } });
       // 창 안(상반신 크롭) 배율. 펫 창은 전신을 담아 이보다 작게 그려지므로, 이 값과의 비율만큼 배율을 올려 머리 크기를 맞춘다
@@ -203,15 +225,15 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       model.x = W / 2 - ((WHOLE_BODY ? minX : bustMinX) + bodyWidth / 2) * modelScale;
       model.y = H * 0.05 - minY * modelScale;
       // 꼬마 모습(체형 2)은 몸 전체가 작아져 공중에 뜨므로, 그만큼 내려서 발이 화면 바닥에 닿게 한다 (데스크톱 펫과 같음)
-      core.setParameterValueById("Clothes2", 1); core.update();
+      setParam(PARAMS.bodyType, 1); core.update();
       let chibiMinY = Infinity, chibiMaxY = -Infinity;
       each((_x: number, y: number) => { chibiMinY = Math.min(chibiMinY, y); chibiMaxY = Math.max(chibiMaxY, y); });
-      core.setParameterValueById("Clothes2", 0); core.update();
+      setParam(PARAMS.bodyType, 0); core.update();
       const baseY = model.y;
       const chibiDrop = Math.max(0, H * 0.99 - chibiMaxY * modelScale - baseY);   // 꼬마일 때 내리는 거리 (캔버스 px)
       const chibiHeadDrop = (chibiMinY - minY) * modelScale + chibiDrop;            // 꼬마일 때 머리 꼭대기가 내려가는 거리 (말풍선 위치용)
-      // 말풍선 꼬리 기준 = 얼굴(코) 가운데. 상반신 bbox에서 얼굴 중심이 놓이는 가로 비율로 잡는다(실측 5.5%).
-      const noseModelX = BUST_CX + (bustMaxX - bustMinX) * 0.055;
+      // 말풍선 꼬리 기준 = 얼굴(코) 가운데. 상반신 bbox에서 얼굴 중심이 놓이는 가로 비율로 잡는다(GEOMETRY.noseOffset).
+      const noseModelX = BUST_CX + (bustMaxX - bustMinX) * GEOMETRY.noseOffset;
       // ---------- Core 계산을 Worker로 (결과는 1프레임 늦게 반영) ----------
       // 정점 변형(Core update)은 Worker의 같은 모델이 맡고, 메인은 받은 결과를 Core 배열에 복사만 한다.
       // 렌더러·터치 판정은 그대로 Core 배열을 읽는다. Worker를 못 쓰거나 실패하면 원래대로 메인에서 계산.
@@ -265,26 +287,26 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
             spare = null; busy = true;
           }
         };
-        w.postMessage({ type: "init", url: BASE + "model/model.moc3" });
+        w.postMessage({ type: "init", url: BASE + MODEL_FILES.moc });
       })();
 
       // 표정
       const expressionParams: Record<string, Array<{ Id: string; Value: number; Blend?: string }>> = {};
-      await Promise.all(["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"].map(async (expName) => {
-        try { expressionParams[expName] = (await (await fetch(`${BASE}model/exp/${expName}.exp3.json`)).json()).Parameters || []; } catch (error) { log.debug("표정 파일 로드 실패:", expName, error); expressionParams[expName] = []; }
+      await Promise.all(Object.entries(EXPRESSION_FILES).map(async ([expName, file]) => {
+        try { expressionParams[expName] = (await (await fetch(BASE + file)).json()).Parameters || []; } catch (error) { log.debug("표정 파일 로드 실패:", expName, error); expressionParams[expName] = []; }
       }));
       if (life.stopped) return;   // 표정 파일을 받는 사이 꺼졌으면 여기서 멈춤
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};
       // 소품·옷: [설정 이름, 모델 파라미터, 켰을 때 값] (데스크톱 펫의 표정 파일과 같은 값)
-      // 항목 정의는 shared/settings.js: [설정 이름, 모델 파라미터, 켰을 때 값], 켤 때 대사 묶음, 체형 = Clothes2 값
+      // 항목 정의는 shared/settings.js: [설정 이름, 모델 파라미터, 켰을 때 값], 켤 때 대사 묶음, 체형 = PARAMS.bodyType 값
       const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on] as [string, string, number]);
       const OUTFIT_LINE = Object.fromEntries(OUTFIT_ITEMS.filter((item) => item.line).map((item) => [item.key, item.line])) as Record<string, string>;
       const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
       const outfitWeight: Record<string, number> = {};
       for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
-      // 동물귀(#22): 파라미터가 아니라 모델의 별도 파트(Part159)다. 파트 ID로 런타임 인덱스를 찾고,
+      // 동물귀(#22): 파라미터가 아니라 모델의 별도 파트(PARTS.animalEars)다. 파트 ID로 런타임 인덱스를 찾고,
       // 파트가 없으면(다른 모델) 조용히 아무 것도 하지 않는다. 실제 적용은 bbox 계산이 끝난 뒤 프레임에서만 한다.
-      const EAR_PART_ID = "Part159";
+      const EAR_PART_ID = PARTS.animalEars;
       /**
        * 파트 ID의 런타임 인덱스
        * @returns 파트 목록에서 찾은 위치, 없으면 -1
@@ -375,7 +397,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         openPose: () => petOpenScreenPose(),
       });
       const relay = link.relay;   // 펫 창이 보이는 동안(따라오는 중 포함)만 반응을 모아 보냄
-      const EYE_EXP = ["heart", "squint", "smug", "dizzy"];
+      const EYE_EXP = EYE_SWAP_EXPRESSIONS;   // 눈 그림을 바꾸는 표정 (model-profile.ts)
       /** 눈 표정(EYE_EXP)을 켤 때 나머지 눈 표정 끄기 */
       const clearOtherEyes = (name: string) => { if (EYE_EXP.includes(name)) for (const e of EYE_EXP) if (e !== name) { until[e] = 0; hold[e] = false; } };
       /**
@@ -1206,8 +1228,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       }
 
       // ---------- 버튜버식 움직임 (얼굴 추적처럼) ----------
-      // 이 모델은 VBridger식 리깅: 머리 = AngleX/Y/Z, 몸 = PositionX/Y/Z·LeanInput(물리 엔진이 늦게 따라감),
-      // 머리카락 물리 입력 = ParamAngleX/Y/Z, 귀 = 눈썹(ParamBrowLY/RY)을 따라 쫑긋. 입 = ParamA/I/U/E/O 모음.
+      // 이 모델은 VBridger식 리깅: 머리 = PARAMS.headTurn·headTilt·headRoll, 몸 = PARAMS.bodyShiftX/Y/Z·bodyLean(물리 엔진이 늦게 따라감),
+      // 머리카락 물리 입력 = PARAMS.head*Direct, 귀 = 눈썹(PARAMS.browRaiseLeft/Right)을 따라 쫑긋. 입 = PARAMS.mouthVowel 모음.
       let mouseX = innerWidth / 2, mouseY = innerHeight / 2, lastMove = 0;
       addEventListener("mousemove", (e) => { mouseX = e.clientX; mouseY = e.clientY; lastMove = performance.now(); }, { passive: true });
 
@@ -1252,8 +1274,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         talk = { syl, t0: performance.now(), total, quiet };
       };
       const VOWELS = ["A", "I", "U", "E", "O"];
-      // 이 모델은 "이"·"에" 입 모양이 볼과 아래 눈꺼풀까지 올려 눈이 가늘어진다. 말할 때 눈 아래가 오르내리지 않게 약하게 씀
-      const VOWEL_EYE_SAFE: Record<string, number> = { I: 0.45, E: 0.45 };
+      const VOWEL_PARAMS: Record<string, string> = PARAMS.mouthVowel;   // 모음 → 입 모양 파라미터 ID (모음별 세기 배율은 model-profile.ts의 VOWEL_EYE_SAFE)
       const vowel: Record<string, number> = { A: 0, I: 0, U: 0, E: 0, O: 0 };
       let mouthOpen = 0, talkSway = 0, browKick = 0, browValue = 0, nodKick = 0, lastStressIndex = -1;   // browKick = 눈썹(귀) 목표, browValue = 실제로 부드럽게 따라가는 값
       let voiceState: VoiceState | null = null;   // 외부 음성 상태(선택): { speaking, level, vowels, until } | null — 없으면 예전 그대로
@@ -1509,45 +1530,45 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const writeHeadBody = (motion: Motion) => {
         if (stareWeight > 0.01) { const k = 1 - stareWeight * 0.92; motion.yaw = headLookX.x * 22 * (1 - stareWeight) + (motion.yaw - headLookX.x * 22) * k; motion.pitch *= k; motion.roll *= k; motion.bodyX *= k; motion.bodyZ *= k; }
         motion.yaw = clamp(motion.yaw, -30, 30); motion.pitch = clamp(motion.pitch, -30, 30); motion.roll = clamp(motion.roll, -30, 30);
-        for (const [id, value] of [["AngleX", motion.yaw], ["AngleY", motion.pitch], ["AngleZ", motion.roll], ["ParamAngleX", motion.yaw], ["ParamAngleY", motion.pitch], ["ParamAngleZ", motion.roll],
-          ["PositionX", clamp(motion.bodyX, -30, 30)], ["PositionY", clamp(motion.bodyY, -30, 30)], ["PositionZ", clamp(motion.bodyZ, -30, 30)], ["LeanInput", clamp(motion.lean, -30, 30)]]) core.addParameterValueById(id, value);
+        for (const [id, value] of [[PARAMS.headTurn, motion.yaw], [PARAMS.headTilt, motion.pitch], [PARAMS.headRoll, motion.roll], [PARAMS.headTurnDirect, motion.yaw], [PARAMS.headTiltDirect, motion.pitch], [PARAMS.headRollDirect, motion.roll],
+          [PARAMS.bodyShiftX, clamp(motion.bodyX, -30, 30)], [PARAMS.bodyShiftY, clamp(motion.bodyY, -30, 30)], [PARAMS.bodyShiftZ, clamp(motion.bodyZ, -30, 30)], [PARAMS.bodyLean, clamp(motion.lean, -30, 30)]] as [string, number][]) addParam(id, value);
       };
       // ---- 눈: 눈동자는 고개보다 먼저 (머리 기준 상대 위치), 숨쉬기 ----
       /** 눈동자(머리 기준 상대 위치, 삐짐 중엔 외면·몰래 보기)와 숨쉬기 파라미터 쓰기 */
       const writeEyes = (motion: Motion, { seconds }: Frame, { sulkWeight, sulkEye }: Sulk) => {
         // 눈동자는 작게만 (크게 움직이면 흰자가 드러나 곁눈질처럼 보임)
-        core.addParameterValueById("ParamEyeBallX", clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -0.45, 0.45) * (1 - sulkWeight) + sulkEye * sulkWeight - motion.swayYaw / 30 * (1 - sulkWeight));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
-        core.addParameterValueById("ParamEyeBallY", clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -0.3, 0.3));
-        core.setParameterValueById("ParamBreath", 0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI / 3.6));
+        addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -0.45, 0.45) * (1 - sulkWeight) + sulkEye * sulkWeight - motion.swayYaw / 30 * (1 - sulkWeight));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
+        addParam(PARAMS.eyeLookY, clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -0.3, 0.3));
+        setParam(PARAMS.breath, 0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI / 3.6));
       };
       // ---- 눈썹 (귀가 따라 움직임) ----
       /** 눈썹 파라미터 쓰기 (귀가 따라 움직임, 부끄러울 땐 곤란한 눈썹) */
       const writeBrows = ({ seconds }: Frame) => {
         const brow = browValue + noise(seconds * 0.5, 7) * 0.12 + (mood === "wait" ? 0.25 : mood === "sad" ? -0.3 : 0) - 0.15 * happyMouth;
-        if (happyMouth > 0.01) core.addParameterValueById("BrowInnerUp", 0.55 * happyMouth);   // 곤란한 눈썹 (안쪽 끝이 올라감)
-        core.addParameterValueById("ParamBrowLY", clamp(brow, -1, 1));
-        core.addParameterValueById("ParamBrowRY", clamp(brow + noise(seconds * 0.6, 8) * 0.06, -1, 1));
-        if (browValue > 0.15) core.addParameterValueById("BrowInnerUp", Math.min(1, browValue * 0.6));
+        if (happyMouth > 0.01) addParam(PARAMS.browInnerRaise, 0.55 * happyMouth);   // 곤란한 눈썹 (안쪽 끝이 올라감)
+        addParam(PARAMS.browRaiseLeft, clamp(brow, -1, 1));
+        addParam(PARAMS.browRaiseRight, clamp(brow + noise(seconds * 0.6, 8) * 0.06, -1, 1));
+        if (browValue > 0.15) addParam(PARAMS.browInnerRaise, Math.min(1, browValue * 0.6));
       };
       // ---- 입: 모음 모양 + 늘 살짝 웃는 입꼬리 ----
       /** 입 파라미터 쓰기: 모음 모양 + 늘 살짝 웃는 입꼬리, 삐짐 표정·눈웃음 포함 (happyMouth 갱신도 함께) */
       const writeMouth = (motion: Motion, { now, dt, seconds }: Frame, { sulkWeight, peek }: Sulk) => {
         const openNow = clamp(mouthOpen + motion.mouthAdd + 0.14 * happyMouth, 0, 1);   // 살짝 벌린 입
         if (openNow > 0.01) {
-          core.setParameterValueById("ParamMouthOpenY", openNow * 0.9);
-          core.addParameterValueById("JawOpen", openNow * 0.45);
-          core.setParameterValueById("ParamSilence", 1 - openNow);
-          for (const key of VOWELS) if (vowel[key] > 0.01) core.addParameterValueById("Param" + key, Math.min(1, vowel[key]) * (VOWEL_EYE_SAFE[key] || 1));
-          if (motion.mouthAdd > 0.01) core.addParameterValueById("ParamA", motion.mouthAdd * 0.8);
+          setParam(PARAMS.mouthOpen, openNow * 0.9);
+          addParam(PARAMS.jawOpen, openNow * 0.45);
+          setParam(PARAMS.mouthClosed, 1 - openNow);
+          for (const key of VOWELS) if (vowel[key] > 0.01) addParam(VOWEL_PARAMS[key], Math.min(1, vowel[key]) * (VOWEL_EYE_SAFE[key] || 1));
+          if (motion.mouthAdd > 0.01) addParam(PARAMS.mouthVowel.A, motion.mouthAdd * 0.8);
         }
         happyMouth += ((now < happyMouthUntil ? 1 : 0) - happyMouth) * Math.min(1, dt * 5);
         const baseSmile = (mood === "sad" ? 0 : mood === "wait" ? 0.15 : 0.35) * (1 - sulkWeight) + 0.2 * happyMouth;   // 부끄럽지만 좋아서 입꼬리가 조금 올라감 (곤란함이 섞여 크게는 안 웃음)
-        if (sulkWeight > 0.01) for (const [id, eased] of [["CheeckPuff", 0.5], ["Mouthpucker", 0.3], ["Angry", 0.5], ["Angry2", 0.5]] as [string, number][]) core.addParameterValueById(id, sulkWeight * (1 - eased * peek));   // 볼 부풀리기·입 삐죽·찡그린 눈썹 (몰래 볼 땐 조금 풀림)
-        core.addParameterValueById("ParamMouthForm", clamp(baseSmile + motion.smile * 0.4, -1, 1));
-        core.addParameterValueById("MouthSmile_L", clamp(baseSmile + motion.smile * 0.5 + 0.3 * happyMouth, 0, 1));   // 한쪽만 더 올라간 어색한 웃음
-        core.addParameterValueById("MouthSmile_R", clamp(baseSmile + motion.smile * 0.5 + noise(seconds * 0.3, 9) * 0.05, 0, 1));
+        if (sulkWeight > 0.01) for (const [id, eased] of [[PARAMS.cheekPuff, 0.5], [PARAMS.mouthPucker, 0.3], [PARAMS.frown, 0.5], [PARAMS.frownSecondary, 0.5]] as [string, number][]) addParam(id, sulkWeight * (1 - eased * peek));   // 볼 부풀리기·입 삐죽·찡그린 눈썹 (몰래 볼 땐 조금 풀림)
+        addParam(PARAMS.mouthForm, clamp(baseSmile + motion.smile * 0.4, -1, 1));
+        addParam(PARAMS.mouthSmileLeft, clamp(baseSmile + motion.smile * 0.5 + 0.3 * happyMouth, 0, 1));   // 한쪽만 더 올라간 어색한 웃음
+        addParam(PARAMS.mouthSmileRight, clamp(baseSmile + motion.smile * 0.5 + noise(seconds * 0.3, 9) * 0.05, 0, 1));
         const eyeSmile = clamp((mood === "sad" ? 0 : 0.12) + motion.smile * 0.35 + motion.eyeSmileAdd, 0, 1);
-        if (eyeSmile > 0.01) core.addParameterValueById("EyeSmile", eyeSmile);
+        if (eyeSmile > 0.01) addParam(PARAMS.eyeSmile, eyeSmile);
       };
       // ---- 눈 깜빡임: 2~6초 불규칙, 가끔 두 번 ----
       /** 눈 깜빡임 예약(2~6초 불규칙, 가끔 두 번, 웃는 중엔 안 함)과 눈 뜸 파라미터 쓰기 */
@@ -1559,21 +1580,21 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
         const sinceBlink = (now - blink.start) / 1000;
         const eyeOpen = clamp((mood === "work" ? 0.92 : 0.97) * (1 - blinkClose(sinceBlink)) * (1 - motion.eyeClose), 0, 1.2);
-        core.setParameterValueById("ParamEyeLOpen", eyeOpen); core.setParameterValueById("ParamEyeROpen", eyeOpen);
+        setParam(PARAMS.eyeOpenLeft, eyeOpen); setParam(PARAMS.eyeOpenRight, eyeOpen);
       };
       /** 표정 파일(하트·눈물·땀 등)을 무게에 따라 섞기 */
       const writeExpressions = ({ now, dt }: Frame) => {
         for (const [name, params] of Object.entries(expressionParams)) {
           const target = hold[name] || (until[name] || 0) > now ? 1 : 0;
           // 하트·><·얄미운·빙글빙글 눈은 눈 그림 자체를 바꾸므로 한 번에 바꾸고, 그 순간 깜빡여 감춤
-          const EYE_SWAP = name === "heart" || name === "squint" || name === "smug" || name === "dizzy";
+          const EYE_SWAP = EYE_EXP.includes(name);
           if (EYE_SWAP && (weight[name] > 0.5) !== (target > 0.5)) { blink.start = now - 0.07 * 1000; blink.next = Math.max(blink.next, now + 1500); }
           const w = weight[name] = EYE_SWAP ? target : (weight[name] || 0) + (target - (weight[name] || 0)) * Math.min(1, dt * 6);
           if (w < 0.01) continue;
           for (const entry of params) {
-            if (entry.Blend === "Multiply") core.multiplyParameterValueById(entry.Id, entry.Value, w);
-            else if (entry.Blend === "Add") core.addParameterValueById(entry.Id, entry.Value, w);
-            else core.setParameterValueById(entry.Id, entry.Value, w);
+            if (entry.Blend === "Multiply") multiplyParam(entry.Id, entry.Value, w);
+            else if (entry.Blend === "Add") addParam(entry.Id, entry.Value, w);
+            else setParam(entry.Id, entry.Value, w);
           }
         }
       };
@@ -1589,11 +1610,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           const forearm = coverForearm(coverAmount);
           const breath = Math.sin(seconds * Math.PI * 2 * 0.4) * 0.02 * sstep(seg(0.8, 1, coverAmount));   // 가린 채로도 미세하게 움직임
           const velocity = (cover.q - coverBefore) / Math.max(dt, 1e-3);   // 움직이는 중에만 손목이 늦게 따라오며 꺾임
-          core.setParameterValueById("Movement2", 1);   // 몸 앞용 팔 그림 (손이 다 내려올 때까지 유지)
-          core.addParameterValueById("Param62", 0.034 * sstep(coverAmount));
-          core.addParameterValueById("Param59", 0.48 * sstep(seg(0, 0.6, coverAmount)));   // 위팔 원근은 아래팔보다 먼저
-          core.addParameterValueById("Param60", forearm + breath);
-          core.addParameterValueById("Param61", clamp(velocity * 0.06, -0.2, 0.2) * Math.sin(Math.PI * coverAmount));
+          setParam(PARAMS.armFrontPose, 1);   // 몸 앞용 팔 그림 (손이 다 내려올 때까지 유지)
+          addParam(PARAMS.upperArmLeft, 0.034 * sstep(coverAmount));
+          addParam(PARAMS.upperArmDepthLeft, 0.48 * sstep(seg(0, 0.6, coverAmount)));   // 위팔 원근은 아래팔보다 먼저
+          addParam(PARAMS.forearmLeft, forearm + breath);
+          addParam(PARAMS.wristLeft, clamp(velocity * 0.06, -0.2, 0.2) * Math.sin(Math.PI * coverAmount));
         }
       };
       // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
@@ -1601,11 +1622,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const writeOutfitParams = (outfit: Record<string, any>, dt: number) => {
         for (const [key, id, value] of OUTFIT_PARAMS) {
           const w = outfitWeight[key] = (outfitWeight[key] || 0) + ((outfit[key] ? 1 : 0) - (outfitWeight[key] || 0)) * Math.min(1, dt * 6);
-          if (w > 0.005) core.addParameterValueById(id, value * w);
+          if (w > 0.005) addParam(id, value * w);
         }
       };
       /**
-       * 동물귀 숨김: 파라미터가 아니라 귀 파트(Part159)의 opacity 보간. 파트가 없으면 no-op
+       * 동물귀 숨김: 파라미터가 아니라 귀 파트(PARTS.animalEars)의 opacity 보간. 파트가 없으면 no-op
        * bbox·크기·다른 파트는 건드리지 않음. 완전히 복구된 프레임에서만 opacity를 1로 되돌림
        */
       const writeEarHide = (outfit: Record<string, any>, dt: number) => {
@@ -1620,9 +1641,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const writeBodyShape = (outfit: Record<string, any>, now: number, dt: number) => {
         const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
         basinWeight += ((now < basinUntil ? 1 : 0) - basinWeight) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
-        if (basinWeight > 0.005) core.addParameterValueById("key10", basinWeight);
+        if (basinWeight > 0.005) addParam(PARAMS.basinProp, basinWeight);
         bodyWeight += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyWeight) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
-        if (bodyWeight > 0.002) core.addParameterValueById("Clothes2", bodyWeight);
+        if (bodyWeight > 0.002) addParam(PARAMS.bodyType, bodyWeight);
         model.y = baseY + chibiDrop * clamp(bodyWeight, 0, 1);
       };
       /** 소품·옷·체형을 켜는 순간 한마디 (처음 불러올 때는 말 안 함), 이번 설정을 다음 비교용으로 보관 */
@@ -2104,19 +2125,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 소품·옷·체형을 바꿨을 때의 대사. 도망·산책·삐진 중에는 말 안 함 */
       outfitTalk = (key: string) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };
 
-      const PART_REGION: Record<string, string> = {
-        Part99: "head", Part47: "head", Part155: "head", Part156: "head", Part161: "head", Part64: "head", Part66: "head", Part10: "head", Part8: "head",
-        Part127: "arm", Part94: "arm", Part68: "arm", Part93: "arm", Part117: "arm", Part54: "arm", Part42: "arm",
-        Part114: "leg", Part97: "lower", Part107: "lower", Part125: "lower", Part126: "lower",
-        Part89: "waist", Part85: "chestpart", Part88: "chestpart", Part136: "tail",
-      };
       const drawables = cubismModel.drawables, parts = cubismModel.parts;
       const drawRegion = Array.from({ length: drawables.count }, (_, i) => {
-        for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PART_REGION[parts.ids[part]]) return PART_REGION[parts.ids[part]];
+        for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PART_REGIONS[parts.ids[part]]) return PART_REGIONS[parts.ids[part]];
         return null;
       });
       const chestDraw: number[] = [];
-      for (let i = 0; i < drawables.count; i++) for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (parts.ids[part] === "Part88" || parts.ids[part] === "Part86") { chestDraw.push(i); break; }
+      for (let i = 0; i < drawables.count; i++) for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PARTS.chestCenter.includes(parts.ids[part])) { chestDraw.push(i); break; }
       /** 지금 보이는 가슴 메시들의 가운데(모델 좌표). 다 숨었으면 null */
       const chestCenter = () => {
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -2188,7 +2203,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           const vertices = internalModel.getDrawableVertices(i);
           for (let j = 1; j < vertices.length; j += 2) { if (vertices[j] < y0) y0 = vertices[j]; if (vertices[j] > y1) y1 = vertices[j]; }
         }
-        return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < 0.45 ? "head" : "body";
+        return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < GEOMETRY.chibiHeadBottom ? "head" : "body";
       };
       /**
        * 부위 그림(drawRegion)과 가슴 타원·높이로 터치 부위 결정
@@ -2197,14 +2212,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @param inChest 가슴 타원 안이면 true
        */
       const regionByShape = (region: string | null, ratioY: number, inChest: boolean) => {
-        if (region === "head" && ratioY > 0.3) region = null;
-        if (region === "arm" && cover.q > 0.3 && ratioY < 0.45) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
+        if (region === "head" && ratioY > GEOMETRY.headBottom) region = null;
+        if (region === "arm" && cover.q > 0.3 && ratioY < GEOMETRY.coverArmBottom) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
         if (region === "arm" || region === "leg" || region === "head") return region;
         if (inChest) return "chest";
         if (region === "lower") return "lower";
-        if (region === "waist") return ratioY > 0.4 ? "lower" : "chest";
-        if (region === null && ratioY < 0.3) return "head";
-        return ratioY < 0.4 ? "chest" : "body";
+        if (region === "waist") return ratioY > GEOMETRY.chestBottom ? "lower" : "chest";
+        if (region === null && ratioY < GEOMETRY.headBottom) return "head";
+        return ratioY < GEOMETRY.chestBottom ? "chest" : "body";
       };
       /**
        * 누른 자리의 터치 부위(head·arm·leg·chest·lower·body) 판정. 가슴이 움직인 만큼 전신 기준 영역도 옮겨 판정
@@ -2218,7 +2233,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const shiftX = currentChest && chestBase ? currentChest.x - chestBase.x : 0, shiftY = currentChest && chestBase ? currentChest.y - chestBase.y : 0;
         const ratioX = (x - model.x - (bodyBounds.minX + shiftX) * scale) / (bodyBounds.w * scale);
         const ratioY = (y - model.y - (bodyBounds.minY + shiftY) * scale) / (bodyBounds.h * scale);
-        const inChest = Math.pow((ratioX - 0.45) / 0.13, 2) + Math.pow((ratioY - 0.295) / 0.045, 2) <= 1;
+        const inChest = Math.pow((ratioX - GEOMETRY.chestCenterX) / GEOMETRY.chestRadiusX, 2) + Math.pow((ratioY - GEOMETRY.chestCenterY) / GEOMETRY.chestRadiusY, 2) <= 1;
         return regionByShape(drawRegion[drawable], ratioY, inChest);
       };
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
