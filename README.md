@@ -184,14 +184,6 @@ VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(P
 
 ## ASAR 패치·포터블 (지원 종료)
 
-예전에 쓰던 ASAR 패치(Windows·macOS 설치본에 직접 덮어쓰기)와 포터블 버전은 더 이상 지원하거나 새로 만들지 않습니다. 앞으로의 기능과 수정은 플러그인으로만 나옵니다. 지금 이 방식을 쓰고 있다면 아래처럼 플러그인으로 바꿔 주세요. 대화 기록과 설정은 사용자 폴더에 있어서 `app.asar`를 되돌려도 유지됩니다.
-
-- **Windows 설치본:** Harness를 종료하고, 백업해 둔 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\app.asar.orig`를 `app.asar`로 되돌립니다. 백업이 없으면 [공식 다운로드](https://www.deepseek.com/en/download/)에서 Harness를 다시 설치합니다.
-- **macOS 설치본:** Harness를 종료하고 `Contents/Resources/app.asar.orig` → `app.asar`, `Contents/Resources/app-update.yml.orig` → `app-update.yml`, `Contents/Info.plist.orig` → `Info.plist`로 되돌린 뒤 `codesign --force --deep -s - "/Applications/DeepSeek Harness.app"`를 실행합니다. 또는 공식 dmg로 다시 설치합니다.
-- **포터블:** 공식 Harness를 설치해서 씁니다. 포터블의 대화 기록과 설정은 포터블 폴더의 `data\`에 그대로 남습니다.
-
-그다음 Harness를 켜고 [플러그인으로 설치](#플러그인으로-설치)를 따라 설치합니다. 패치를 그대로 둔 채 플러그인을 설치하면 캐릭터가 두 개 표시되니, 꼭 원본 `app.asar`를 되돌린 뒤 설치하세요.
-
 예전 방식에 쓰던 ASAR 패치 파일과 포터블 빌드 스크립트(`harness/`)는 저장소에서 삭제했습니다. 필요하면 git 기록에서 찾을 수 있습니다.
 
 ## 라이선스
