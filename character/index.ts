@@ -8,7 +8,7 @@
 // onSetting(key, value): 펫 창 메뉴에서 바꾼 설정을 플러그인 설정에 저장하도록 알린다.
 // 반환: { setPrefs, togglePet, toggleCanvas, canvasHidden } — 플러그인 화면(plugin/client.js)이 쓰는 유일한 통로.
 import { OUTFIT_ITEMS, BODY_TYPES } from "../shared/settings.js";
-import { HOME_GAP, SHOW_K, MIN_SHOW_K, homeLayout, bubbleLayout, bubbleTail, tailRight, tailLeft } from "./layout.ts";
+import { HOME_GAP, SHOW_K, MIN_SHOW_K, homeLayout, bubbleLayout, bubbleTail, tailRight, tailLeft, introBubbleSize } from "./layout.ts";
 import { chordDown, chordWithinGrace, chordUp, type Chord } from "./chord.ts";
 import { clamp, noise, S, spring, sstep, addGesture, blinkClose, seg, coverForearm } from "./motion.ts";
 import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-signals.ts";
@@ -35,7 +35,7 @@ type Home = Pose & { card: Element | null | undefined; r: Rect | null; above: bo
 /** 자유 위치 애니메이션: 미끄러짐(to 있음) 또는 제자리로 붙기(snap). t0 = 시작 시각, ms = 길이 */
 type FreeAnim = { t0: number; ms: number; from: Pose; to: Pose | null; snap: boolean };
 /** 말풍선 배치에 쓰는 값 (noseX·headTop = 코 가운데 x·머리 꼭대기 y, 창 좌표) */
-type BubbleSpot = { k: number; noseX: number; headTop: number; vp: Viewport; home: Home };
+type BubbleSpot = { k: number; noseX: number; headTop: number; vp: Viewport; home: Home; introProgress: number };
 /** 한 프레임 애니메이션의 공통값 (frameContext) */
 type Frame = { now: number; dt: number; seconds: number; introCalm: boolean; talking: boolean; muttering: boolean; laughing: boolean };
 /** 삐짐 단계 결과 (applySulk) */
@@ -877,11 +877,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 시작 연출 단계의 자리: 가운데에서 인사하다가 베일을 누르면 제자리로 옮겨 감
        * @param dock 연출이 끝나면 갈 자리
        * @param now 지금 시각(ms, performance.now)
-       * @returns 자리와 연출 중 여부 { k, x, y, introOn }, 대기 중이면 null (흐린 배경만)
+       * @returns 자리와 연출 중 여부, 제자리로 옮겨 간 진행도 { k, x, y, introOn, introProgress }, 대기 중이면 null (흐린 배경만)
        */
       const introPose = (home: Home, dock: Pose, now: number) => {
         let { k, x, y } = dock;
-        let introOn = intro.phase !== "done", veilOpacity = 0;
+        let introOn = intro.phase !== "done", veilOpacity = 0, introProgress = 0;
         if (introOn && !intro.begun) {   // 호스트 화면(입력 카드)이 뜨고 잠잠해진 뒤에 등장: 창이 막 떠서 메인 스레드가 바쁜 구간의 끊김을 안 보이게 (최대 8초 대기)
           if (home.card && !intro.cardAt) intro.cardAt = now;
           if (!(intro.cardAt && now - intro.cardAt > 300) && now - intro.start < 8000) { veil.style.opacity = "1"; veil.style.pointerEvents = "none"; return null; }   // 대기 중에는 아바타 없이 흐린 배경만
@@ -895,14 +895,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
             if (intro.skip) { intro.phase = "move"; intro.moveStart = now; intro.from = center; }   // 빈 배경을 클릭해야만 제자리로 (저절로 넘어가지 않음)
           } else {
             const progress = ease((now - intro.moveStart) / 900);
-            veilOpacity = 1 - progress;
+            veilOpacity = 1 - progress; introProgress = progress;
             k = intro.from.k + (dock.k - intro.from.k) * progress; x = intro.from.x + (dock.x - intro.from.x) * progress; y = intro.from.y + (dock.y - intro.from.y) * progress;
             if (progress >= 1) { intro.phase = "done"; introOn = false; setRes(1); veil.remove(); bubble.style.left = ""; bubble.style.fontSize = ""; bubble.style.padding = ""; }
           }
           veil.style.opacity = String(veilOpacity); veil.style.pointerEvents = intro.phase === "center" ? "auto" : "none";
           canvas.style.opacity = intro.phase === "center" ? String(ease((now - intro.start) / 300)) : "";   // 아바타는 흐린 배경 위에서 서서히 등장
         }
-        return { k, x, y, introOn };
+        return { k, x, y, introOn, introProgress };
       };
       /**
        * 펫 산책 fade 적용: 산책 중엔 slide가 위치 기준으로 계산한 alpha(경계 근처에서만 흐려짐)를 캔버스 불투명도로, 끝나면 한 번만 되돌림
@@ -1040,9 +1040,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @returns 꼬리 자리(px)
        */
       const fitTail = () => { const t = bubbleTail(bubble.offsetWidth); bubble.style.setProperty("--dsc-tail-c", t - 2 + "px"); return t; };
-      /** 시작 연출 말풍선: 가운데에선 머리 위에 큰 말풍선. 꼬리는 코에 맞추고 화면 밖으로 넘치지 않게 자름 */
-      const placeIntroBubble = ({ noseX, headTop, vp }: BubbleSpot) => {
-        bubble.style.right = "auto"; bubble.style.fontSize = "22px"; bubble.style.padding = "14px 24px"; bubble.style.maxWidth = "560px";
+      /**
+       * 시작 연출 말풍선: 가운데에선 머리 위에 큰 말풍선. 꼬리는 코에 맞추고 화면 밖으로 넘치지 않게 자름
+       * 제자리로 옮겨 가는 동안 크기도 캐릭터 배율과 같은 진행도로 평소 크기에 다가감 (도착 순간 크기가 튀지 않게)
+       */
+      const placeIntroBubble = ({ k, noseX, headTop, vp, introProgress }: BubbleSpot) => {
+        const restMaxWidth = coarsePointer() ? Math.min(Math.max(150, visW * k * 1.1), vp.w - 16) : Math.max(150, visW * k * 1.1);   // 도착 뒤 배치(데스크톱·모바일)와 같은 최대폭
+        const size = introBubbleSize(introProgress, restMaxWidth);
+        bubble.style.right = "auto"; bubble.style.fontSize = size.font + "px"; bubble.style.padding = `${size.padY}px ${size.padX}px`; bubble.style.maxWidth = size.maxWidth + "px";
         const bubbleWidth = bubble.offsetWidth, bubbleHeight = bubble.offsetHeight, tail = fitTail();
         if (!coarsePointer()) {   // 데스크톱: 창 오른쪽 경계만 남기고 자른다
           bubble.style.left = tailLeft({ noseX, bw: bubbleWidth, width: innerWidth, tail }) + "px";
@@ -1145,7 +1150,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const pose = introPose(home, dock, now);
         if (!pose) return;
         let { k, x, y } = pose;
-        const { introOn } = pose;
+        const { introOn, introProgress } = pose;
         if (!showAt(introOn, k, home)) return;
         // 배율이 바뀌면 그만큼 렌더 해상도를 올린다 (펫 창처럼 크게 그릴 때 버퍼가 모자라 뿌옇게 보이던 문제)
         if (curK !== k) { curK = k; setRes(k); }
@@ -1168,7 +1173,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         canvas.style.left = x + "px"; canvas.style.top = y + "px";
         const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyWeight))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
-        const spot = { k, noseX, headTop, vp: viewArea, home };
+        const spot = { k, noseX, headTop, vp: viewArea, home, introProgress };
         placeBubble(introOn, spot);
       };
       /**

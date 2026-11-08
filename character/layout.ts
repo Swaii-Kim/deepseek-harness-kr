@@ -99,3 +99,24 @@ export const tailLeft = ({ noseX, bw, width, margin = HOME_GAP, tail = BUBBLE_TA
   Math.max(margin, noseX - (bw - tail)),
   Math.max(margin, width - bw - margin),
 );
+/** 시작 연출 가운데의 큰 말풍선 크기 (px) */
+export const INTRO_BUBBLE = { font: 22, padY: 14, padX: 24, maxWidth: 560 };
+/** 평소 말풍선 크기 (px, assets/character.css #dsc-bubble과 같은 값) */
+export const REST_BUBBLE = { font: 13, padY: 9, padX: 14 };
+/**
+ * 시작 연출 말풍선 크기. 제자리로 옮겨 가는 동안 캐릭터 배율과 같은 진행도로 평소 크기에 다가감
+ * @param progress 제자리로 옮겨 간 진행도 (0 = 가운데, 1 = 제자리)
+ * @param restMaxWidth 지금 배율의 평소 말풍선 최대폭 (px)
+ * @returns 글자 크기·위아래/좌우 여백·최대폭 (px)
+ */
+export const introBubbleSize = (progress: number, restMaxWidth: number) => {
+  const p = Math.min(1, Math.max(0, progress));
+  /** 큰 말풍선 값에서 평소 값으로 p만큼 옮긴 값 */
+  const mix = (from: number, to: number) => from + (to - from) * p;
+  return {
+    font: mix(INTRO_BUBBLE.font, REST_BUBBLE.font),
+    padY: mix(INTRO_BUBBLE.padY, REST_BUBBLE.padY),
+    padX: mix(INTRO_BUBBLE.padX, REST_BUBBLE.padX),
+    maxWidth: mix(INTRO_BUBBLE.maxWidth, restMaxWidth),
+  };
+};

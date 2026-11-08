@@ -58,6 +58,23 @@ test('짧은 말풍선은 꼬리를 말풍선 폭 절반 안쪽으로 좁힌다'
   assert.equal(tailLeft({ noseX: 300, bw: 40, width: 1000, tail: 22 }) + 40 - 22, 300)
 })
 
+test('시작 연출 말풍선은 제자리로 옮겨 가는 동안 평소 크기로 줄어든다', async () => {
+  const { introBubbleSize, REST_BUBBLE } = layout
+  // 가운데(진행도 0)는 큰 말풍선, 도착(1)은 평소 크기와 지금 배율의 최대폭
+  assert.deepEqual(introBubbleSize(0, 200), { font: 22, padY: 14, padX: 24, maxWidth: 560 })
+  assert.deepEqual(introBubbleSize(1, 200), { font: 13, padY: 9, padX: 14, maxWidth: 200 })
+  // 중간은 캐릭터 배율과 같은 진행도만큼
+  assert.deepEqual(introBubbleSize(0.5, 200), { font: 17.5, padY: 11.5, padX: 19, maxWidth: 380 })
+  // 진행도 범위 밖은 양 끝으로 자름
+  assert.deepEqual(introBubbleSize(-1, 200), introBubbleSize(0, 200))
+  assert.deepEqual(introBubbleSize(2, 200), introBubbleSize(1, 200))
+  // 도착 순간 인라인 스타일을 지우고 CSS 기본값으로 돌아가므로 평소 값은 CSS와 같아야 함
+  const css = await readFile(new URL('../../assets/character.css', import.meta.url), 'utf8')
+  const rule = css.match(/#dsc-bubble \{\r?\n[^}]*\}/)[0]
+  assert.match(rule, new RegExp(`padding: ${REST_BUBBLE.padY}px ${REST_BUBBLE.padX}px;`))
+  assert.match(rule, new RegExp(`font: 600 ${REST_BUBBLE.font}px/`))
+})
+
 test('터치 제스처: 가로 끌기는 집기, 세로 움직임은 쓰다듬기, 가만히 길게 누르면 집기', () => {
   const slice = sliceBetween('const TOUCH = {', 'life.listen(document, "pointermove"')
   const { touchGesture, TOUCH } = runScript(slice, {}, '({ touchGesture, TOUCH })')
