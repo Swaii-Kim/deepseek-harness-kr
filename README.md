@@ -13,19 +13,6 @@ https://github.com/user-attachments/assets/7e7a96cc-efc8-416d-89a0-f574fdcda690
 
 </details>
 
-## 구성
-
-| 폴더 | 내용 |
-|---|---|
-| `plugin/` · `package.json` | DSH 플러그인: 호스트·설정 화면(`plugin/client.ts`)·한국어 번역(`plugin/locales.ko.json`)·빌드와 테스트 |
-| `character/` | 인앱 캐릭터 TypeScript 소스. 빌드하면 `assets/dsc.js`와 `lib/client.js`가 만들어집니다 |
-| `assets/` | 빌드된 캐릭터 코드(`dsc.js`)와 Live2D 모델·테마·배경 |
-| `lib/` | 빌드된 플러그인 클라이언트(`client.js`) |
-| `pet/` | 바깥 펫 창(Electron) 코드 |
-| `shared/` | 캐릭터·설정 화면·펫 메뉴가 함께 쓰는 소품·체형 정의 |
-| `plugins/dsh-tts/` | 말풍선 음성(TTS) 원본 코드. 0.1.6부터 kr 플러그인에 포함되어 설정 창에서 켭니다 |
-| `infographic/` | 소개 영상 최종본과 제작 파일 |
-
 ## 인앱 캐릭터가 하는 일
 
 - 얼굴 추적처럼 자연스러운 고개·몸 움직임 (눈이 먼저, 고개가 뒤따라 · 물리 엔진으로 가슴·머리카락이 출렁임)
@@ -139,6 +126,17 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 - 펫 창의 크기 자동 조절과 복귀 연출은 Windows에서 검증했습니다. macOS에서는 화면 배치에 따라 창 위치가 어긋날 수 있습니다.
 
 ### 개발자 빌드
+
+| 폴더 | 내용 |
+|---|---|
+| `plugin/` · `package.json` | DSH 플러그인: 호스트·설정 화면(`plugin/client.ts`)·한국어 번역(`plugin/locales.ko.json`)·빌드와 테스트 |
+| `character/` | 인앱 캐릭터 TypeScript 소스. 빌드하면 `assets/dsc.js`와 `lib/client.js`가 만들어집니다 |
+| `assets/` | 빌드된 캐릭터 코드(`dsc.js`)와 Live2D 모델·테마·배경 |
+| `lib/` | 빌드된 플러그인 클라이언트(`client.js`) |
+| `pet/` | 바깥 펫 창(Electron) 코드 |
+| `shared/` | 캐릭터·설정 화면·펫 메뉴가 함께 쓰는 소품·체형 정의 |
+| `plugins/dsh-tts/` | 말풍선 음성(TTS) 원본 코드. 0.1.6부터 kr 플러그인에 포함되어 설정 창에서 켭니다 |
+| `infographic/` | 소개 영상 최종본과 제작 파일 |
 
 ```powershell
 npm ci
