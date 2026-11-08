@@ -545,6 +545,13 @@ test('pet window settings panel is tall enough to avoid a needless scrollbar', a
   assert.doesNotMatch(css, /#dsc-pet-panel \{[^}]*max-height: 440px/)
 })
 
+test('solid bubble tail raises its opening so the border edge does not show as a line', async () => {
+  // 말풍선이 소수 픽셀 위치에 놓이면 테두리 위쪽 가장자리가 꼬리 입구에 가는 가로줄로 비친다 (점선 꼬리와 같은 방식)
+  const css = await readFile(new URL('../../assets/character.css', import.meta.url), 'utf8')
+  const tail = css.match(/#dsc-bubble::after \{[^}]*\}/)[0]
+  assert.match(tail, /clip-path: polygon\(100% 0, 12px 2px, 12px 1\.29px, 1\.29px 12px, 2px 12px, 0 100%, 100% 100%\)/)
+})
+
 test('character source supports modifier drag and a pet window toggle', async () => {
   const source = readSource(new URL('../../character/index.ts', import.meta.url))
   for (const code of [source, bundle]) {
