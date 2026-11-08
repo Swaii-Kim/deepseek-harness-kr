@@ -78,7 +78,7 @@ const VERB: Record<string, string> = { is: "are", was: "were", has: "have", want
 /** 추론 문장 속 "the user"·"this user"를 "you"로 바꾸고 뒤 동사도 맞춤 */
 export const vtuberize = (text: string) => text
   .replace(/\b(the|this) user's\b/gi, (match: string) => (match[0] === "T" ? "Your" : "your"))
-  .replace(/\b(the|this) user (\w+)/gi, (match: string, article: string, word: string) => {
+  .replace(/\b(the|this) user (\w+)/gi, (_match: string, article: string, word: string) => {
     const you = article[0] === article[0].toUpperCase() ? "You" : "you";
     return you + " " + (VERB[word.toLowerCase()] || word);
   })

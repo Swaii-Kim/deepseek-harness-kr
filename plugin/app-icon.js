@@ -16,7 +16,6 @@ const run = promisify(execFile)
 
 export const APP_ICON_FILE = 'app-icon.ico'
 export const PROFILE_DIR = 'deepseek-harness-kr'
-const SEP = /[\\/]+/
 
 /** Windows 여부 */
 export const isWindows = (platform = process.platform) => platform === 'win32'

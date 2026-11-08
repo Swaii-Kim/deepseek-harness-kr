@@ -276,7 +276,7 @@
     mentioned: "mentioned",
     requested: "requested"
   };
-  var vtuberize = (text) => text.replace(/\b(the|this) user's\b/gi, (match) => match[0] === "T" ? "Your" : "your").replace(/\b(the|this) user (\w+)/gi, (match, article, word) => {
+  var vtuberize = (text) => text.replace(/\b(the|this) user's\b/gi, (match) => match[0] === "T" ? "Your" : "your").replace(/\b(the|this) user (\w+)/gi, (_match, article, word) => {
     const you = article[0] === article[0].toUpperCase() ? "You" : "you";
     return you + " " + (VERB[word.toLowerCase()] || word);
   }).replace(/\b(the|this) user\b/gi, (match) => match[0] === match[0].toUpperCase() ? "You" : "you");
@@ -671,7 +671,6 @@
         const WAIST_WIN = H * 0.05 + (cutY - minY) * bustScale;
         const WAIST_PCT = WAIST_PET / H * 100;
         const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;
-        const bodyHeight = WHOLE_BODY ? maxY - minY : cutY - minY;
         const modelScale = WHOLE_BODY ? fullScale : bustScale;
         const HEAD_GAIN = bustScale / modelScale;
         model.scale.set(modelScale);
@@ -888,7 +887,7 @@
           if (BOB_KICK[name]) bobKick(BOB_KICK[name]);
         };
         const BOB_KICK = { bounce: 60, laugh: 50, nod: -45 };
-        let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6e3, talkUntil = 0;
+        let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6e3;
         const setMood = (moodName, ms = 0) => {
           relay("setMood", [moodName, ms]);
           mood = moodName;
@@ -3129,7 +3128,7 @@
           inputLockedUntil = now + 2500;
           walk.lastTouch = now;
         };
-        const armChordGrab = (e, now, pointerId = e.pointerId) => {
+        const armChordGrab = (e, pointerId = e.pointerId) => {
           if (chestDragging) {
             clearInterval(chestLongTimer);
             chestDragging = false;
@@ -3165,12 +3164,12 @@
           if (mask !== 3 || prev === 3) return false;
           if (prev === 2) {
             if (!rightPress?.hit) return false;
-            armChordGrab(e, now, rightPress.id ?? e.pointerId);
+            armChordGrab(e, rightPress.id ?? e.pointerId);
             return true;
           }
           if (prev === 1) {
             if (!chordWithinGrace(chord, 2, mask, now)) return false;
-            armChordGrab(e, now, drag.pending?.id ?? e.pointerId);
+            armChordGrab(e, drag.pending?.id ?? e.pointerId);
             return true;
           }
           return false;
@@ -3178,9 +3177,9 @@
         const rightButtonDown = (e, nowDown) => {
           if (e.button === 2) {
             rightPress = rightStart(e);
-            if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, nowDown, e.pointerId);
+            if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, e.pointerId);
           }
-          if (e.buttons & 1 && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e, nowDown);
+          if (e.buttons & 1 && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e);
         };
         const armHeadOrChest = (e, h) => {
           const head = !!h && performance.now() >= inputLockedUntil && touchRegion(h[0], h[1], h[2]) === "head";
@@ -3243,7 +3242,7 @@
           const now = performance.now();
           if (e.button === 2) {
             if (!(e.buttons & 1)) rightPress = rightStart(e);
-            if (e.buttons & 1 && chordWithinGrace(chord, 2, e.buttons, now)) armChordGrab(e, now, rightPress?.id ?? e.pointerId);
+            if (e.buttons & 1 && chordWithinGrace(chord, 2, e.buttons, now)) armChordGrab(e, rightPress?.id ?? e.pointerId);
             return;
           }
           if (e.button !== 0) return;

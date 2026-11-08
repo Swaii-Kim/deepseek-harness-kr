@@ -19,8 +19,6 @@ import type { Lifetime } from "./lifetime.ts";
 import type { CharacterApi, CharacterPrefs, Motion, PetBridge, Pose, Rect, Viewport } from "./types.ts";
 import type { Syllable } from "./speech.ts";
 
-/** 캐릭터 위 지점: [캔버스 x, 캔버스 y, drawable 번호] (hitAt) */
-type Hit = [number, number, number];
 /** 외부 음성(말풍선 음성 플러그인) 상태: 재생 중인지, 오디오 레벨, 모음별 세기, 유효 시각 */
 type VoiceState = { speaking?: boolean; level: number; vowels?: Record<string, number>; until?: number };
 /** 펫 창이 붙을 자리 (화면 좌표, win = DSH 창 영역) */
@@ -196,8 +194,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const WAIST_WIN = H * 0.05 + (cutY - minY) * bustScale;   // 창 안 캔버스(k=1)에서 허리 y
       const WAIST_PCT = WAIST_PET / H * 100;                // 하반신 페이드를 시작할 높이(%)
       // 펫 창(전신): 모델 전체의 가로·세로를 캔버스에 맞추고 몸 가운데를 캔버스 가운데에 둔다
-      const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;   // 캔버스에 담을 몸의 가로·세로 (모델 좌표)
-      const bodyHeight = WHOLE_BODY ? maxY - minY : cutY - minY;
+      const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;   // 캔버스에 담을 몸의 가로 (모델 좌표)
       const modelScale = WHOLE_BODY ? fullScale : bustScale;
       // 화면상 크기는 모델 배율 × 캔버스 배율(k). HEAD_GAIN을 곱하면 펫 창의 머리 크기가 창 안과 같아진다
       const HEAD_GAIN = bustScale / modelScale;
@@ -405,7 +402,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        */
       const play = (name: string, dur: number) => { relay("play", [name, dur]); gestureState.name = name; gestureState.start = performance.now(); gestureState.dur = dur; gestureState.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
       const BOB_KICK: Record<string, number> = { bounce: 60, laugh: 50, nod: -45 };   // 몸짓 시작 때 몸 튕김 세기
-      let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6000, talkUntil = 0;
+      let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6000;
       /**
        * 상태에 따른 자세(mood) 설정 (펫 창에도 전달)
        * @param ms 유지 시간 (0이면 계속)
@@ -2708,7 +2705,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * pointerdown은 첫 버튼에만 오므로, 두 번째 버튼은 mousedown/pointermove에서 호출
        * @param pointerId 집기 예약에 기록할 포인터 id
        */
-      const armChordGrab = (e: PointerEvent | MouseEvent, now: number, pointerId = (e as PointerEvent).pointerId) => {
+      const armChordGrab = (e: PointerEvent | MouseEvent, pointerId = (e as PointerEvent).pointerId) => {
         if (chestDragging) { clearInterval(chestLongTimer); chestDragging = false; chestTarget = 0; chestShiftTarget = 0; }
         strokeFrom = null; chestFrom = null;
         if (!drag.pending) {
@@ -2744,12 +2741,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (mask !== 3 || prev === 3) return false;
         if (prev === 2) {   // 오른쪽 먼저: 유효한 right start일 때만
           if (!rightPress?.hit) return false;
-          armChordGrab(e, now, rightPress.id ?? e.pointerId);
+          armChordGrab(e, rightPress.id ?? e.pointerId);
           return true;
         }
         if (prev === 1) {   // 왼쪽 먼저: 150ms grace
           if (!chordWithinGrace(chord, 2, mask, now)) return false;
-          armChordGrab(e, now, drag.pending?.id ?? e.pointerId);
+          armChordGrab(e, drag.pending?.id ?? e.pointerId);
           return true;
         }
         return false;
@@ -2762,11 +2759,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const rightButtonDown = (e: PointerEvent, nowDown: number) => {
         if (e.button === 2) {
           rightPress = rightStart(e);
-          if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, nowDown, e.pointerId);
+          if ((e.buttons & 3) === 3 && rightPress) armChordGrab(e, e.pointerId);
         }
         // 오른쪽 버튼이 왼쪽을 누른 채 150ms 안에 눌리면, 그 사이 예약된 쓰다듬기·가슴 끌기를 버리고
         // 집기 예약을 되살린다. (두 버튼을 함께 오래 누르는 기존 동작은 pointermove의 both 판정이 처리한다.)
-        if ((e.buttons & 1) && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e, nowDown);
+        if ((e.buttons & 1) && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e);
       };
       /**
        * 머리면 쓰다듬기 예약, 가슴이면 위로 끄는지 지켜보기 예약 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김)
@@ -2825,7 +2822,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const now = performance.now();
         if (e.button === 2) {
           if (!(e.buttons & 1)) rightPress = rightStart(e);
-          if ((e.buttons & 1) && chordWithinGrace(chord, 2, e.buttons, now)) armChordGrab(e, now, rightPress?.id ?? e.pointerId);
+          if ((e.buttons & 1) && chordWithinGrace(chord, 2, e.buttons, now)) armChordGrab(e, rightPress?.id ?? e.pointerId);
           return;
         }
         if (e.button !== 0) return;
