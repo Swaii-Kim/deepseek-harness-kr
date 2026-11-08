@@ -17,8 +17,12 @@ https://github.com/user-attachments/assets/7e7a96cc-efc8-416d-89a0-f574fdcda690
 
 | 폴더 | 내용 |
 |---|---|
-| `plugin/` · `package.json` | DSH 플러그인: 한국어 UI, 파스텔 테마, Live2D 캐릭터 |
-| `assets/` | 플러그인이 사용하는 캐릭터 코드·Live2D 모델·테마·배경 |
+| `plugin/` · `package.json` | DSH 플러그인: 호스트·설정 화면(`plugin/client.ts`)·한국어 번역(`plugin/locales.ko.json`)·빌드와 테스트 |
+| `character/` | 인앱 캐릭터 TypeScript 소스. 빌드하면 `assets/dsc.js`와 `lib/client.js`가 만들어집니다 |
+| `assets/` | 빌드된 캐릭터 코드(`dsc.js`)와 Live2D 모델·테마·배경 |
+| `lib/` | 빌드된 플러그인 클라이언트(`client.js`) |
+| `pet/` | 바깥 펫 창(Electron) 코드 |
+| `shared/` | 캐릭터·설정 화면·펫 메뉴가 함께 쓰는 소품·체형 정의 |
 | `plugins/dsh-tts/` | 말풍선 음성(TTS) 원본 코드. 0.1.6부터 kr 플러그인에 포함되어 설정 창에서 켭니다 |
 | `infographic/` | 소개 영상 최종본과 제작 파일 |
 
@@ -75,8 +79,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 
 업데이트 칸은 GitHub 주소로 설치한 경우에만 동작합니다. 포크에서 설치했다면 그 포크의 최신 버전을 확인합니다.
 
-**0.1.2 이하에서 처음 한 번:** 이 버전에는 업데이트 칸이 없습니다. **플러그인**(Plugins)에서 이 플러그인을 제거한 뒤 같은 GitHub 주소로 다시 추가하면 최신 버전이 설치되고, 설정은 유지됩니다. 또는 Harness를 종료하고 명령 프롬프트에서 아래 명령을 실행해도 됩니다(Web UI라면 `--profile web`). 
-(이 안내는 0.2까지 유지될 예정입니다.)
+**0.1.2 이하에서 처음 한 번:** 이 버전에는 업데이트 칸이 없습니다. **플러그인**(Plugins)에서 이 플러그인을 제거한 뒤 같은 GitHub 주소로 다시 추가하면 최신 버전이 설치되고, 설정은 유지됩니다. 또는 Harness를 종료하고 명령 프롬프트에서 아래 명령을 실행해도 됩니다(Web UI라면 `--profile web`).
 
 ```bat
 "%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop update deepseek-harness-kr
@@ -87,7 +90,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 - Live2D 캐릭터의 표정·시선·터치 반응과 모음에 맞춘 입 모양
 - 작업 상태·추론 문구에 반응하는 말풍선
 - 파스텔 테마 (Harness의 밝은 모드·다크 모드 설정을 그대로 따름). 좁은 화면에서 겹쳐 뜨는 왼쪽 드로어·오른쪽 전체화면 패널은 내용이 비치지 않도록 불투명 배경으로 표시합니다
-- UI 번역  네임스페이스를 제공하는 한국어 언어팩
+- UI 번역 73개 네임스페이스를 제공하는 한국어 언어팩
 - 말풍선 음성(TTS): 설정 창에서 켜기와 URL·API 키 등록 (0.1.6부터 포함)
 - 설정 화면에서 소품·옷·체형 바꾸기 (동물귀 숨기기 포함)
 - 설정 화면에서 **시작할 때 등장 연출** 끄기 (처음부터 제자리에 뜸)
@@ -136,7 +139,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 
 ### 호환성
 
-- 기존 설치·클라이언트 주입 검증 환경은 DSH 0.2.1-rc.5 Desktop 앱입니다. 이번 변경은 자동 테스트와 별도 폴더에 배포 패키지를 새로 설치하는 검사까지 진행했으며, 새 설치본의 앱 부팅·전체 UI 동작은 아직 확인하지 않았습니다.
+- 지원하는 DSH 버전은 0.2.1-rc.5 이상 0.3 미만입니다. 0.8.0 구조 개편은 Windows DSH 0.2.2와 macOS DSH 0.2.2-rc.1의 격리 프로필에서 실제 동작을 확인했습니다([#26](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/26)).
 - 작업 상태와 추론 문구는 화면의 DOM 구조로 감지합니다. DSH 업데이트가 DOM 구조나 플러그인 API를 바꾸면 호환성 수정이 필요할 수 있습니다.
 - Electron 네이티브 메뉴·업데이트/복구 창, 패키지 메타데이터 설명과 일부 하드코딩 문구는 언어팩의 번역 대상이 아닙니다.
 - 펫 창의 크기 자동 조절과 복귀 연출은 Windows에서 검증했습니다. macOS에서는 화면 배치에 따라 창 위치가 어긋날 수 있습니다.
@@ -145,9 +148,9 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 
 ```powershell
 npm ci
-npm run locales          # 설치된 DSH 영어 사전과 비교해 빠진 번역 보고 (todo·merge는 plugin/locales.mjs 참고)
+npm run locales     # 설치된 DSH 영어 사전과 비교해 빠진 번역 보고 (todo·merge는 plugin/locales.mjs 참고)
 npm run build
-npm run typecheck    # TypeScript 타입 검사 (출력 없음)
+npm run typecheck   # TypeScript 타입 검사 (출력 없음)
 npm test
 ```
 
@@ -205,7 +208,7 @@ VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(P
 ## 만든 사람
 
 - [@noire113-dev](https://github.com/noire113-dev) — 기획, 테스트, 배경 그림
-- [Claude](https://claude.ai) (Anthropic, Claude Code) — 한국어화·인앱 캐릭터 코드, 패치·빌드 도구, 소개 영상 제작
+- [Claude](https://claude.ai) (Anthropic, Claude Code) — 한국어화·인앱 캐릭터 코드, 패치·빌드 도구, 소개 영상 제작, PR 검증·릴리즈
 - [Codex](https://openai.com/codex) (OpenAI) — 이슈·PR 작업 계획, 코드 검수, 문서 정리
 - [DeepSeek](https://www.deepseek.com) (DeepSeek V4.1 Flash 1017) — 버그 수정, PR 통합·기능 구현, 자동 테스트
 - Live2D 모델 원작: Kamiya_Ryoko (VGen @KAMIYA) — `NOTICE.md` 참고
@@ -214,7 +217,7 @@ VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(P
 
 - [@conankun](https://github.com/conankun) — 말풍선 TTS와 오디오 기반 입 모양 플러그인 `plugins/dsh-tts` ([#2](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/2)), 말풍선 꼬리를 얼굴 가운데로 정렬 ([#20](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/20))
 - [@shortstories](https://github.com/shortstories) — Harness 플러그인 메뉴에서 바로 설치하는 방식, 캐릭터·테마·한국어 개별 설정 ([#3](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/3))
-- [@TraceofLight](https://github.com/TraceofLight) — macOS(Apple silicon) 적용 스크립트 ([#4](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/4)), 승인·질문 카드가 캐릭터에 가려지던 문제 수정 ([#6](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/6)), Live2D 렌더링 최적화와 시작 시 끊김 완화 ([#7](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/7)), 말풍선 음성 내장·말풍선 꼬리·캐릭터 자유 위치와 바깥 펫 창 ([#12](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/12)), 펫 창 대기 오버헤드 감소·짧은 말풍선 꼬리·혼합 배율 모니터 위치 수정 ([#24](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/24))
+- [@TraceofLight](https://github.com/TraceofLight) — macOS(Apple silicon) 적용 스크립트 ([#4](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/4)), 승인·질문 카드가 캐릭터에 가려지던 문제 수정 ([#6](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/6)), Live2D 렌더링 최적화와 시작 시 끊김 완화 ([#7](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/7)), 말풍선 음성 내장·말풍선 꼬리·캐릭터 자유 위치와 바깥 펫 창 ([#12](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/12)), 펫 창 대기 오버헤드 감소·짧은 말풍선 꼬리·혼합 배율 모니터 위치 수정 ([#24](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/24)), 캐릭터 코드 TypeScript 모듈 개편·인트로와 창 크기 변경 중 사라짐 수정·한국어 번역 보강·macOS 앱 아이콘 ([#26](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/26))
 - [@iwannagit](https://github.com/iwannagit) — 파스텔 테마 다크 모드 지원 ([#5](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/5)), 절전모드와 캐릭터 켜기·끄기 단축키 ([#11](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/11))
 - [@0x2b-or-0xd4](https://github.com/0x2b-or-0xd4) — 단축키를 문자 입력 대신 키 녹음으로 지정 ([#14](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/14)), 바깥 펫 창 우클릭 메뉴·설정 패널과 크기 조절 ([#16](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/16)), 캐릭터 이동 키·펫 창·캔버스 단축키 ([#21](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/21))
 - [@ByungHyun21](https://github.com/ByungHyun21) — 자산 응답 캐시(ETag·304)로 새로고침 속도 개선, 질문 카드 감지를 안정적인 data 속성으로 수정 ([#17](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/17)), 모바일 입력창·키보드 회피 ([#19](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/19)), 모바일 패널 배경 수정 ([#23](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/23)), 동물귀 숨기기 제안 ([#22](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/issues/22))
