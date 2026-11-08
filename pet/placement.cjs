@@ -28,10 +28,12 @@ const same = (actual, expected) => Math.abs(actual - expected) <= 1
  * @param {number} [options.tries] 한 번 놓은 뒤 다시 지시하는 최대 횟수. 그래도 어긋나면 포기 (끝없이 다시 지시하지 않음)
  * @param {(fn: () => void, ms: number) => unknown} [options.setTimer] 시간 예약 (시험용으로 바꿔 끼움)
  * @param {(id: any) => void} [options.clearTimer] 예약 취소
+ * @param {(win: PetWindow, bounds: Bounds) => void} [options.onPlace] setBounds를 실제로 지시한 직후 불림 (native 창 bounds를 페이지에 알려 clip 기준으로 쓰기 위함)
  */
-function createPlacer(getWin, { width, height, delay = 60, tries = 8, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+function createPlacer(getWin, { width, height, delay = 60, tries = 8, setTimer = setTimeout, clearTimer = clearTimeout, onPlace = () => {} } = {}) {
   // size: 부르는 쪽(main.cjs·시험)은 width·height를 늘 넘김
   let size = /** @type {Size} */ ({ width, height }), target = /** @type {Bounds | null} */ (null), applied = /** @type {Bounds | null} */ (null), timer = /** @type {unknown} */ (null), attempt = 0
+  let notify = false   // 이번 이동의 실제 bounds를 onPlace로 알릴지 (산책 중에만 true)
   /** 살아 있는 펫 창 (없거나 닫혔으면 null) */
   const live = () => { const win = getWin(); return win && !win.isDestroyed() ? win : null }
   /** 확인 다시 예약 (이전 예약은 취소, delay ms 뒤) */
@@ -39,9 +41,14 @@ function createPlacer(getWin, { width, height, delay = 60, tries = 8, setTimer =
   /**
    * 지금 크기로 (x, y)에 지시하고 확인 예약. 다시 지시 횟수 초기화
    * | 0: Math.round 결과가 -0이면 Electron이 정수로 받지 못해 오류 창을 띄움
-   * @param {PetWindow} win @param {number} x @param {number} y
+   * @param {PetWindow} win @param {number} x @param {number} y @param {boolean} send true면 이번 이동의 실제 bounds를 onPlace로 알림
    */
-  const order = (win, x, y) => { target = applied = { x: Math.round(x) | 0, y: Math.round(y) | 0, ...size }; attempt = 0; win.setBounds(target); arm() }
+  const order = (win, x, y, send) => {
+    target = applied = { x: Math.round(x) | 0, y: Math.round(y) | 0, ...size }; attempt = 0; notify = send
+    win.setBounds(target)
+    if (notify) onPlace(win, target)
+    arm()
+  }
 
   /** 실제 자리 확인: 지시와 맞으면 끝, 어긋났으면 tries 번까지 다시 지시하고 확인 재예약 */
   function settle() {
@@ -55,15 +62,19 @@ function createPlacer(getWin, { width, height, delay = 60, tries = 8, setTimer =
     // 그래도 어긋나면 지시한 값과 실제 값의 차이만큼 반대로 보정해 지시
     applied = attempt <= 2 ? target : { ...target, x: target.x - (current.x - /** @type {Bounds} */ (applied).x), y: target.y - (current.y - /** @type {Bounds} */ (applied).y) }
     win.setBounds(applied)
+    if (notify) onPlace(win, applied)
     arm()
   }
 
   return {
-    /** 창 왼쪽 위를 화면 좌표 (x, y)에 놓기. 이전에 예약된 확인은 새 자리 기준으로 대체됨 @param {number} x @param {number} y */
-    place(x, y) {
+    /**
+     * 창 왼쪽 위를 화면 좌표 (x, y)에 놓기. 이전에 예약된 확인은 새 자리 기준으로 대체됨
+     * @param {number} x @param {number} y @param {boolean} [send] true면 실제 bounds를 onPlace로 알림 (산책 중에만, 끌기 4ms 틱마다 IPC가 늘지 않게)
+     */
+    place(x, y, send = false) {
       const win = live()
       if (!win || !Number.isFinite(x) || !Number.isFinite(y)) return
-      order(win, x, y)
+      order(win, x, y, send)
     },
     /** 창 크기 바꾸기 (왼쪽 위는 마지막으로 지시한 자리 그대로). 이후 place 도 이 크기로 지시함. 이미 그 크기면 지시하지 않음 @param {number} w @param {number} h */
     resize(w, h) {
@@ -72,7 +83,7 @@ function createPlacer(getWin, { width, height, delay = 60, tries = 8, setTimer =
       size = { width: Math.round(w), height: Math.round(h) }
       const current = win.getBounds()
       if (same(current.width, size.width) && same(current.height, size.height)) return
-      order(win, target ? target.x : current.x, target ? target.y : current.y)
+      order(win, target ? target.x : current.x, target ? target.y : current.y, false)
     },
     /** 예약된 확인 그만두기 (창이 닫힐 때) */
     cancel() { clearTimer(timer); timer = null; target = null },

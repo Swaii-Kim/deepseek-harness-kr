@@ -9,8 +9,8 @@ contextBridge.exposeInMainWorld('dscPet', {
   /** 메인 프로세스 메시지 듣기 등록 (그동안 모아 둔 메시지부터 넘김) */
   on(fn) { listener = fn; for (const message of queue.splice(0)) fn(message) },
   send,
-  /** 펫 창 왼쪽 위를 화면 좌표 (x, y)로 옮기기 */
-  move: (x, y) => send({ type: 'move', x, y }),
+  /** 펫 창 왼쪽 위를 화면 좌표 (x, y)로 옮기기. walk = 산책 중 여부 (true면 메인 프로세스가 실제 창 bounds를 회신) */
+  move: (x, y, walk) => send({ type: 'move', x, y, walk: !!walk }),
   /** 누르는 중 여부 알리기 (true인 동안은 커서가 몸 밖이어도 클릭 받음) */
   press: (on) => send({ type: 'press', on: !!on }),
   /** 우클릭 메뉴 띄우기 */

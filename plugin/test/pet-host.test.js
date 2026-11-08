@@ -367,7 +367,7 @@ test('펫 창 따라오기: 커서는 펫 프로세스가 직접 읽어 페이�
   assert.match(main, /case 'track': track\(!!message\.on, message\.grab, message\.off\)/)
   assert.match(main, /placer\.place\(cursor\.x - grabPoint\.x - bodyOffset\.x, cursor\.y - grabPoint\.y - bodyOffset\.y\)[\s\S]*toPage\(\{ type: 'cursor'/)   // 창은 커서를 읽는 즉시 여기서 옮김 (페이지 왕복 없음)
   assert.ok(!/win\.setPosition\(/.test(main), '창 이동은 모두 placer로: setPosition 한 번으로 끝내면 배율이 다른 모니터에서 어긋난 채 남는다')
-  assert.match(main, /case 'move': placer\.place\(message\.x, message\.y\)/)
+  assert.match(main, /case 'move': placer\.place\(message\.x, message\.y(?:, message\.walk === true)?\)/)
   assert.ok(!/win\.setSize\(/.test(main), '창 크기도 placer로: setSize 로 바꾸면 다음 이동이 고정 크기로 되돌린다')
   assert.match(main, /case 'fit': \{[\s\S]*?placer\.resize\(w, h\)/)
   assert.match(dsc, /petTracking/)   // 따라오는 동안 페이지는 창을 옮기지 않음

@@ -61,8 +61,8 @@ export interface PetBridge {
   on(fn: (message: any) => void): void
   /** 메인 프로세스로 메시지 보내기 */
   send(message: unknown): void
-  /** 펫 창 이동 (화면 좌표) */
-  move(x: number, y: number): void
+  /** 펫 창 이동 (화면 좌표). walk = 산책 중 여부 (true면 메인 프로세스가 실제 창 bounds를 bounds 메시지로 회신) */
+  move(x: number, y: number, walk?: boolean): void
   /** 누르는 중 표시. true면 커서가 몸 밖이어도 클릭을 계속 받음 */
   press(on: boolean): void
   /** 펫 창 우클릭 메뉴 열기 */
