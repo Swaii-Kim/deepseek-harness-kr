@@ -754,7 +754,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // ---------- 배치: 한 프레임에 캐릭터 캔버스와 말풍선을 어디에 얼마나 크게 둘지 ----------
       // place()가 아래 단계를 순서대로 부른다. 단계 순서와 DOM을 읽고 쓰는 순서가 곧 동작이므로 바꾸지 않는다
-      // (plugin/test/character-trace.test.js가 데스크톱 경로를 프레임마다 확인).
+      // (리팩터링 때는 npm run trace:diff로 데스크톱 경로를 프레임마다 비교).
       /** 캔버스·말풍선 숨김 */
       const hideCharacter = () => { canvas.style.display = bubble.style.display = "none"; };
       /**
@@ -1284,7 +1284,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
 
       // ---------- 한 프레임의 절차 애니메이션 ----------
       // 표정 매니저 자리(모션 뒤·물리 앞)에서 불린다. 아래 단계들은 이 순서대로 돌고, 단계의 순서와
-      // 난수(Math.random)를 쓰는 순서가 곧 동작이므로 바꾸지 않는다 (plugin/test/character-trace.test.js가 프레임마다 확인).
+      // 난수(Math.random)를 쓰는 순서가 곧 동작이므로 바꾸지 않는다 (리팩터링 때는 npm run trace:diff로 프레임마다 비교).
       // 고개·몸 값은 motion(yaw·pitch·roll·bodyX/Y/Z·lean·smile·eyeSmileAdd·eyeClose·mouthAdd)에 모았다가 한 번에 쓴다.
 
       /**

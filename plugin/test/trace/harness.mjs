@@ -1,17 +1,16 @@
-// 캐릭터 동작 기준 기록(골든 트레이스). character/ 소스를 esbuild로 묶어 JSDOM에서 돌리고,
-// PIXI·Live2D 모델·시간·난수·rAF·타이머를 가짜로 바꿔 같은 입력이면 늘 같은 결과가 나오게 한다.
-// 프레임마다 모델 파라미터 값(표정 갱신·물리 뒤), 캔버스·말풍선·베일 스타일, 렌더 해상도를 기록한다.
-//   node plugin/test/trace/harness.mjs --update            지금 소스로 기준 기록(golden.json)을 다시 만든다
-//   node plugin/test/trace/harness.mjs --diff <다른 저장소> [--pet]  두 소스의 기록을 프레임별로 비교해 처음 다른 곳을 보여 준다 (--pet: 펫 창 시나리오)
-import { createHash } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+// 리팩터링 검증 도구: 두 소스의 캐릭터 동작을 프레임마다 비교 (기본 테스트에는 들어 있지 않음).
+// character/ 소스를 esbuild로 묶어 JSDOM에서 돌리고, PIXI·Live2D 모델·시간·난수·rAF·타이머를 가짜로 바꿔
+// 같은 입력이면 늘 같은 결과가 나오게 한다. 프레임마다 모델 파라미터 값(표정 갱신·물리 뒤),
+// 캔버스·말풍선·베일 스타일, 렌더 해상도, 펫 창 메시지를 기록한다.
+//   npm run trace:diff -- <기준 소스 체크아웃> [--pet]
+//   (= node plugin/test/trace/harness.mjs --diff <기준 소스 체크아웃> [--pet], --pet: 펫 창 시나리오)
+// 기준 체크아웃은 git worktree add <경로> <커밋> 으로 만들고 node_modules를 연결해 쓴다.
+import { readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { JSDOM, VirtualConsole } from 'jsdom'
 
 const here = dirname(fileURLToPath(import.meta.url))
-export const GOLDEN = join(here, 'golden.json')
-export const GOLDEN_PET = join(here, 'golden-pet.json')
 const BASE = 'http://127.0.0.1/deepseek-harness-kr/assets/'
 
 // 저장소 root의 character/ 소스를 브라우저용 IIFE로 묶는다 (index.js·index.ts 모두)
@@ -313,22 +312,9 @@ export async function runTrace(code, { pet = false } = {}) {
   return frames
 }
 
-// 프레임 기록을 비교용 형태로: 프레임마다 해시, 일부 프레임은 전체 기록
-export function summarize(frames) {
-  const hash = (v) => createHash('sha1').update(JSON.stringify(v)).digest('hex').slice(0, 16)
-  return { frames: frames.length, hashes: frames.map(hash), samples: frames.filter((f) => f.f % 50 === 0) }
-}
-
 async function main() {
   const root = resolve(here, '../../..')
-  if (process.argv.includes('--update')) {
-    const code = await bundleCharacter(root)
-    for (const [file, opts] of [[GOLDEN, {}], [GOLDEN_PET, { pet: true }]]) {
-      const s = summarize(await runTrace(code, opts))
-      await writeFile(file, JSON.stringify(s) + '\n')
-      console.log(`${file.split(/[\\/]/).pop()}: ${s.frames} frames`)
-    }
-  } else if (process.argv.includes('--diff')) {
+  if (process.argv.includes('--diff')) {
     const other = resolve(process.argv[process.argv.indexOf('--diff') + 1])
     const opts = { pet: process.argv.includes('--pet') }   // --pet: 펫 창 시나리오를 비교
     const [a, b] = [await runTrace(await bundleCharacter(other), opts), await runTrace(await bundleCharacter(root), opts)]
