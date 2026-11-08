@@ -84,7 +84,7 @@ test("렌더 루프: voiceState 만료 + talking/open/모음 오버라이드", (
   assert.match(SRC, /open = clamp\(voiceState\.level, 0, 1\) \* 0\.9;/, "level → open 덮어쓰기");
   assert.match(
     SRC,
-    /for \(const k of VOW\) vowel\[k\] = Math\.max\(vowel\[k\] \* 0\.4, clamp\(voiceState\.vowels\[k\] \|\| 0, 0, 1\)\);/,
+    /for \(const key of VOWELS\) vowel\[key\] = Math\.max\(vowel\[key\] \* 0\.4, clamp\(voiceState\.vowels\[key\] \|\| 0, 0, 1\)\);/,
     "vowels → vowel 덮어쓰기",
   );
 });
