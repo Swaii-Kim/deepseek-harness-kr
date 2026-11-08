@@ -12,6 +12,7 @@ const root = dirname(here)
 const packageName = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).name
 const GENERATED = '// 빌드 산출물입니다. 직접 고치지 말고 소스(character/, plugin/client.ts, shared/)를 고친 뒤 npm run build 하세요.'
 
+/** esbuild 불러오기 (ESBUILD 환경 변수 경로 우선, 없으면 esbuild 패키지). 못 불러오면 설치 안내 오류 */
 async function loadEsbuild() {
   const override = process.env.ESBUILD
   const loaded = await import(override ? pathToFileURL(override).href : 'esbuild').catch((error) => {

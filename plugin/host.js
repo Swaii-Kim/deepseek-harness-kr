@@ -31,7 +31,10 @@ export const inject = ['webServer', 'connection']
 
 // 말풍선 음성(TTS). 설정 화면이 쓰는 값은 모두 volatile이어야 한다(Settings는 volatile 필드만 쓴다).
 // 값의 범위·형식 검사는 요청마다 dsh-tts normalize가 맡고, 잘못된 값은 /dsh-tts/state가 이유를 알려 준다.
-/** @template R @param {{ volatile(): R }} schema @returns {R} */
+/**
+ * 스키마의 volatile 변환 (설정 화면에서 바꾼 값을 요청마다 다시 읽기 위함)
+ * @template R @param {{ volatile(): R }} schema @returns {R}
+ */
 const live = (schema) => schema.volatile()
 export const TtsConfig = z.object({
   enabled: live(z.boolean().default(false)),
@@ -60,8 +63,8 @@ export const TtsConfig = z.object({
   }),
 })
 
-// volatile 참조(.get())가 섞인 설정을 그 시점의 평범한 값으로 바꾼다.
 /**
+ * volatile 참조(.get())가 섞인 설정의 그 시점 평범한 값 변환
  * @param {any} value 설정 값 아무거나 (volatile 참조·객체·원시값이 섞임)
  * @returns {unknown}
  */
@@ -104,14 +107,18 @@ const assets = fileURLToPath(new URL('../assets/', import.meta.url))
 /** @type {Record<string, string | undefined>} */
 const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream' }
 
-/** @param {string} [root] @returns {RequestHandler} */
+/**
+ * 자산 파일 요청 처리기 생성. GET·HEAD만 받고 ETag가 같으면 304
+ * @param {string} [root] 자산 폴더 (기본 assets/)
+ * @returns {RequestHandler}
+ */
 export function createAssetHandler(root = assets) {
   return async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return
     }
     try {
-      // Decode before resolving; both lexical traversal and symlink escapes fail closed.
+      // 경로 해석 전에 디코딩. 경로 문자열로 벗어나기·심볼릭 링크로 벗어나기 모두 거절로 처리
       const path = decodeURIComponent((req.url || '').split('?')[0])
       if (!path.startsWith(ASSET_PATH + '/')) { res.writeHead(404); res.end(); return }
       const suffix = path.slice(ASSET_PATH.length + 1)
@@ -139,15 +146,18 @@ export function createAssetHandler(root = assets) {
   }
 }
 
-/** @param {HostContext} ctx @param {HostConfig | undefined} config */
+/**
+ * 플러그인 시작: 자산·음성·펫 경로 등록, 앱 바로가기 아이콘 동기화
+ * @param {HostContext} ctx @param {HostConfig | undefined} config 플러그인 설정 (volatile 참조가 섞임)
+ */
 export function apply(ctx, config) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ASSET_PATH, handler: createAssetHandler() }), 'deepseek-harness-kr: assets')
   // 말풍선 음성: 설정 화면에서 바꾼 값(volatile)을 요청마다 다시 읽는다. 꺼져 있으면 404.
   registerSpeechRoutes(ctx, () => normalizeTts(readLive(config?.tts)))
   ctx.effect(() => {
     const pet = createPetManager({ assets })
-    /** @param {IncomingMessage} req */
-    const rejection = (req) => { const c = ctx.connection; return typeof c?.requestRejection === 'function' ? c.requestRejection(req) : 503 }
+    /** 펫 경로 요청의 거절 상태 코드. DSH 연결 서비스 검사기 결과(통과면 undefined), 검사기가 없으면 503 @param {IncomingMessage} req */
+    const rejection = (req) => { const connection = ctx.connection; return typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : 503 }
     const unregister = ctx.webServer.register({ kind: 'prefix', path: PET_PATH, handler: createPetHandler(pet, rejection) })
     return () => { unregister?.(); pet.dispose() }
   }, 'deepseek-harness-kr: pet')
@@ -155,6 +165,7 @@ export function apply(ctx, config) {
   // 설정은 volatile이라 몇 초마다 확인해 바뀐 경우에만 실행한다(같은 값이면 아무 것도 하지 않음).
   ctx.effect(() => {
     let last = /** @type {boolean | null} */ (null), stopped = false
+    /** 앱 아이콘 설정이 바뀐 경우에만 바로가기 아이콘 적용 (멈춘 뒤에는 무시) */
     const sync = () => {
       if (stopped) return
       const enabled = readLive(config?.appIcon) !== false

@@ -364,7 +364,7 @@ test('펫 창 따라오기: 커서는 펫 프로세스가 직접 읽어 페이�
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
   const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   assert.match(main, /case 'track': track\(!!message\.on, message\.grab, message\.off\)/)
-  assert.match(main, /placer\.place\(p\.x - g\.x - o\.x, p\.y - g\.y - o\.y\)[\s\S]*toPage\(\{ type: 'cursor'/)   // 창은 커서를 읽는 즉시 여기서 옮김 (페이지 왕복 없음)
+  assert.match(main, /placer\.place\(cursor\.x - grabPoint\.x - bodyOffset\.x, cursor\.y - grabPoint\.y - bodyOffset\.y\)[\s\S]*toPage\(\{ type: 'cursor'/)   // 창은 커서를 읽는 즉시 여기서 옮김 (페이지 왕복 없음)
   assert.ok(!/win\.setPosition\(/.test(main), '창 이동은 모두 placer로: setPosition 한 번으로 끝내면 배율이 다른 모니터에서 어긋난 채 남는다')
   assert.match(main, /case 'move': placer\.place\(message\.x, message\.y\)/)
   assert.ok(!/win\.setSize\(/.test(main), '창 크기도 placer로: setSize 로 바꾸면 다음 이동이 고정 크기로 되돌린다')
@@ -421,7 +421,7 @@ test('펫 창 우클릭 메뉴: 설정·크기 프리셋·돌아가기·숨기�
   const main = await readFile(new URL('../../pet/main.cjs', import.meta.url), 'utf8')
   for (const label of ['설정…', '크기', '창으로 돌아가기', '캐릭터 잠시 숨기기', '소품·옷', '체형']) assert.ok(main.includes(label), label)
   assert.match(main, /toPage\(\{ type: 'panel', open: true \}\)/)
-  assert.match(main, /toPage\(\{ type: 'size', ratio: r \}\)/)
+  assert.match(main, /toPage\(\{ type: 'size', ratio: sizeRatio \}\)/)
   assert.match(main, /toHost\(\{ type: 'config', list: \[\['character', false\]\] \}\)/)
   assert.match(main, /case 'state':/)   // 메뉴 체크 표시용 상태는 호스트로 넘기지 않는다
   assert.match(main, /MENU_SIZES = \[0\.75, 1, 1\.25, 1\.5\]/)

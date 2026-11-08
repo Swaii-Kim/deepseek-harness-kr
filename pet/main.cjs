@@ -9,7 +9,8 @@ const { createPlacer } = require('./placement.cjs')
 // 소품·옷·체형 항목: 빌드가 shared/settings.js에서 만든 pet/settings.cjs (펫 앱 폴더째 런타임으로 복사된다)
 const { OUTFIT_ITEMS, BODY_TYPES } = require('./settings.cjs')
 
-const arg = (name) => { const hit = process.argv.find((a) => a.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : '' }
+/** 명령줄 인자 `--이름=값`의 값 (없으면 빈 문자열) */
+const arg = (name) => { const hit = process.argv.find((option) => option.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : '' }
 const PIPE = arg('dsc-pipe'), ASSETS = arg('dsc-assets'), APP = __dirname
 const OWN = '/__app'   // dscpet://assets 아래에서 이 앱 폴더를 가리키는 경로
 const WIN_W = 820, WIN_H = 1160   // 전신(최대 990px = 300×3.3배)과 머리 위 말풍선 자리가 들어가는 크기
@@ -38,42 +39,54 @@ let win = null, socket = null, buffer = ''
 const placer = createPlacer(() => win, { width: WIN_W, height: WIN_H })
 // 지금 회차 번호(창 안 캐릭터가 펫 창을 열 때마다 올림). 보이기·숨기·붙기 알림에 붙여, 이전 회차 알림과 섞이지 않게 함
 let seq
+/** 호스트로 메시지 보내기 (회차 번호가 있으면 seq 를 붙임, 연결이 끊겼으면 버림) */
 const toHost = (message) => { if (socket && !socket.destroyed) socket.write(JSON.stringify(seq === undefined ? message : { ...message, seq }) + '\n') }
 // 페이지가 'ready'를 보내기 전에 온 메시지는 모아 두었다가 넘김 (첫 실행 때 open이 사라지지 않게)
 let pageReady = false
 const pending = []
+/** 페이지로 메시지 보내기 (ready 전이면 pending 에 모아 둠) */
 const toPage = (message) => { if (!win || win.isDestroyed()) return; if (pageReady) win.webContents.send('dsc', message); else pending.push(message) }
+/** file 이 root 폴더 안(root 자신은 제외)인지 여부 */
 const inside = (root, file) => { const rel = path.relative(root, file); return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) }
+/** 펫 창 숨기기: 클릭 받기 끄기·호스트에 hidden 알림(보이던 경우), 따라오기 멈춤, 페이지 그리기 중지, 코드가 바뀌었으면 새로 불러오기 */
 const hide = () => { if (win && !win.isDestroyed() && win.isVisible()) { win.hide(); setAccept(false); toHost({ type: 'hidden' }) } track(false); toPage({ type: 'power', on: false }); reloadIfStale() }
 // 클릭 받기: 평소엔 뒤 화면으로 통과시키고, 커서가 캐릭터 몸 영역(box, 창 안 좌표) 안이거나 누르고 끄는 중(force)일 때만 받음.
 // 커서 위치는 여기서 직접 읽음 (Windows에서 클릭 통과 중 마우스 이동 전달(forward)이 창을 옮긴 뒤 끊겨 다시 못 집는 일이 있어서)
 let box = null, force = false, accepting = false
+/** 클릭 받기 켜고 끄기 (바뀔 때만) @param on true면 클릭 받음, false면 뒤 화면으로 통과 */
 function setAccept(on) { if (on !== accepting && win && !win.isDestroyed()) { accepting = on; win.setIgnoreMouseEvents(!on, { forward: true }) } }
+/** 커서 위치로 클릭 받기 판정: 창이 보이고 누르는 중이거나 커서가 몸 영역 안이면 받음 */
 function checkCursor() {
   if (!win || win.isDestroyed() || !win.isVisible()) return setAccept(false)
   if (force) return setAccept(true)
   if (!box) return setAccept(false)
-  const p = screen.getCursorScreenPoint(), b = win.getBounds()
-  setAccept(p.x >= b.x + box.l && p.x <= b.x + box.r && p.y >= b.y + box.t && p.y <= b.y + box.b)
+  const cursor = screen.getCursorScreenPoint(), bounds = win.getBounds()
+  setAccept(cursor.x >= bounds.x + box.l && cursor.x <= bounds.x + box.r && cursor.y >= bounds.y + box.t && cursor.y <= bounds.y + box.b)
 }
 // 커서 확인은 창이 보이는 동안만 30ms마다 (숨은 동안엔 클릭을 받을 일이 없음). 창이 만들어진 뒤 show/hide 이벤트로 켜고 끈다
 let cursorTimer = null
+/** 커서 확인 타이머(30ms 간격) 켜고 끄기 */
 const watchCursor = (on) => { clearInterval(cursorTimer); cursorTimer = on ? setInterval(checkCursor, 30) : null }
 // 따라오기: 창 안 캐릭터가 끌어낼 때 창 위치는 여기서 커서를 읽는 즉시 옮김 (페이지로 보내 다음 프레임에 계산해 되돌려 받으면
 // 프레임마다 위치가 밀리거나 건너뛰어 끊겨 보임). 페이지에는 몸 흔들림 계산용으로 커서만 알려 줌. grab = 커서가 몸을 잡은 자리, off = 창 안 몸 왼쪽 위 좌표
 let tracker = null
+/**
+ * 따라오기 켜고 끄기 (켜면 4ms마다 커서를 읽어 창을 옮김, 이미 켜져 있으면 그대로)
+ * @param on true면 시작, false면 멈춤 @param grab 커서가 몸을 잡은 자리 @param off 창 안 몸 왼쪽 위 좌표
+ */
 function track(on, grab, off) {
   if (!on) { clearInterval(tracker); tracker = null; return }
   if (tracker) return
-  const g = { x: Number(grab?.x) || 0, y: Number(grab?.y) || 0 }, o = { x: Number(off?.x) || 0, y: Number(off?.y) || 0 }
+  const grabPoint = { x: Number(grab?.x) || 0, y: Number(grab?.y) || 0 }, bodyOffset = { x: Number(off?.x) || 0, y: Number(off?.y) || 0 }
   let last = ''
+  /** 커서가 움직였을 때만 창 옮기기와 페이지에 커서 위치 알리기 */
   const tick = () => {
     if (!win || win.isDestroyed()) return
-    const p = screen.getCursorScreenPoint(), key = `${p.x},${p.y}`
+    const cursor = screen.getCursorScreenPoint(), key = `${cursor.x},${cursor.y}`
     if (key === last) return
     last = key
-    placer.place(p.x - g.x - o.x, p.y - g.y - o.y)
-    toPage({ type: 'cursor', x: p.x, y: p.y })
+    placer.place(cursor.x - grabPoint.x - bodyOffset.x, cursor.y - grabPoint.y - bodyOffset.y)
+    toPage({ type: 'cursor', x: cursor.x, y: cursor.y })
   }
   tick()   // 창을 보이기 전에 먼저 커서 자리로 (잠깐 엉뚱한 자리에 떠 보이지 않게)
   tracker = setInterval(tick, 4)
@@ -81,11 +94,13 @@ function track(on, grab, off) {
 // 캐릭터 코드(assets/dsc.js)가 바뀌면(플러그인 업데이트·재설치) 숨어 있을 때 페이지를 새로 불러옴. 떠 있는 동안 바뀌면 다음에 숨을 때.
 // (펫 프로세스는 DSH가 꺼질 때까지 남아 있어서, 안 그러면 창 안 캐릭터만 새 코드로 돌고 펫 창은 옛 코드로 돎)
 let stale = false
+/** 캐릭터 코드가 바뀌었고 창이 숨어 있으면 페이지를 캐시 없이 새로 불러오기 */
 function reloadIfStale() { if (stale && win && !win.isDestroyed() && !win.isVisible()) { stale = false; pageReady = false; win.webContents.reloadIgnoringCache() } }
 require('node:fs').watchFile(path.join(ASSETS, 'dsc.js'), { interval: 2000 }, (now, before) => { if (now.mtimeMs !== before.mtimeMs) { stale = true; reloadIfStale() } })
 // 숨기라는 말을 받은 뒤 늦게 온 '자리 잡음(placed)'으로 다시 보이지 않게, 마지막 지시가 open인지 기억함
 let wanted = false
 
+/** 호스트 메시지 처리: hide 는 여기서 숨김, open 은 회차 기억 뒤 페이지로, 그 밖(cmd)은 페이지로 */
 const fromHost = (message) => {
   if (message.type === 'hide') { wanted = false; return hide() }
   if (message.type === 'open') { wanted = true; seq = message.seq }
@@ -126,11 +141,11 @@ app.whenReady().then(() => {
       case 'move': placer.place(message.x, message.y); return
       case 'track': track(!!message.on, message.grab, message.off); return
       case 'press': force = !!message.on; checkCursor(); return   // 누르고 있는 동안은 커서가 몸 밖이어도 늘 받음
-      case 'hitbox': box = message.box && ['l', 't', 'r', 'b'].every((k) => Number.isFinite(message.box[k])) ? message.box : null; checkCursor(); return
+      case 'hitbox': box = message.box && ['l', 't', 'r', 'b'].every((side) => Number.isFinite(message.box[side])) ? message.box : null; checkCursor(); return
       // 캐릭터 크기에 맞춰 창 크기 조절 (화면 작업 영역 안으로만 제한). 배율 상한이 없어져 창도 함께 커져야 한다
       case 'fit': {
-        const wa = screen.getPrimaryDisplay().workAreaSize
-        const w = Math.min(Math.round(Number(message.w)), wa.width), h = Math.min(Math.round(Number(message.h)), wa.height)
+        const workArea = screen.getPrimaryDisplay().workAreaSize
+        const w = Math.min(Math.round(Number(message.w)), workArea.width), h = Math.min(Math.round(Number(message.h)), workArea.height)
         if (!Number.isFinite(w) || !Number.isFinite(h) || w < 80 || h < 80) return
         placer.resize(w, h)   // 크기도 placer 로: 이후 이동(place)이 이 크기를 유지하고, 배율이 다른 모니터에서도 확인함
         return
@@ -140,18 +155,32 @@ app.whenReady().then(() => {
       case 'menu': {
         const size = Number(menuState.size) || 1, outfit = menuState.outfit || {}
         Menu.buildFromTemplate([
-          { label: '설정…', click: () => toPage({ type: 'panel', open: true }) },
+          { label: '설정…',
+            /** 설정 패널 열기 */
+            click: () => toPage({ type: 'panel', open: true }) },
           { label: '크기', submenu: [
-            ...MENU_SIZES.map((r) => ({ label: `${Math.round(r * 100)}%`, type: 'radio', checked: Math.abs(size - r) < 0.02, click: () => toPage({ type: 'size', ratio: r }) })),
+            ...MENU_SIZES.map((sizeRatio) => ({ label: `${Math.round(sizeRatio * 100)}%`, type: 'radio', checked: Math.abs(size - sizeRatio) < 0.02,
+              /** 고른 배율로 크기 바꾸기 */
+              click: () => toPage({ type: 'size', ratio: sizeRatio }) })),
             { type: 'separator' },
-            { label: '슬라이더로 조절…', click: () => toPage({ type: 'panel', open: true, focus: 'size' }) },
+            { label: '슬라이더로 조절…',
+              /** 크기 슬라이더로 설정 패널 열기 */
+              click: () => toPage({ type: 'panel', open: true, focus: 'size' }) },
           ] },
           { type: 'separator' },
-          { label: '창으로 돌아가기', click: () => toPage({ type: 'home' }) },
-          { label: '캐릭터 잠시 숨기기', click: () => toHost({ type: 'config', list: [['character', false]] }) },
+          { label: '창으로 돌아가기',
+            /** 창 안으로 돌아가기 */
+            click: () => toPage({ type: 'home' }) },
+          { label: '캐릭터 잠시 숨기기',
+            /** 호스트에 캐릭터 설정 끄기 요청 */
+            click: () => toHost({ type: 'config', list: [['character', false]] }) },
           { type: 'separator' },
-          { label: '소품·옷', submenu: MENU_OUTFIT.map(([key, label]) => ({ label, type: 'checkbox', checked: outfit[key] === true, click: () => toHost({ type: 'config', list: [[key, outfit[key] !== true]] }) })) },
-          { label: '체형', submenu: MENU_BODY.map(([value, label]) => ({ label, type: 'radio', checked: (outfit.bodyType || 'default') === value, click: () => toHost({ type: 'config', list: [['bodyType', value]] }) })) },
+          { label: '소품·옷', submenu: MENU_OUTFIT.map(([key, label]) => ({ label, type: 'checkbox', checked: outfit[key] === true,
+            /** 호스트에 이 소품·옷 설정 뒤집기 요청 */
+            click: () => toHost({ type: 'config', list: [[key, outfit[key] !== true]] }) })) },
+          { label: '체형', submenu: MENU_BODY.map(([value, label]) => ({ label, type: 'radio', checked: (outfit.bodyType || 'default') === value,
+            /** 호스트에 이 체형으로 바꾸기 요청 */
+            click: () => toHost({ type: 'config', list: [['bodyType', value]] }) })) },
         ]).popup({ window: win })
         return
       }
@@ -160,7 +189,7 @@ app.whenReady().then(() => {
       // 창 안 캐릭터가 나타나는 프레임에 숨기라고 알려 옴 (1초는 창 안 쪽이 응답하지 않을 때를 위한 대비)
       // 곧바로 숨긴다: 창 안 캐릭터가 그리는 한 프레임까지 기다리면 두 캐릭터가 잠깐 겹쳐 보인다
       case 'attach': wanted = false; toHost(message); hide(); return
-      case 'ready': pageReady = true; for (const m of pending.splice(0)) win.webContents.send('dsc', m); toHost(message); return
+      case 'ready': pageReady = true; for (const queued of pending.splice(0)) win.webContents.send('dsc', queued); toHost(message); return
       default: toHost(message)
     }
   })
