@@ -1386,7 +1386,7 @@
           bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bubbleWidth, width: vp.w, tail }) + "px";
           bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bubbleHeight - 6)) + "px";
         };
-        const placeDesktopBubble = ({ k, x, noseX, headTop, home, loose }) => {
+        const placeDesktopBubble = ({ k, noseX, headTop, home }) => {
           const card = home.card;
           bubble.style.left = "auto";
           bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
@@ -1396,13 +1396,9 @@
           if (!(card && home.r)) return;
           const cardBox = home.r, bubbleLeft = bubble.offsetLeft, bubbleTop = bubble.offsetTop, bubbleBox = { left: bubbleLeft, top: bubbleTop, right: bubbleLeft + bubble.offsetWidth, bottom: bubbleTop + bubble.offsetHeight };
           if (!(bubbleBox.left < cardBox.right && bubbleBox.right > cardBox.left && bubbleBox.top < cardBox.bottom && bubbleBox.bottom > cardBox.top)) return;
-          bubble.classList.add("side");
-          bubble.style.maxWidth = "220px";
-          bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
-          const sideTop = Math.max(cardBox.bottom + 8, headTop + 4);
-          if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
+          const belowCard = cardBox.bottom + 8;
+          if (belowCard + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = belowCard + "px";
           else {
-            bubble.classList.remove("side");
             bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), innerWidth - 16) + "px";
             bubble.style.top = Math.max(8, Math.min(innerHeight - bubble.offsetHeight - HOME_GAP, headTop - bubble.offsetHeight - 10)) + "px";
           }
@@ -1416,7 +1412,7 @@
           bubble.style.top = placement.top + "px";
           if (placement.side && !home.above) bubble.classList.add("side");
         };
-        const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox }) => {
+        const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, winBox }) => {
           const cardBox = home.r;
           return [
             k,
@@ -1438,7 +1434,6 @@
             bubble.className.replace(/\bside\b/g, "").trim(),
             fade,
             Math.round(petFade * 60),
-            loose,
             winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""
           ].join("|");
         };
@@ -1454,7 +1449,6 @@
           setRender(show && (!PET || petPower));
           return show;
         };
-        const looseBubble = () => PET || free.on && free.applied || !!free.anim;
         const petWinBox = () => PET && petDock && petDock.win ? petDock.win : null;
         const placeBubble = (introOn, spot) => {
           if (introOn) placeIntroBubble(spot);
@@ -1478,14 +1472,13 @@
           shown.k = k;
           shown.x = x;
           shown.y = y;
-          const loose = looseBubble();
           if (PET) ({ x, y } = placePetWindow(dock, k));
           updateCardClip(home, introOn, k, x, y);
           const { fade, petFade } = fadeAmounts(k, y);
           const winBox = petWinBox();
           const noseX = x + (model.x + noseModelX * model.scale.x) * k;
           const viewArea = home.vp || viewport();
-          const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp: viewArea, home, noseX, fade, petFade, loose, winBox });
+          const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp: viewArea, home, noseX, fade, petFade, winBox });
           if (placeKey && placeKey === lastPlaceKey) return;
           lastPlaceKey = placeKey;
           applyCanvasMask({ winBox, petFade, fade, x, y });
@@ -1496,7 +1489,7 @@
           canvas.style.top = y + "px";
           const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyWeight))) * k;
           bubble.classList.remove("side");
-          const spot = { k, x, noseX, headTop, vp: viewArea, home, loose };
+          const spot = { k, noseX, headTop, vp: viewArea, home };
           placeBubble(introOn, spot);
         };
         const hideChipVisible = ({ pet: pet2 = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet2 && isHidden && !mobileHiddenNow && !pageHiddenNow();

@@ -179,16 +179,18 @@ test('데스크톱 말풍선 꼬리는 코를 따르고(오른쪽 10px 고정 �
   assert.match(source, /else if \(!coarsePointer\(\) && !spot\.home\.above\) placeDesktopBubble\(spot\);/)
   assert.match(source, /bubble\.style\.right = tailRight\(\{ noseX, width: innerWidth, tail \}\)/)
   assert.doesNotMatch(source, /bubble\.style\.right = loose \? Math\.max\(10, innerWidth - \(x \+ W \* k \/ 2 \+ 55\)\)/)
-  assert.match(source, /sideTop \+ bubble\.offsetHeight <= innerHeight - HOME_GAP/)
+  assert.match(source, /belowCard \+ bubble\.offsetHeight <= innerHeight - HOME_GAP/)
   assert.match(source, /bubble\.style\.top = Math\.max\(8, Math\.min\(innerHeight - bubble\.offsetHeight - HOME_GAP/)
 })
 
-test('제자리 최소 크기 보정에서도 말풍선은 화면 오른쪽 기준을 유지한다', () => {
-  const loose = source.slice(source.indexOf('const looseBubble ='), source.indexOf('const petWinBox ='))
-  assert.match(loose, /const looseBubble = \(\) => PET \|\| \(free\.on && free\.applied\) \|\| !!free\.anim/)
-  assert.match(source, /const loose = looseBubble\(\);/)
-  assert.doesNotMatch(loose, /dock !== home/)
-  assert.match(source, /bubble\.style\.right = loose \? innerWidth - \(x \+ \(W - visW\) \/ 2 \* k\) \+ 8 \+ "px" : "10px"/)
+test('데스크톱 말풍선이 입력창과 겹치면 입력창 아래·머리 위로 내리고 아래 꼬리로 캐릭터를 가리킨다', () => {
+  // 옆 꼬리(.side)는 말풍선 오른쪽에 캐릭터가 있을 때만 맞는다. 데스크톱은 꼬리를 코에 맞춘 머리 위 배치를 유지한다.
+  const start = source.indexOf('const placeDesktopBubble =')
+  const desktop = source.slice(start, source.indexOf('const placeMobileBubble =', start))
+  assert.doesNotMatch(desktop, /classList\.add\("side"\)/)
+  assert.match(desktop, /const belowCard = cardBox\.bottom \+ 8;/)
+  assert.doesNotMatch(source, /bubble\.style\.right = [^;\n]*: "10px"/)
+  assert.doesNotMatch(source, /looseBubble/)
 })
 
 test('카드 아래 공간이 없을 때 말풍선은 뷰포트 안에 남는다', () => {

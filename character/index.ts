@@ -32,7 +32,7 @@ type Home = Pose & { card: Element | null | undefined; r: Rect | null; above: bo
 /** 자유 위치 애니메이션: 미끄러짐(to 있음) 또는 제자리로 붙기(snap). t0 = 시작 시각, ms = 길이 */
 type FreeAnim = { t0: number; ms: number; from: Pose; to: Pose | null; snap: boolean };
 /** 말풍선 배치에 쓰는 값 (noseX·headTop = 코 가운데 x·머리 꼭대기 y, 창 좌표) */
-type BubbleSpot = { k: number; x: number; noseX: number; headTop: number; vp: Viewport; home: Home; loose: unknown };   // loose: PET(통로 객체)이거나 boolean, 참·거짓으로만 씀
+type BubbleSpot = { k: number; noseX: number; headTop: number; vp: Viewport; home: Home };
 /** 한 프레임 애니메이션의 공통값 (frameContext) */
 type Frame = { now: number; dt: number; seconds: number; introCalm: boolean; talking: boolean; muttering: boolean; laughing: boolean };
 /** 삐짐 단계 결과 (applySulk) */
@@ -920,8 +920,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         bubble.style.left = vp.left + tailLeft({ noseX: noseX - vp.left, bw: bubbleWidth, width: vp.w, tail }) + "px";
         bubble.style.top = clampY(Math.max(vp.top + HOME_GAP, headTop - bubbleHeight - 6)) + "px";
       };
-      /** 데스크톱 말풍선: 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남김. 입력창과 겹치면 옆으로 피함 */
-      const placeDesktopBubble = ({ k, x, noseX, headTop, home, loose }: BubbleSpot) => {
+      /** 데스크톱 말풍선: 꼬리(오른쪽 tail px)를 코에 맞추고 오른쪽 경계는 최소 여백만 남김. 입력창과 겹치면 입력창 바로 아래(머리 위)로 내림 */
+      const placeDesktopBubble = ({ k, noseX, headTop, home }: BubbleSpot) => {
         const card = home.card;
         bubble.style.left = "auto";
         bubble.style.maxWidth = Math.max(150, visW * k * 1.1) + "px";
@@ -931,16 +931,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (!(card && home.r)) return;
         const cardBox = home.r, bubbleLeft = bubble.offsetLeft, bubbleTop = bubble.offsetTop, bubbleBox = { left: bubbleLeft, top: bubbleTop, right: bubbleLeft + bubble.offsetWidth, bottom: bubbleTop + bubble.offsetHeight };   // 등장 애니메이션(transform) 영향 없는 레이아웃 크기
         if (!(bubbleBox.left < cardBox.right && bubbleBox.right > cardBox.left && bubbleBox.top < cardBox.bottom && bubbleBox.bottom > cardBox.top)) return;
-        bubble.classList.add("side");
-        bubble.style.maxWidth = "220px";
-        // 제자리(snap)에서는 화면 오른쪽 10px를 유지한다. 자유 위치에서만 꼬리를 캐릭터에 맞춘다.
-        bubble.style.right = loose ? innerWidth - (x + (W - visW) / 2 * k) + 8 + "px" : "10px";
-        const sideTop = Math.max(cardBox.bottom + 8, headTop + 4);
-        if (sideTop + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = sideTop + "px";
+        // 입력창 바로 아래(머리 위)로 내린다. 꼬리는 그대로 아래에서 코를 가리킨다
+        const belowCard = cardBox.bottom + 8;
+        if (belowCard + bubble.offsetHeight <= innerHeight - HOME_GAP) bubble.style.top = belowCard + "px";
         else {
           // 컴포저가 화면 아래 끝까지 차지해 아래로 피할 자리가 없으면, 화면 밖으로 내리지 않고
           // 캐릭터에 붙인 right 기준을 유지한 채 위쪽으로만 clamp한다.
-          bubble.classList.remove("side");
           bubble.style.maxWidth = Math.min(Math.max(150, visW * k * 1.1), innerWidth - 16) + "px";
           bubble.style.top = Math.max(8, Math.min(innerHeight - bubble.offsetHeight - HOME_GAP, headTop - bubble.offsetHeight - 10)) + "px";
         }
@@ -956,10 +952,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (placement.side && !home.above) bubble.classList.add("side");
       };
       /** 배치에 쓰는 값을 한 줄로 묶은 비교용 키 (같으면 이번 프레임 배치를 건너뜀) */
-      const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, loose, winBox }: { k: number; x: number; y: number; vp: Viewport; home: Home; noseX: number; fade: number; petFade: number; loose: unknown; winBox: PetBox | null }) => {
+      const placeKeyOf = ({ k, x, y, vp, home, noseX, fade, petFade, winBox }: { k: number; x: number; y: number; vp: Viewport; home: Home; noseX: number; fade: number; petFade: number; winBox: PetBox | null }) => {
         const cardBox = home.r;
         return [k, x, y, vp.left, vp.top, vp.w, vp.h, fleeX, Math.round(bodyWeight * 40), cardBox && cardBox.left, cardBox && cardBox.right, cardBox && cardBox.top, cardBox && cardBox.bottom,
-          Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60), loose,
+          Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60),
           winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""].join("|");
       };
       /**
@@ -986,12 +982,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         setRender(show && (!PET || petPower));
         return show;
       };
-      /**
-       * 말풍선 꼬리를 머리 위에 맞출지 여부 (자유 위치·펫 창일 때만). 제자리 크기를 SHOW_K로 올린 경우
-       * dockTarget이 새 포즈 객체를 반환하므로, dock !== home만으로 판정하면 제자리인데도
-       * 말풍선이 화면 오른쪽 10px가 아니라 캐릭터 쪽으로 당겨지는 문제 방지
-       */
-      const looseBubble = () => PET || (free.on && free.applied) || !!free.anim;
       /** 펫 창 마스크 기준이 될 DSH 창 영역 (안쪽은 또렷하게, 창 밖으로 나간 부분은 흐리게(반투명)). 펫 창이 아니거나 모르면 null */
       const petWinBox = () => (PET && petDock && petDock.win ? petDock.win : null);
       /** 상황에 맞는 말풍선 배치 (시작 연출 / 데스크톱 / 모바일·컴포저 위) */
@@ -1014,7 +1004,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         // 배율이 바뀌면 그만큼 렌더 해상도를 올린다 (펫 창처럼 크게 그릴 때 버퍼가 모자라 뿌옇게 보이던 문제)
         if (curK !== k) { curK = k; setRes(k); }
         shown.k = k; shown.x = x; shown.y = y;
-        const loose = looseBubble();
         if (PET) ({ x, y } = placePetWindow(dock, k));
         updateCardClip(home, introOn, k, x, y);
         // 배치에 쓰는 값이 그대로면 건너뜀: 매 프레임 side 클래스를 뗐다 붙이며 레이아웃을 3번씩 강제하던 것 방지
@@ -1023,7 +1012,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const winBox = petWinBox();
         const noseX = x + (model.x + noseModelX * model.scale.x) * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
         const viewArea = home.vp || viewport();
-        const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp: viewArea, home, noseX, fade, petFade, loose, winBox });
+        const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp: viewArea, home, noseX, fade, petFade, winBox });
         if (placeKey && placeKey === lastPlaceKey) return;
         lastPlaceKey = placeKey;
         applyCanvasMask({ winBox, petFade, fade, x, y });
@@ -1032,7 +1021,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         canvas.style.left = x + "px"; canvas.style.top = y + "px";
         const headTop = y + (H * 0.05 + chibiHeadDrop * Math.min(1, Math.max(0, bodyWeight))) * k;   // 꼬마일 땐 내려간 머리 위에 말풍선
         bubble.classList.remove("side");
-        const spot = { k, x, noseX, headTop, vp: viewArea, home, loose };
+        const spot = { k, noseX, headTop, vp: viewArea, home };
         placeBubble(introOn, spot);
       };
       /**
