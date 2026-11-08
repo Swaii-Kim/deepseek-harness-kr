@@ -33,7 +33,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'dscpet', privileges: { standard
 
 let win = null, socket = null, buffer = ''
 // 창 이동은 모두 여기로: 위치·크기를 함께 지시하고 멈춘 뒤 실제 자리를 확인해 맞춤 (배율이 다른 모니터를 넘나들 때 어긋남 방지)
-const placer = createPlacer(() => win, { width: WIN_W, height: WIN_H })
+const placer = createPlacer(() => win, { width: WIN_W, height: WIN_H, onPlace: (w) => toPage({ type: 'bounds', bounds: w.getBounds() }) })
 // 지금 회차 번호(창 안 캐릭터가 펫 창을 열 때마다 올림). 보이기·숨기·붙기 알림에 붙여, 이전 회차 알림과 섞이지 않게 함
 let seq
 const toHost = (message) => { if (socket && !socket.destroyed) socket.write(JSON.stringify(seq === undefined ? message : { ...message, seq }) + '\n') }
@@ -42,6 +42,25 @@ let pageReady = false
 const pending = []
 const toPage = (message) => { if (!win || win.isDestroyed()) return; if (pageReady) win.webContents.send('dsc', message); else pending.push(message) }
 const inside = (root, file) => { const rel = path.relative(root, file); return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) }
+// 현재 펫이 놓인 화면의 DIP 좌표를 페이지에 알려 줌. DOM screen.avail*는 배율이 다른 모니터에서 창 좌표와
+// 어긋날 수 있어, 외부 펫 산책은 출발할 때 이 값(Electron screen의 workArea)을 고정해 쓴다.
+const displayView = (display) => {
+  const b = display.bounds, w = display.workArea
+  return { id: String(display.id), scaleFactor: display.scaleFactor,
+    bounds: { x: b.x, y: b.y, width: b.width, height: b.height },
+    workArea: { x: w.x, y: w.y, width: w.width, height: w.height } }
+}
+const currentDisplay = (point) => {
+  if (!win || win.isDestroyed()) return null
+  return point && Number.isFinite(point.x) && Number.isFinite(point.y)
+    ? screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
+    : screen.getDisplayMatching(win.getBounds())
+}
+const sendDisplay = (changed = false, point, request) => {
+  const display = currentDisplay(point)
+  if (display) toPage({ type: 'display', display: displayView(display), changed: changed || undefined, request,
+    displays: screen.getAllDisplays().map(displayView) })
+}
 const hide = () => { if (win && !win.isDestroyed() && win.isVisible()) { win.hide(); setAccept(false); toHost({ type: 'hidden' }) } track(false); toPage({ type: 'power', on: false }); reloadIfStale() }
 // 클릭 받기: 평소엔 뒤 화면으로 통과시키고, 커서가 캐릭터 몸 영역(box, 창 안 좌표) 안이거나 누르고 끄는 중(force)일 때만 받음.
 // 커서 위치는 여기서 직접 읽음 (Windows에서 클릭 통과 중 마우스 이동 전달(forward)이 창을 옮긴 뒤 끊겨 다시 못 집는 일이 있어서)
@@ -112,6 +131,8 @@ app.whenReady().then(() => {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
   }
   win.setIgnoreMouseEvents(true, { forward: true })   // 처음엔 클릭 통과 (accepting = false)
+  // 표시장치 구성이 바뀌면(제거·해상도·배율) 페이지가 산책 중 clip을 즉시 갱신하거나 안전하게 복귀할 수 있게 알림
+  for (const name of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(name, () => sendDisplay(true))
   win.on('show', () => watchCursor(true))   // showInactive 도 show 를 보냄 (Windows 실측)
   win.on('hide', () => watchCursor(false))
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -121,7 +142,10 @@ app.whenReady().then(() => {
     if (event.sender !== win.webContents || !message || typeof message.type !== 'string') return
     switch (message.type) {
       // | 0: Math.round 결과가 -0이면 Electron이 정수로 받지 못해 오류 창을 띄움
-      case 'move': placer.place(message.x, message.y); return
+      // walk=true일 때만 실제 bounds를 페이지에 회신 (4ms drag tick마다 IPC가 늘지 않게)
+      case 'move': placer.place(message.x, message.y, message.walk === true); return
+      // 산책 출발 화면을 고정하기 위한 현재 표시장치 정보 (point = 캐릭터 몸 중심의 화면 DIP 좌표)
+      case 'display': sendDisplay(false, message.point, message.request); return
       case 'track': track(!!message.on, message.grab, message.off); return
       case 'press': force = !!message.on; checkCursor(); return   // 누르고 있는 동안은 커서가 몸 밖이어도 늘 받음
       case 'hitbox': box = message.box && ['l', 't', 'r', 'b'].every((k) => Number.isFinite(message.box[k])) ? message.box : null; checkCursor(); return

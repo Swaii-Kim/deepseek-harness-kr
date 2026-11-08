@@ -7,7 +7,7 @@ const send = (message) => ipcRenderer.send('dsc', message)
 contextBridge.exposeInMainWorld('dscPet', {
   on(fn) { listener = fn; for (const message of queue.splice(0)) fn(message) },
   send,
-  move: (x, y) => send({ type: 'move', x, y }),
+  move: (x, y, walk) => send({ type: 'move', x, y, walk: !!walk }),
   press: (on) => send({ type: 'press', on: !!on }),
   menu: () => send({ type: 'menu' }),
 })

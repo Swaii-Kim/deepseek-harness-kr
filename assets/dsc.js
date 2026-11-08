@@ -144,10 +144,13 @@
       model.y = H * 0.05 - minY * s;
       // 꼬마 모습(체형 2)은 몸 전체가 작아져 공중에 뜨므로, 그만큼 내려서 발이 화면 바닥에 닿게 한다 (데스크톱 펫과 같음)
       core.setParameterValueById("Clothes2", 1); core.update();
-      let chibiMinY = Infinity, chibiMaxY = -Infinity;
-      each((x, y) => { chibiMinY = Math.min(chibiMinY, y); chibiMaxY = Math.max(chibiMaxY, y); });
+      let chibiMinY = Infinity, chibiMaxY = -Infinity, chibiMinX = Infinity, chibiMaxX = -Infinity;
+      each((x, y) => { chibiMinY = Math.min(chibiMinY, y); chibiMaxY = Math.max(chibiMaxY, y); chibiMinX = Math.min(chibiMinX, x); chibiMaxX = Math.max(chibiMaxX, x); });
       core.setParameterValueById("Clothes2", 0); core.update();
       const baseY = model.y;
+      // 산책은 꼬마 모습으로 걷는다. 경계 계산·fade는 실제 걷는 몸 폭(꼬마 bbox)을 쓴다.
+      const CHIBI_W = Number.isFinite(chibiMinX) && chibiMaxX > chibiMinX ? (chibiMaxX - chibiMinX) * s : bw * s;
+      const WALK_BODY_W = Math.max(1, Math.min(bw * s, CHIBI_W));
       const chibiDrop = Math.max(0, H * 0.99 - chibiMaxY * s - baseY);   // 꼬마일 때 내리는 거리 (캔버스 px)
       const chibiHeadDrop = (chibiMinY - minY) * s + chibiDrop;            // 꼬마일 때 머리 꼭대기가 내려가는 거리 (말풍선 위치용)
       // 말풍선 꼬리 기준 = 얼굴(코) 가운데. 상반신 bbox에서 얼굴 중심이 놓이는 가로 비율로 잡는다(실측 5.5%).
@@ -363,6 +366,19 @@
       let mouseButtons = 0;    // 마지막 포인터 이벤트의 buttons&3 (두 번째 버튼 합류 감지)
       const carry = { vx: 0, vy: 0 };              // 끄는 속도(px/초) → 몸이 관성으로 쏠리고 머리카락·치마가 흔들림
       const shown = { k: 1, x: 0, y: 0 };          // 지난 프레임에 그린 자리 (끌기 시작점)
+      // 펫 창: 현재 표시장치의 Electron DIP workArea (pet/main.cjs가 screen.getDisplayNearestPoint로 회신).
+      // DOM screen.avail*는 배율이 다른 모니터에서 창 좌표와 어긋날 수 있어, 산책은 출발할 때 이 값을 고정해 쓴다.
+      const petDisplay = { id: "", area: null, scaleFactor: 0, request: 0, answered: 0, at: 0, displays: null };
+      let petBounds = null;   // pet/main.cjs가 알려 준 실제 native 창 위치 (clip은 요청 pose가 아니라 이 값 기준)
+      const requestPetDisplay = (at) => {
+        if (!PET) return;
+        const id = ++petDisplay.request;
+        const k = Number.isFinite(curK) && curK > 0 ? curK : 1;
+        const point = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at
+          : (Number.isFinite(shown.x) && Number.isFinite(shown.y) ? { x: shown.x + W * k / 2, y: shown.y + H * k * 0.5 } : undefined);
+        try { PET.send({ type: "display", request: id, point }); } catch {}
+        return id;
+      };
       let touchHold = 0;   // 터치에서 길게 눌러 집기 모드로 들어가는 타이머 (오른쪽 버튼이 없는 화면용)
       let petDock = null, petDocked = false, snapP = 0;   // 펫 창: 붙을 자리(DSH 창의 제자리, 화면 좌표), 붙은 뒤, 붙는 진행도
       // 바깥 펫 창 전용: 우클릭 메뉴 상태 ↔ 설정 패널 ↔ 크기. 크기는 '기본(머리 크기 맞춤) 대비 배율'로,
@@ -398,7 +414,8 @@
         } catch {}
       };
       // 산책: 가끔 가까운 쪽 화면 밖으로 걸어 나갔다가 잠시 뒤 같은 쪽에서 걸어 들어옴 (phase: "" | ready | out | away | in, dir: -1 왼쪽 · 1 오른쪽)
-      const walk = { phase: "", face: 0, dir: -1, out: 0, timers: [], slideId: 0, lastTouch: 0, next: performance.now() + (180 + Math.random() * 180) * 1000 };
+      const walk = { phase: "", face: 0, dir: -1, out: 0, timers: [], slideId: 0, lastTouch: 0, next: performance.now() + (180 + Math.random() * 180) * 1000,
+        plan: null, area: null, base: null, displayId: "", displayRequest: 0, alpha: 1, opacityApplied: false, returnFade: 0, recoverTimer: 0, safeHold: false, faceDir: null, recover: null };
       let walkCheck = null;
       // 시작 연출: 처음엔 화면 가운데에 크게 인사 → 본 화면이 뜨면 오른쪽 아래 제자리로 이동
       const DPR = (devicePixelRatio || 1) * 1.5;   // 1.5배로 그려 줄여 보여 줌 (윤곽선 매끄럽게)
@@ -461,8 +478,8 @@
       const easeBack = (p) => { const c = 1.25, q = p - 1; return 1 + (c + 1) * q * q * q + c * q * q; };   // 끝에서 살짝 넘쳤다 돌아옴 (자석에 붙는 느낌)
       const area = () => PET ? { l: screen.availLeft, t: screen.availTop, r: screen.availLeft + screen.availWidth, b: screen.availTop + screen.availHeight }
         : { l: 0, t: 0, r: innerWidth, b: innerHeight };
-      const keepIn = (p) => {   // 보이는 몸이 영역 밖으로 다 나가지 않게
-        const a = area(), side = (W - visW) / 2 * p.k;
+      const keepIn = (p, limit) => {   // 보이는 몸이 영역 밖으로 다 나가지 않게 (limit = 시험/복구용 대체 workArea)
+        const a = limit || area(), side = (W - visW) / 2 * p.k;
         return { k: p.k, x: Math.min(Math.max(p.x, a.l - side), a.r - W * p.k + side), y: Math.min(Math.max(p.y, a.t - H * p.k * 0.05), a.b - H * p.k * 0.3) };
       };
       // 창 좌표 → 화면 좌표 (창 테두리·제목 표시줄 두께를 뺌)
@@ -487,6 +504,21 @@
       const dockPose = (home, now) => {
         snapP = 0;
         if (drag.on) return { k: free.k, x: drag.x, y: drag.y };
+        // 외부 펫 산책: 출발 때 고정한 제자리·배율에 fleeX만 더한다. 창이 다른 모니터로 넘어가며
+        // DOM screen.avail*가 바뀌어도 keepIn이 중간에 제자리를 다시 clamp해 튀지 않게 한다.
+        if (PET && walk.base && (walk.phase === "out" || walk.phase === "away" || walk.phase === "in")) {
+          return { k: walk.base.k, x: walk.base.x + fleeX, y: walk.base.y };
+        }
+        if (PET && walk.phase === "recover") return { k: free.k, x: free.x + fleeX, y: free.y };   // 복구 중엔 DOM keepIn으로 다시 밀지 않음
+        // 표시장치 변경 복구 직후: DOM screen.avail* 대신 main이 준 새 workArea로만 clamp해 안전 자리가 다시 밀리지 않게 한다.
+        // 사용자가 끌거나 새로 열면 해제(drag/open)하고, 그 뒤로는 기존 일반 동작으로 돌아간다.
+        if (PET && walk.safeHold && !free.anim) {
+          const limit = walkAreaValid(walk.area) ? walk.area : petDisplay.area;
+          if (walkAreaValid(limit)) {
+            const p = keepIn(free, limit);
+            return { k: p.k, x: p.x + fleeX, y: p.y };
+          }
+        }
         const a = free.anim;
         if (a) {
           const p = Math.min(1, (now - a.t0) / a.ms), to = a.snap ? (PET ? petDock : dockTarget(home)) || a.from : a.to;
@@ -570,7 +602,11 @@
         const cx = (innerWidth - W * pose.k) / 2, cy = innerHeight - H * pose.k;
         const wx = Math.round(pose.x - cx), wy = Math.round(pose.y - cy);
         if (petTracking) petWin.x = petWin.y = NaN;   // 끝난 뒤 다시 계산한 자리로 옮기게
-        else if (wx !== petWin.x || wy !== petWin.y) { petWin.x = wx; petWin.y = wy; PET.move(wx, wy); }
+        else if (wx !== petWin.x || wy !== petWin.y || walk.phase === "recover") {
+          petWin.x = wx; petWin.y = wy;
+          const inWalk = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || walk.phase === "recover";
+          PET.move(wx, wy, inWalk);   // 산책 중에만 main이 실제 native bounds를 회신
+        }
         return { x: cx, y: cy };
       };
       // 그리기(티커)는 상태가 바뀔 때만 켜고 끈다. 절전·펫 창이 직접 시작/정지한 경우도
@@ -637,8 +673,14 @@
         // dockTarget이 새 포즈 객체를 반환하므로, dock !== home만으로 판정하면 제자리인데도
         // 말풍선이 화면 오른쪽 10px가 아니라 캐릭터 쪽으로 당겨진다.
         const loose = PET || (free.on && free.applied) || !!free.anim;
+        const walkNow = PET && (walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || walk.phase === "recover" ||
+          (walk.safeHold && walkAreaValid(walk.area)));
         if (PET) {
           ({ x, y } = movePet(dock));
+          if (walkNow) {   // 산책 fade는 경계 근처에서만 (slide가 위치 기준으로 계산한 alpha)
+            canvas.style.opacity = String(Math.max(0, Math.min(1, Number.isFinite(walk.alpha) ? walk.alpha : 1)));
+            walk.opacityApplied = true;
+          } else if (walk.opacityApplied) { canvas.style.opacity = ""; walk.opacityApplied = false; }
           // 창 크기를 캐릭터에 맞춘다 (배율 상한이 없으므로 화면에 들어가는 만큼 창도 커진다)
           const needW = Math.ceil(W * k) + 24, needH = Math.ceil(H * k) + PET_BUBBLE;
           // 설정 패널이 열려 있으면 패널이 들어갈 만큼은 창을 키운다 (캐릭터는 아래 가운데 그대로)
@@ -655,7 +697,7 @@
             fitPetPanel();
           }
           // 클릭을 받을 몸 영역(창 안 좌표)을 펫 프로세스에 알려 줌. 커서가 이 안에 있는지는 펫 프로세스가 직접 확인 (산책·도망 중엔 없음)
-          const r = bodyRect(x, y, k), body = walking() || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
+          const r = bodyRect(x, y, k), body = walking() || walk.phase === "recover" || fleeX !== 0 ? null : { l: Math.round(r.l), t: Math.round(r.t), r: Math.round(r.r), b: Math.round(r.b) };
           const b = petPanelBox(body);   // 설정 패널이 열려 있으면 패널 영역도 클릭을 받는다
           const sig = JSON.stringify(b);
           if (sig !== petBox) { petBox = sig; PET.send({ type: "hitbox", box: b }); }
@@ -676,6 +718,18 @@
               `A${f(br)} ${f(br)} 0 0 1 ${f(rr - br)} ${f(bb)}H${f(l + bl)}A${f(bl)} ${f(bl)} 0 0 1 ${f(l)} ${f(bb - bl)}V${f(t + tl)}A${f(tl)} ${f(tl)} 0 0 1 ${f(l + tl)} ${f(t)}Z")`;
           }
         }
+        // 외부 펫 산책/복귀/표시장치 변경 복구: 선택한 workArea 밖은 clipPath로 잘라 다른 모니터에 픽셀이 보이지 않게 한다.
+        // native 창 origin은 placer가 알려 준 실제 bounds를 쓰되, DOM screenX와 한 프레임 어긋날 수 있으므로
+        // 두 후보의 합집합으로 clip 상자를 잡고 pad만큼 더 안쪽을 자른다(어느 쪽이 실제여도 workArea 밖 픽셀 0).
+        if (!popup && PET && walkNow && walkAreaValid(walk.area)) {
+          const dom = screenOf(x, y), fresh = petBounds && performance.now() - petBounds.at < 2000;
+          const left = fresh ? Math.min(dom.x, petBounds.x + x) : dom.x;
+          const top = fresh ? Math.min(dom.y, petBounds.y + y) : dom.y;
+          const right = fresh ? Math.max(dom.x + W * k, petBounds.x + x + W * k) : dom.x + W * k;
+          const bottom = fresh ? Math.max(dom.y + H * k, petBounds.y + y + H * k) : dom.y + H * k;
+          const c = walkClipInset({ area: walk.area, screenX: left, screenY: top, width: right - left, height: bottom - top });
+          if (c.any) clip = `inset(${c.top}px ${c.right}px ${c.bottom}px ${c.left}px)`;
+        }
         if (clip !== lastClip) { canvas.style.clipPath = clip; lastClip = clip; }
         // 배치에 쓰는 값이 그대로면 건너뜀: 매 프레임 side 클래스를 뗐다 붙이며 레이아웃을 3번씩 강제하던 것 방지
         // 허리 아래가 잘린 창 안 그림은 화면 아래에서 띄우면 띄운 만큼 아래쪽을 흐리게 (꼬마 모습은 발까지 그려져 안 흐림)
@@ -688,8 +742,10 @@
         const noseX = x + (model.x + noseModelX * model.scale.x) * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
         const vp = home.vp || viewport();
         const r0 = home.r;
+        const walkKey = walkNow ? [walk.phase, Math.round(walk.alpha * 100), walk.area ? [walk.area.l, walk.area.t, walk.area.r, walk.area.b].join(",") : "",
+          petBounds ? [Math.round(petBounds.x), Math.round(petBounds.y)].join(",") : ""].join(",") : "";
         const placeKey = introOn ? "" : [k, x, y, vp.left, vp.top, vp.w, vp.h, fleeX, Math.round(bodyW * 40), r0 && r0.left, r0 && r0.right, r0 && r0.top, r0 && r0.bottom,
-          Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60), loose,
+          Math.round(noseX / 3), home.above ? 1 : 0, bubble.textContent, bubble.className.replace(/\bside\b/g, "").trim(), fade, Math.round(petFade * 60), loose, walkKey,
           winBox ? [winBox.l, winBox.t, winBox.r, winBox.b].join(",") : ""].join("|");
         if (placeKey && placeKey === lastPlaceKey) return;
         lastPlaceKey = placeKey;
@@ -1153,7 +1209,8 @@
           }
           if (fleeX !== 0 && !walk.phase) bodyZ += Math.sin(T * 16) * 8;   // 도망가며 종종걸음
           // 산책: 걸어가는 쪽으로 몸을 돌리고 통통 걸음 (walk.face: -1 = 왼쪽을 봄, 1 = 오른쪽을 봄). 돌아올 땐 반대쪽을 봄
-          const faceTo = walk.phase === "out" ? walk.dir : walk.phase === "in" ? -walk.dir : 0;
+          // PET 복귀는 faceDir(실제 이동 방향)을 명시해 기존 in-app의 -walk.dir 규칙과 섞이지 않게 한다.
+          const faceTo = walk.phase === "out" ? walk.dir : walk.phase === "in" ? (walk.faceDir == null ? -walk.dir : walk.faceDir) : 0;
           walk.face += (faceTo - walk.face) * Math.min(1, dt * 5);
           const wa = Math.abs(walk.face);
           if (wa > 0.01) {
@@ -1908,47 +1965,258 @@
         };
         requestAnimationFrame(runOut);
       };
+      // ---------- 외부 펫 산책 경로 계산 (순수 함수: plugin/test에서 그대로 실행) ----------
+      // 화면(DIP) 좌표만 받아, 출발 방향·경계까지의 거리·fade 구간·복귀 시작점을 정한다.
+      // 거리 부족 판단은 걷는 실제 몸 폭(꼬마 bbox)과 걷는 속도로만 한다. 창 위치 clamp와 무관하게
+      // 선택 경계까지 계속 걷고, 마지막 fade 구간에서만 투명해진다.
+      const walkAreaValid = (a) => !!a && [a.l, a.t, a.r, a.b].every((v) => Number.isFinite(v)) && a.r > a.l && a.b > a.t;
+      const walkDisplayArea = (display) => {   // pet/main.cjs가 준 Display.workArea(DIP) → { l, t, r, b }
+        const w = display && display.workArea;
+        if (!w || ![w.x, w.y, w.width, w.height].every((v) => Number.isFinite(v))) return null;
+        const area = { l: w.x, t: w.y, r: w.x + w.width, b: w.y + w.height };
+        return walkAreaValid(area) ? area : null;
+      };
+      const walkBodySpan = ({ x, k, canvasW, bodyW }) => {
+        const width = Math.max(1, Math.min(bodyW, canvasW * k)), side = (canvasW * k - width) / 2;
+        return { l: x + side, r: x + side + width, width, side };
+      };
+      const planWalkOut = ({ area, x, k, canvasW, bodyW, speed = 320 }) => {
+        const b = walkBodySpan({ x, k, canvasW, bodyW });
+        const left = Math.max(0, b.l - area.l), right = Math.max(0, area.r - b.r);   // 경계까지 남은 몸 가장자리 여유
+        const near = left <= right ? -1 : 1;
+        // 기본 출발은 항상 왼쪽. 왼쪽 여유가 부족할 때만 오른쪽으로 바꾼다(오른쪽이 더 넓을 때).
+        // 최소 1.5초(WALK_SPEED 320px/s = 480px) 또는 몸 폭 1.2배. 둘 다 짧으면 더 넓은 쪽.
+        const minRun = Math.max(speed * 1.5, b.width * 1.2, 240);
+        const dir = left >= minRun || right <= left ? -1 : 1;
+        const run = dir < 0 ? left : right;
+        // fade는 경계 직전 마지막 구간에서만: 몸 폭 비례 56~180px, 그래도 이동량의 75%를 넘지 않게 해
+        // 출발하자마자 흐려지지 않는다. 경계에 닿는 순간 alpha 0.
+        const fadeWanted = Math.max(56, Math.min(180, b.width * 0.8));
+        const fade = Math.max(1, Math.min(fadeWanted, run * 0.75));
+        const overshoot = Math.max(6, Math.min(24, b.width * 0.08));   // alpha 0 뒤에도 조금 더 걸어 완전히 사라진 느낌
+        return { dir, near, left, right, minRun, run, fade, overshoot, travel: run + overshoot, body: b.width, bodyL: b.l, bodyR: b.r };
+      };
+      const walkSafePose = ({ area, x, y, k, canvasW, canvasH, bodyW }) => {   // 표시장치가 바뀐 뒤 보이는 몸을 새 workArea 안에 두는 자리
+        const b = walkBodySpan({ x, k, canvasW, bodyW });
+        const minX = area.l - b.side, maxX = area.r - b.side - b.width;
+        const minY = area.t - canvasH * k * 0.05, maxY = area.b - canvasH * k;
+        return { k, x: Math.min(Math.max(x, minX), Math.max(minX, maxX)), y: Math.min(Math.max(y, minY), Math.max(minY, maxY)) };
+      };
+      const planWalkReturn = ({ area, dir, x, k, canvasW, bodyW }) => {
+        const b = walkBodySpan({ x, k, canvasW, bodyW });
+        const entry = Math.max(8, Math.min(64, b.width * 0.3));   // 반대 경계 밖에서 조금만 들어와 시작(fade-in)
+        // 출발이 오른쪽(dir > 0)이면 반대쪽(왼쪽) 경계에서, 왼쪽이면 오른쪽 경계에서 돌아온다.
+        const startX = dir > 0 ? area.l - entry - b.side : area.r + entry - canvasW * k + b.side;
+        const from = startX - x;
+        const fadeWanted = Math.max(56, Math.min(180, b.width * 0.8));
+        return { from, startX, entry, fade: Math.max(1, Math.min(fadeWanted, Math.abs(from) * 0.6)) };
+      };
+      const walkOutAlpha = (traveled, run, fade) => {   // 경계까지 남은 거리 기준 (경계에서 0)
+        const p = Math.max(0, Math.min(1, (run - traveled) / Math.max(1, fade)));
+        return p * p * (3 - 2 * p);
+      };
+      const walkInAlpha = (traveled, fade) => {          // 복귀 시작(경계)에서 0, fade 구간을 지나면 1
+        const p = Math.max(0, Math.min(1, traveled / Math.max(1, fade)));
+        return p * p * (3 - 2 * p);
+      };
+      const walkClipInset = ({ area, screenX, screenY, width, height, pad = 12 }) => {   // 캔버스 안 좌표 기준 workArea 밖 hard clip
+        // 실제 native window origin을 써도 setBounds 반영 오차가 남을 수 있으므로 pad만큼 더 안쪽을 자른다(보수적).
+        const left = area.l > screenX - pad ? Math.max(0, Math.ceil(area.l - screenX) + pad) : 0;
+        const top = area.t > screenY - pad ? Math.max(0, Math.ceil(area.t - screenY) + pad) : 0;
+        const right = area.r < screenX + width + pad ? Math.max(0, Math.ceil(screenX + width - area.r) + pad) : 0;
+        const bottom = area.b < screenY + height + pad ? Math.max(0, Math.ceil(screenY + height - area.b) + pad) : 0;
+        return { left, top, right, bottom, any: left > 0 || top > 0 || right > 0 || bottom > 0 };
+      };
+      // ---------- 외부 펫 산책 경로 계산 끝 ----------
       // ---------- 산책 ----------
       const WALK_SPEED = 320;   // 걷는 속도 (px/초)
       const walkEase = (p) => { const a = 0.12, m = 2 * a * (1 - a); return p < a ? p * p / m : p > 1 - a ? 1 - (1 - p) * (1 - p) / m : (p - a / 2) / (1 - a); };   // 출발·도착만 부드럽게, 중간은 일정한 속도
+      // 외부 펫이 경계로 나갈 때는 끝에서 감속하지 않는다(경계 직전에 멈춘 듯 보이지 않게). 출발만 살짝 부드럽게.
+      const walkEasePetOut = (p) => { const a = 0.1; return p < a ? p * p / (a * (2 - a)) : (2 * p - a) / (2 - a); };
       // 산책의 예약 타이머와 걷기 애니메이션은 walk.timers·walk.slideId로 묶어, 집어 들면 한 번에 멈춘다
       const walkLater = (fn, ms) => { const id = setTimeout(() => { walk.timers = walk.timers.filter((t) => t !== id); fn(); }, ms); walk.timers.push(id); return id; };
       const slide = (from, to, done) => {
-        const t0 = performance.now(), ms = Math.abs(to - from) / WALK_SPEED * 1000, id = ++walk.slideId;
+        // 외부 펫 복귀는 첫 프레임을 '반대 경계 시작 위치(alpha 0)'에 붙잡아 둔다.
+        // (첫 rAF가 늦게 와도 time 기반 p가 점프해 반투명 상태로 중간에 나타나지 않게)
+        let t0 = performance.now(), started = !(PET && walk.phase === "in");
+        const ms = Math.abs(to - from) / WALK_SPEED * 1000, id = ++walk.slideId;
         let cancelled = false;
         const step = () => {
           if (cancelled || id !== walk.slideId) return;   // 멈춤
+          if (!started) { t0 = performance.now(); started = true; }
           const p = ms ? Math.min(1, (performance.now() - t0) / ms) : 1;
-          fleeX = from + (to - from) * walkEase(p);
+          const e = PET && walk.phase === "out" ? walkEasePetOut(p) : walkEase(p);
+          fleeX = from + (to - from) * e;
+          // 외부 펫: 경계에서 fade. 위치(이동 거리) 기준이라 프레임률과 무관하고, 경계에 닿으면 alpha 0.
+          if (PET && walk.plan && walk.phase === "out") {
+            walk.alpha = walkOutAlpha(Math.abs(fleeX - from), walk.plan.run, walk.plan.fade);
+          } else if (PET && walk.phase === "in" && walk.returnFade > 0) {
+            walk.alpha = walkInAlpha(Math.abs(fleeX - from), walk.returnFade);
+          }
           if (p < 1) requestAnimationFrame(step); else done();
         };
         requestAnimationFrame(step);
         return () => { cancelled = true; };
       };
+      const clearWalkVisual = () => {   // 산책 전용 plan·clip·fade 상태를 모두 되돌림
+        clearTimeout(walk.recoverTimer); walk.recoverTimer = 0;
+        walk.plan = null; walk.area = null; walk.base = null; walk.displayId = ""; walk.displayRequest = 0; walk.alpha = 1; walk.returnFade = 0; walk.safeHold = false; walk.faceDir = null; walk.recover = null;
+        if (walk.opacityApplied) { canvas.style.opacity = ""; walk.opacityApplied = false; }
+        lastPlaceKey = "";
+      };
       const cancelWalk = () => {   // 출발 전(말하는 중)에 집어 들면 산책을 취소. 출발한 뒤에는 제자리에 올 때까지 집을 수 없음
         if (walk.phase !== "ready") return;
         for (const t of walk.timers) clearTimeout(t);
-        walk.timers = []; walk.slideId++; walk.phase = "";
+        walk.timers = []; walk.slideId++; walk.phase = ""; walk.dir = -1; clearWalkVisual();
       };
-      const walkBack = () => {   // 반대쪽(오른쪽) 화면 밖에서 원래 자리까지 걸어 들어옴
+      // 표시장치 구성이 바뀌어 고정한 경계를 믿을 수 없을 때: 완전히 투명한 채 새 workArea 안의 안전한 자리로 옮기고,
+      // main이 보고한 실제 native bounds가 목표 자리와 맞은 뒤에만 fade-in을 시작한다. 확인이 늦으면 clip을 유지한 채
+      // fade-in하고(안전), 확인 전에는 절대 clip을 풀지 않는다.
+      const startRecoverFade = () => {
+        if (walk.phase !== "recover" || !walk.recover) return;
+        walk.recover = null;
+        clearTimeout(walk.recoverTimer); walk.recoverTimer = 0;
+        const t0 = performance.now(), ms = 520;
+        const step = () => {
+          if (walk.phase !== "recover") return;
+          const p = Math.min(1, (performance.now() - t0) / ms);
+          walk.alpha = p * p * (3 - 2 * p);
+          if (p < 1) requestAnimationFrame(step);
+          else {
+            walk.phase = ""; walk.alpha = 1; walk.opacityApplied = false; canvas.style.opacity = ""; walk.faceDir = null;
+            walk.safeHold = true; lastPlaceKey = "";   // walk.area를 유지해 경계 clip을 계속 건다 (사용자가 끌기 전까지)
+          }
+        };
+        requestAnimationFrame(step);
+      };
+      const confirmRecoverBounds = () => {   // pet/main.cjs가 placer 적용 뒤 보낸 실제 bounds로 안전 배치 확인
+        if (walk.phase !== "recover" || !walk.recover || !petBounds) return;
+        const r = walk.recover;
+        if (Math.abs(petBounds.x - r.wx) <= 2 && Math.abs(petBounds.y - r.wy) <= 2 &&
+            Math.abs(petBounds.width - r.ww) <= 2 && Math.abs(petBounds.height - r.wh) <= 2) startRecoverFade();
+      };
+      const recoverWalk = (area) => {
+        if (!PET) return;
+        for (const t of walk.timers) clearTimeout(t);
+        clearTimeout(walk.recoverTimer);
+        walk.timers = []; walk.slideId++; walk.plan = null; walk.base = null; walk.returnFade = 0; walk.recover = null; walk.safeHold = false;
+        const baseX = shown.x - fleeX, baseY = shown.y, k = Number.isFinite(shown.k) && shown.k > 0 ? shown.k : (free.k || 1);
+        fleeX = 0; walk.phase = "recover"; walk.alpha = 0; walk.opacityApplied = true; canvas.style.opacity = "0"; lastPlaceKey = "";
+        walk.area = walkAreaValid(area) ? area : null;
+        if (!walk.area) return;   // 유효한 표시장치 응답이 오면 applyPetDisplay가 다시 부른다
+        const safe = walkSafePose({ area: walk.area, x: baseX, y: baseY, k, canvasW: W, canvasH: H, bodyW: visW * k });   // 복구 뒤엔 보통 체형으로 돌아오므로 정상 몸 폭 기준
+        free.anim = null; free.on = true; free.x = safe.x; free.y = safe.y; free.k = safe.k; free.applied = true;
+        // 목표 native 창 자리 (movePet과 같은 계산). 실제 bounds가 이 값에 오면 fade-in.
+        const cx = (innerWidth - W * safe.k) / 2, cy = innerHeight - H * safe.k;
+        walk.recover = { wx: Math.round(safe.x - cx), wy: Math.round(safe.y - cy), ww: innerWidth, wh: innerHeight };
+        try { place(); } catch {}   // 즉시 이동 지시 → main onPlace가 실제 bounds 회신
+        // 실제 bounds 확인이 계속 안 되면 clip을 유지한 채 fade-in한다. 확인 전 clip 해제는 없다.
+        walk.recoverTimer = setTimeout(() => { if (walk.phase === "recover") startRecoverFade(); }, 1200);
+      };
+      const applyPetDisplay = (display, changed, request, displays) => {   // pet/main.cjs의 Display 정보 (request는 top-level로 옴)
+        const area = walkDisplayArea(display);
+        if (!area) return;
+        const id = display.id != null ? String(display.id) : "";
+        petDisplay.id = id; petDisplay.area = area; petDisplay.scaleFactor = Number(display.scaleFactor) || 0; petDisplay.at = performance.now();
+        const answer = Number.isFinite(request) ? request : display.request;
+        if (Number.isFinite(answer)) petDisplay.answered = Math.max(petDisplay.answered, answer);
+        if (!PET) return;
+        // 표시장치 추가만으로는 현재 window bounds가 산책 경계/overshoot에 걸려 nearest가 옆 모니터로 바뀔 수 있다.
+        // 출발한 display id가 전체 목록에 그대로 있으면 그 workArea만 신뢰하고, 실제로 사라졌을 때만 id를 바꾼다.
+        const list = Array.isArray(displays) ? displays : null;
+        if (list) petDisplay.displays = list;
+        const fixed = list && walk.displayId ? list.find((d) => String(d.id) === walk.displayId) : null;
+        const fixedArea = fixed ? walkDisplayArea(fixed) : null;
+        const sameWalkArea = (a, b) => !!a && !!b && a.l === b.l && a.t === b.t && a.r === b.r && a.b === b.b;
+        if (walk.phase === "recover") { recoverWalk(fixedArea || area); return; }
+        if (walk.safeHold) {   // 복구 뒤 clip 유지 중
+          if (!changed) { walk.area = fixedArea || area; return; }
+          if (fixedArea) {
+            if (sameWalkArea(fixedArea, walk.area)) return;
+            recoverWalk(fixedArea); return;
+          }
+          walk.displayId = id; recoverWalk(area); return;
+        }
+        if (!changed || !walk.phase || walk.phase === "ready") return;
+        if (fixedArea) {   // 출발한 display가 아직 있음: workArea가 바뀐 경우에만 복구
+          if (sameWalkArea(fixedArea, walk.area)) return;
+          recoverWalk(fixedArea); return;
+        }
+        if (list && walk.displayId) { walk.displayId = id; recoverWalk(area); return; }   // 실제 제거
+        if (walk.displayId && id !== walk.displayId) { walk.displayId = id; recoverWalk(area); return; }   // 구버전 main 대비
+        if (sameWalkArea(area, walk.area)) return;
+        recoverWalk(area);
+      };
+      const walkBack = () => {   // 출발의 반대 경계에서 같은 표시장치 안으로 걸어 들어옴
         if (walk.phase !== "away") return;
         for (const t of walk.timers) clearTimeout(t);
+        walk.timers = [];
+        if (PET) {
+          const area = walkAreaValid(walk.area) ? walk.area
+            : (walkAreaValid(petDisplay.area) ? petDisplay.area : null);
+          const fixed = petDisplay.displays && walk.displayId ? petDisplay.displays.find((d) => String(d.id) === walk.displayId) : null;
+          const removed = !!(petDisplay.displays && walk.displayId && !fixed);
+          const legacyMoved = !petDisplay.displays && !!(walk.displayId && petDisplay.id && petDisplay.id !== walk.displayId);
+          if (!area || removed || legacyMoved) { recoverWalk(area); return; }
+          walk.area = area; walk.phase = "in";
+          const dir = walk.plan ? walk.plan.dir : walk.dir;
+          // dir = 출발 방향 = 반대 경계에서 돌아오는 실제 이동 방향. faceDir을 그 값으로 명시한다.
+          // (기존 in-app은 faceTo(in) = -walk.dir 규칙을 쓰지만, PET 복귀는 faceDir로 직접 지정)
+          walk.dir = dir; walk.faceDir = dir;
+          const k = Number.isFinite(shown.k) && shown.k > 0 ? shown.k : curK;
+          const ret = planWalkReturn({ area, dir, x: shown.x - fleeX, k, canvasW: W, bodyW: WALK_BODY_W * k });
+          walk.returnFade = ret.fade; walk.alpha = 0; walk.opacityApplied = true; canvas.style.opacity = "0"; lastPlaceKey = "";
+          fleeX = ret.from;   // 반대 경계로의 텔레포트를 alpha 0에서 먼저 확정한다 (첫 slide 프레임 지연으로 반투명 노출 방지)
+          try { place(); } catch {}
+          slide(ret.from, 0, () => {
+            fleeX = 0; walk.phase = ""; walk.alpha = 1; walk.opacityApplied = false; canvas.style.opacity = "";
+            walk.plan = null; walk.area = null; walk.base = null; walk.displayId = ""; walk.returnFade = 0; walk.faceDir = null; lastPlaceKey = "";
+            walkLater(() => { if (!walk.phase) speak("walk_back", 3500); }, 450);   // 정면으로 돌아선 뒤 인사
+          });
+          return;
+        }
         walk.timers = []; walk.phase = "in"; walk.dir = 1;   // 오른쪽에서 들어와 왼쪽으로 걸어옴
         slide(outDistance(1), 0, () => {
           fleeX = 0; walk.phase = "";
           walkLater(() => { if (!walk.phase) speak("walk_back", 3500); }, 450);   // 정면으로 돌아선 뒤 인사
         });
       };
-      const startWalk = () => {   // 말하고 → 가까운 쪽으로 돌아서 → 화면 밖까지 걸어감(높이 그대로) → 8~14초 뒤 같은 쪽으로 돌아옴
+      const startWalk = () => {   // 말하고 → 꼬마로 바뀐 뒤 → 선택 경계까지 걸어감 → 경계에서 사라졌다가 8~14초 뒤 반대 경계에서 복귀
         if (SLEEP.state !== "active") return;
-        walk.phase = "ready"; walk.dir = -1;   // 연출: 항상 왼쪽으로 걸어 나갔다가 오른쪽에서 들어온다
+        if (PET && petPanelOpen) return;   // 자체 펫 설정 패널이 열린 동안엔 창을 끌고 다니지 않는다 (DSH 플러그인 화면과 무관)
+        walk.phase = "ready"; walk.dir = -1; walk.faceDir = null; walk.plan = null; walk.area = null; walk.base = null; walk.displayId = ""; walk.alpha = 1; walk.returnFade = 0; walk.safeHold = false; walk.recover = null;
+        if (PET) walk.displayRequest = requestPetDisplay();   // 출발 전에 현재 DIP workArea를 확보 (응답 없으면 산책 취소)
         speak("walk_out", 2200);
         walkLater(() => {
           walk.phase = "out"; hush();
-          walkLater(() => { walk.out = outDistance(walk.dir); slide(0, walk.out, () => {
-            walk.phase = "away";
-            walkLater(walkBack, 8000 + Math.random() * 6000);
-          }); }, 700);   // 꼬마 모습으로 바뀐 뒤 출발
+          walkLater(() => {
+            if (PET) {
+              if (petPanelOpen) { walk.phase = ""; walk.dir = -1; clearWalkVisual(); return; }   // 대기 중 설정 패널이 열렸으면 취소
+              const fresh = walk.displayRequest > 0 && petDisplay.answered >= walk.displayRequest &&
+                petDisplay.at > 0 && performance.now() - petDisplay.at < 5000;   // 이번 출발 요청에 대한 응답만 신뢰
+              const area = fresh && walkAreaValid(petDisplay.area) ? petDisplay.area : null;
+              if (!area) { walk.phase = ""; walk.dir = -1; clearWalkVisual(); return; }   // fail-closed: DOM fallback으로 다른 모니터에 나가지 않음
+              const x = shown.x, y = shown.y, k = Number.isFinite(shown.k) && shown.k > 0 ? shown.k : curK;
+              // 표시장치가 바뀌어 제자리가 새 workArea 밖이면 걷지 않고, 완전 투명 상태로 안전 자리 복구부터.
+              const home = walkBodySpan({ x, k, canvasW: W, bodyW: visW * k });
+              const inside = home.l >= area.l - 12 && home.r <= area.r + 12 &&
+                y + H * k * 0.05 >= area.t - 12 && y + H * k <= area.b + 12;
+              if (!inside) { recoverWalk(area); return; }
+              const plan = planWalkOut({ area, x, y, k, canvasW: W, bodyW: WALK_BODY_W * k, speed: WALK_SPEED });
+              walk.plan = plan; walk.area = area; walk.base = { k, x, y }; walk.displayId = petDisplay.id || "";
+              walk.dir = plan.dir; walk.out = plan.travel * plan.dir; walk.alpha = 1; walk.opacityApplied = false;
+              lastPlaceKey = "";
+              slide(0, walk.out, () => {
+                walk.phase = "away"; walk.alpha = 0; walk.opacityApplied = true; canvas.style.opacity = "0";
+                walkLater(walkBack, 8000 + Math.random() * 6000);
+              });
+              return;
+            }
+            walk.out = outDistance(walk.dir); slide(0, walk.out, () => {
+              walk.phase = "away";
+              walkLater(walkBack, 8000 + Math.random() * 6000);
+            });
+          }, 700);   // 꼬마 모습으로 바뀐 뒤 출발
         }, 2300);
       };
       walkCheck = (now) => {
@@ -2421,7 +2689,7 @@
         const [px, py] = pt(e), now = performance.now();
         if (!drag.on) {
           cancelWalk();   // 산책 가려고 말하던 중이면 취소
-          drag.on = true; drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false;
+          drag.on = true; drag.touch = e.pointerType === "touch" || !!(p && p.touchGrab); drag.samples = []; free.anim = null; free.k = shown.k; free.mode = freeMode(); free.applied = true; petDocked = false; walk.safeHold = false; walk.area = null; walk.displayId = "";
           try { document.documentElement.setPointerCapture(e.pointerId); } catch {}
           document.documentElement.classList.add("dsc-grabbing");
           until.sweat = Infinity;   // 들고 있는 동안 식은땀
@@ -2921,10 +3189,22 @@
             const [t0, x0, y0] = drag.samples[0], dt = Math.max(16, now - t0) / 1000;
             carry.vx += ((m.x - x0) / dt - carry.vx) * 0.5; carry.vy += ((m.y - y0) / dt - carry.vy) * 0.5;
           } else if (m.type === "power") {   // 창이 숨으면 그리기를 멈춰 CPU·GPU를 쓰지 않음 (숨은 창도 백그라운드 제한이 꺼져 있어 계속 그려짐)
-            if (!m.on) { petTracking = false; petGrab = null; closePetPanel(); }
+            if (!m.on) {
+              petTracking = false; petGrab = null; closePetPanel();
+              // 숨는 순간 진행 중이던 산책을 끝내고 상태를 비운다 (다시 열 때 옛 경계/투명도가 남지 않게)
+              for (const t of walk.timers) clearTimeout(t);
+              walk.timers = []; walk.slideId++; walk.phase = ""; walk.dir = -1; fleeX = 0; clearWalkVisual();
+            }
             petPower = !!m.on;
             setRender(petPower);
             if (petPower) wakeRaf();
+            if (petPower) requestPetDisplay();
+          } else if (m.type === "display") {   // pet/main.cjs: 현재 표시장치 DIP workArea (출발 시 고정)
+            applyPetDisplay(m.display, !!m.changed, m.request, m.displays);
+          } else if (m.type === "bounds") {   // pet/main.cjs: placer가 실제로 적용한 native 창 bounds (clip 기준)
+            const b = m.bounds;
+            if (b && [b.x, b.y, b.width, b.height].every((v) => Number.isFinite(v))) petBounds = { x: b.x, y: b.y, width: b.width, height: b.height, at: performance.now() };
+            confirmRecoverBounds();
           } else if (m.type === "panel") {   // 우클릭 메뉴: 설정(또는 크기) 패널 열기
             openPetPanel(m.focus);
           } else if (m.type === "size") {   // 우클릭 메뉴: 정해진 배율로 (기본 대비)
@@ -2935,7 +3215,7 @@
             wakeRaf();
             // 이전 회차에 남은 상태(끄는 중·식은땀·산책·도망)를 모두 지우고 시작
             for (const t of walk.timers) clearTimeout(t);
-            walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; drag.pending = null; PET.press(false);
+            walk.timers = []; walk.slideId++; walk.phase = ""; fleeX = 0; clearWalkVisual(); petBounds = null; drag.pending = null; PET.press(false);
             closePetPanel();
             petDocked = false; free.on = true; Object.assign(free, m.from);
             petGrab = m.follow ? (m.grab || { x: 0, y: 0 }) : null; petTracking = !!m.follow;
@@ -2959,6 +3239,7 @@
             free.anim = m.follow ? null : { t0: performance.now(), ms: 300, from: pose, to: keepIn(to), snap: false };
             until.sweat = m.follow ? Infinity : 0;
             movePet(pose); PET.send({ type: "placed" });
+            requestPetDisplay({ x: pose.x + W * pose.k / 2, y: pose.y + H * pose.k * 0.5 });   // 이 창이 실제로 놓인 모니터
             petSyncMenu();
           } else if (m.type === "home") {   // 우클릭 메뉴: 창으로 돌아가기
             closePetPanel();   // 붙을 자리(원래 크기)로 애니메이션되고 펫 창은 닫힌다
@@ -2981,6 +3262,7 @@
         petPower = false;
         setRender(false);   // 처음엔 숨은 채 대기 (open 이 오면 그리기 시작)
         PET.send({ type: "ready" });
+        requestPetDisplay();   // 창이 아직 숨은 상태에서도 현재 표시장치를 미리 받아 둔다
       }
       if (!PET) setInterval(() => {
         const nowRunning = !!document.querySelector(UI.stop);
