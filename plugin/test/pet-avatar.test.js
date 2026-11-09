@@ -26,13 +26,14 @@ test('다시 불러올지 비교 키: 폴더·외곽선이 바뀌면 다르고, 
 test('모델 폴더 파일은 실제 경로 안쪽만 내주고, .. ·심볼릭 링크 탈출·없는 파일은 거절한다', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsc-pet-avatar-'))
   try {
-    const dir = join(root, 'model'), outside = join(root, 'secret.txt')
-    await mkdir(join(dir, 'tex'), { recursive: true })
-    await writeFile(join(dir, 'avatar.json'), '{}'); await writeFile(join(dir, 'tex', 'a.png'), 'x'); await writeFile(outside, 'no')
-    await symlink(outside, join(dir, 'link.txt'))
+    const dir = join(root, 'model'), outside = join(root, 'secret.txt'), outsideDir = join(root, 'secret')
+    await mkdir(join(dir, 'tex'), { recursive: true }); await mkdir(outsideDir)
+    await writeFile(join(dir, 'avatar.json'), '{}'); await writeFile(join(dir, 'tex', 'a.png'), 'x'); await writeFile(outside, 'no'); await writeFile(join(outsideDir, 'b.txt'), 'no')
+    // 폴더 링크로 탈출 시도 (Windows는 권한 없이 만들 수 있는 junction, 다른 OS는 type을 무시하고 심볼릭 링크)
+    await symlink(outsideDir, join(dir, 'link'), 'junction')
     assert.ok((await resolveInside(dir, 'avatar.json')).endsWith('avatar.json'))
     assert.ok((await resolveInside(dir, 'tex/a.png')).endsWith('a.png'))
-    for (const bad of ['../secret.txt', 'link.txt', 'missing.json', '', 'a\0b', outside]) assert.equal(await resolveInside(dir, bad), null, bad)
+    for (const bad of ['../secret.txt', 'link/b.txt', 'missing.json', '', 'a\0b', outside]) assert.equal(await resolveInside(dir, bad), null, bad)
     assert.equal(await resolveInside('', 'avatar.json'), null, '폴더가 없으면 아무것도 안 내줌')
   } finally { await rm(root, { recursive: true, force: true }) }
 })

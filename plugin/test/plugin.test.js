@@ -30,8 +30,10 @@ test('source build preserves sleep code and matches the committed bundle', async
   execFileSync(process.execPath, ['plugin/build.mjs'], { cwd: fileURLToPath(new URL('../../', import.meta.url)) })
   assert.equal(await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8'), bundle)
   assert.equal(await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8'), character, '커밋된 assets/dsc.js도 소스에서 다시 만든 결과와 같아야 한다')
-  assert.match(bundle, /sleep_out:/)
-  assert.match(bundle, /sleep_back:/)
+  assert.match(bundle, /speak\("sleep_out"/)
+  assert.match(bundle, /speak\("sleep_back"/)
+  const { lines } = JSON.parse(await readFile(new URL('../../assets/dsc-lines.json', import.meta.url), 'utf8'))
+  assert.ok(lines.sleep_out?.length && lines.sleep_back?.length, '절전 대사는 assets/dsc-lines.json에 있다')
   assert.match(bundle, /["']절전["'] : ["']Power saving["']/)
   assert.match(bundle, /sharedTicker: false/)
   assert.match(bundle, /autoUpdate: false/)
@@ -1056,10 +1058,13 @@ test('Host speech routes read live settings and stay 404 while disabled', async 
   } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); disposers.forEach((dispose) => dispose?.()) }
 })
 
+/** 음성(/dsh-tts/) 요청인지. 캐릭터가 받는 대사 파일(assets/dsc-lines.json) 요청은 음성과 상관없어 세지 않는다 */
+const voiceUrl = (url) => String(url).startsWith('/dsh-tts/')
+
 function voiceFetch(h) {
   const calls = []
   h.dom.window.fetch = async (url, init) => {
-    calls.push(init?.body ? [url, JSON.parse(init.body).text] : [url])
+    if (voiceUrl(url)) calls.push(init?.body ? [url, JSON.parse(init.body).text] : [url])
     if (url === '/dsh-tts/state') return { ok: true, status: 200, json: async () => ({ enabled: true, pcmSampleRate: 24000, voiceLines: { reactions: true, others: true } }) }
     return { ok: false, status: 503, body: null }
   }
@@ -1098,7 +1103,7 @@ test('voice disposed before its state arrives never starts listening', async () 
   try {
     let release
     const calls = []
-    h.dom.window.fetch = (url) => { calls.push(url); return url === '/dsh-tts/state' ? new Promise((resolve) => { release = resolve }) : Promise.resolve({ ok: false, status: 503, body: null }) }
+    h.dom.window.fetch = (url) => { if (voiceUrl(url)) calls.push(url); return url === '/dsh-tts/state' ? new Promise((resolve) => { release = resolve }) : Promise.resolve({ ok: false, status: 503, body: null }) }
     const ctx = h.ctx(); h.client.apply(ctx)
     ctx.dispose()
     release({ ok: true, status: 200, json: async () => ({ enabled: true, pcmSampleRate: 24000, voiceLines: { reactions: true } }) })
