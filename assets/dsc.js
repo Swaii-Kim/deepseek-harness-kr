@@ -1259,7 +1259,10 @@
         document.head.appendChild(script);
       });
       (async () => {
-        if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);
+        const AVATAR = !pet && prefs.avatar?.enabled === true;
+        if (AVATAR) {
+          if (!window.DscRigThree) await load("vendor/rig-three.js").catch((error) => log.warnOnce("rig-three", "3D 렌더러를 불러오지 못했습니다:", error));
+        } else if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);
         if (life.stopped) return;
         const W = 300, H = 300;
         const canvas = life.own(document.createElement("canvas"), (node) => node.remove());
@@ -1272,7 +1275,10 @@
         let chestFrom = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
         let chestLongTimer = 0;
         const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };
-        const rig = await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
+        const rig = AVATAR ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline }).catch((error) => {
+          log.warnOnce("rig-three-load", "3D 모델을 불러오지 못했습니다 (avatarModelDir·avatar.json 확인):", error);
+          return null;
+        }) ?? null) : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
         if (!rig) return;
         const setParam = rig.set, addParam = rig.add, systemTicker = rig.systemTicker;
         const {
@@ -1369,6 +1375,7 @@
         };
         const play = (name, dur) => {
           relay("play", [name, dur]);
+          rig.gesture?.(name, dur);
           gestureState.name = name;
           gestureState.start = performance.now();
           gestureState.dur = dur;

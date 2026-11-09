@@ -76,4 +76,6 @@ export interface AvatarRig {
   tick(time: number): void;
   /** 화면을 계속 깨우는 시스템 티커 구독 켜고 끄기 (쉬는 동안 끔) */
   systemTicker(on: boolean): void;
+  /** 몸짓(동작 코드의 play) 알림. 몸 애니메이션 클립이 있는 rig만 구현 (Live2D는 채널로 몸짓을 그림) */
+  gesture?(name: string, ms: number): void;
 }

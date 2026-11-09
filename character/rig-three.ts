@@ -1,0 +1,895 @@
+// 3D 모델(FBX) 렌더러. three.js FBXLoader로 모델을 불러와 MToon 재질로 그리고, 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
+// 모델 파일과 모델별 대응표(avatar.json)는 저장소 밖 사용자 폴더에 있고, 플러그인 호스트가 /deepseek-harness-kr/avatar/로 서빙함.
+// 이 파일은 따로 묶여(assets/vendor/rig-three.js) 3D 모델을 켰을 때만 불러옴 (window.DscRigThree).
+import * as THREE from "three";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+import { MToonMaterial } from "@pixiv/three-vrm-materials-mtoon";
+import { PARAMS } from "./model-profile.ts";
+import { OUTFIT_ITEMS } from "../shared/settings.js";
+import type { Lifetime } from "./lifetime.ts";
+import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
+
+/** 동작 코드가 움직이는 사람형 뼈 이름 (VRM 사람형 뼈 이름과 같음) */
+export type HumanBone = "hips" | "spine" | "chest" | "neck" | "head" | "leftEye" | "rightEye"
+  | "leftUpperArm" | "rightUpperArm" | "leftLowerArm" | "rightLowerArm" | "leftHand" | "rightHand"
+  | "leftUpperLeg" | "rightUpperLeg" | "leftLowerLeg" | "rightLowerLeg" | "leftFoot" | "rightFoot";
+/** 채널 값 → 모프 세기 변환. linear = 값×scale, invert = (1-값)×scale, positive·negative = 양수·음수 쪽만 */
+export type MorphBinding = { morph: string; map?: "linear" | "invert" | "positive" | "negative"; scale?: number };
+/** 모델 폴더의 avatar.json 형식 (모델별 대응표) */
+export type AvatarProfile = {
+  /** 모델 파일 (폴더 기준 상대 경로, FBX) */
+  model: string;
+  /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
+  hide?: string[];
+  /** 재질 이름 → MToon 설정 (텍스처는 폴더 기준 상대 경로) */
+  materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
+    /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정), toon = 경계가 딱 떨어지는 툰 모드(UTS 스페큘러 끔) */
+    highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean;
+    /**
+     * 스텐실 (Unity 재질의 Stencil 설정 옮김): write = 그린 곳에 ref를 씀, test = ref와 비교해 맞는 곳에만 그림
+     * 예: 눈썹이 ref 4를 쓰고 앞머리가 notEqual 4로 그리면 눈썹이 앞머리 위로 비침
+     */
+    stencil?: { ref: number; write?: boolean; test?: "equal" | "notEqual" };
+    /** 그리는 순서 (작을수록 먼저, 기본 0). 스텐실을 쓰는 재질이 읽는 재질보다 먼저 그려지게 할 때 */
+    order?: number }>;
+  /** 사람형 뼈 → 모델 뼈 이름 */
+  bones: Partial<Record<HumanBone, string>>;
+  /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프 대응 */
+  channels?: Record<string, MorphBinding[]>;
+  /** 표정 이름 → 모프 세기 (0~1) */
+  expressions?: Record<string, Record<string, number>>;
+  /** 소품·옷 키(shared/settings.js) → 모프 (invert면 켰을 때 0, 껐을 때 1 = 숨김 모프) */
+  outfit?: Record<string, Array<{ morph: string; invert?: boolean }>>;
+  /** 늘 걸어 두는 모프 (기본 옷차림 등) */
+  baseMorphs?: Record<string, number>;
+  /** 기본 자세: 위팔을 아래로 내리는 정도(도, 0이면 그대로) */
+  armDown?: number;
+  /** 지원하는 기능 (기본은 없음) */
+  features?: RigFeature[];
+  /** 함께 켜면 모양이 겹쳐 깨지는 모프 묶음 (예: 눈웃음 + 눈 감기). 앞쪽 모프가 우선이고, 합이 1을 넘으면 뒤쪽을 줄임 */
+  exclusiveMorphs?: string[][];
+  /**
+   * 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름
+   * normals = smooth(같은 위치 법선 평균, 기본) 또는 model(모델에 든 "<메시>_Outline" 메시의 다듬은 법선과 정점 색 R 두께 배율)
+   */
+  outline?: { width: number; color?: string; skip?: string[]; normals?: OutlineNormals };
+  /**
+   * 얼굴 SDF 그림자: 빛이 얼굴 정면에서 돌아간 각도를 문턱값으로 SDF 맵을 잘라 얼굴 그림자 경계를 정함
+   * material = 적용할 재질 이름, map = SDF 맵(R·G = 양쪽 빛용 문턱값), swap = R·G가 맡는 쪽을 바꿈, softness = 경계 부드러움
+   */
+  faceSdf?: { material: string; map: string; swap?: boolean; softness?: number };
+  /** 조명: direction = 빛이 오는 방향(모델 기준, +x 화면 오른쪽·+y 위·+z 카메라 쪽), intensity·ambient = 세기 */
+  light?: { direction?: [number, number, number]; intensity?: number; ambient?: number };
+  /** 림 라이트: color = 색, power = 가장자리에 모이는 정도(클수록 얇음), mix = 조명 영향 */
+  rim?: { color: string; power?: number; mix?: number };
+  /** 몸 애니메이션 (폴더 기준 FBX): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
+  animations?: { idle?: string; gestures?: Record<string, string> };
+  /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
+  springs?: Array<{ roots: string[]; stiffness?: number; drag?: number; gravity?: number; radius?: number; colliders?: ColliderGroup[] }>;
+  /** 흔들림 충돌체: 사람형 뼈로 자동 생성. scale = 반지름 배율 (기본 1) */
+  colliders?: { scale?: number };
+  /**
+   * 모델 방향 보정 (파일마다 다른 위·정면·좌우 손잡이를 화면 기준으로 맞춤). 기본은 사람형 뼈 위치로 자동 판정
+   * auto = false면 자동 판정 끔, mirror = 좌우 반전을 직접 지정, yaw = 세로축으로 더 돌릴 각도(도)
+   */
+  orientation?: { auto?: boolean; mirror?: boolean; yaw?: number };
+};
+
+/** 외곽선 법선 출처 */
+export type OutlineNormals = "smooth" | "model";
+/** 자동 충돌체 묶음 (흔들림 사슬마다 부딪힐 묶음을 고름) */
+export type ColliderGroup = "head" | "body" | "arms" | "legs";
+const DEG = Math.PI / 180;
+/** 값 자르기 */
+const clamp = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, value));
+
+// 동작 코드는 Live2D 파라미터 ID(PARAMS 값)·소품 ID로 쓰므로 의미 이름으로 되찾는 표
+const CHANNEL_OF: Record<string, string> = {};
+for (const [key, id] of Object.entries(PARAMS)) {
+  if (typeof id === "string") CHANNEL_OF[id] = key;
+  else if (Array.isArray(id)) for (const each of id) CHANNEL_OF[each] = key;
+  else for (const [vowel, vowelId] of Object.entries(id as Record<string, string>)) CHANNEL_OF[vowelId] = `mouthVowel.${vowel}`;
+}
+const OUTFIT_OF: Record<string, { key: string; on: number }> = {};
+for (const item of OUTFIT_ITEMS) if (item.param) OUTFIT_OF[item.param] = { key: item.key, on: item.on || 1 };
+
+/** 모프 이름의 마지막 부분 (FBX는 "Facials.Eye_Close"처럼 묶음 이름이 붙음) */
+export const morphKey = (name: string) => name.slice(name.lastIndexOf(".") + 1);
+/**
+ * 동작 코드가 쓴 채널 ID의 저장 키
+ * @param id PARAMS 값(Live2D 파라미터 ID) 또는 소품 정의의 ID
+ * @returns 의미 이름(모음은 mouthVowel.A 등, 소품은 outfit.<키>), 모르는 ID는 null
+ */
+export const channelKeyOf = (id: string) => CHANNEL_OF[id] || (OUTFIT_OF[id] ? "outfit." + OUTFIT_OF[id].key : null);
+/**
+ * 채널 값 하나를 모프 세기로 변환
+ * @param value 이번 프레임 채널 값
+ * @returns 모프에 더할 세기 (자르기 전)
+ */
+export const bindingWeight = (binding: MorphBinding, value: number) => {
+  const scale = binding.scale ?? 1;
+  switch (binding.map || "linear") {
+    case "invert": return (1 - value) * scale;
+    case "positive": return Math.max(0, value) * scale;
+    case "negative": return Math.max(0, -value) * scale;
+    default: return value * scale;
+  }
+};
+
+/**
+ * 외곽선용 매끄러운 법선: 같은 위치(격자 tolerance 안)에 있는 정점들의 법선을 평균 (UTS·lilToon의 아웃라인 법선 변환과 같은 목적)
+ * 각진 경계에서 법선이 갈라져 외곽선이 끊기거나 두께가 들쭉날쭉한 것을 막음
+ * @param positions 정점 위치 (xyz 반복)
+ * @param normals 정점 법선 (xyz 반복)
+ * @param tolerance 같은 위치로 볼 거리
+ * @returns 정점마다 평균 법선 (길이 1, 합이 0이면 원래 법선)
+ */
+export function smoothOutlineNormals(positions: ArrayLike<number>, normals: ArrayLike<number>, tolerance = 1e-4) {
+  const count = positions.length / 3, keyOf = (i: number) => `${Math.round(positions[i * 3] / tolerance)},${Math.round(positions[i * 3 + 1] / tolerance)},${Math.round(positions[i * 3 + 2] / tolerance)}`;
+  const sums = new Map<string, [number, number, number]>();
+  for (let i = 0; i < count; i++) {
+    const key = keyOf(i), sum = sums.get(key) || [0, 0, 0];
+    sum[0] += normals[i * 3]; sum[1] += normals[i * 3 + 1]; sum[2] += normals[i * 3 + 2]; sums.set(key, sum);
+  }
+  const out = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const [x, y, z] = sums.get(keyOf(i))!, length = Math.hypot(x, y, z);
+    if (length > 1e-8) { out[i * 3] = x / length; out[i * 3 + 1] = y / length; out[i * 3 + 2] = z / length; }
+    else { out[i * 3] = normals[i * 3]; out[i * 3 + 1] = normals[i * 3 + 1]; out[i * 3 + 2] = normals[i * 3 + 2]; }
+  }
+  return out;
+}
+
+/**
+ * 두 지오메트리의 정점 위치가 모두 같은지 (작가 외곽선 메시가 본체와 같은 모양일 때만 쓰기 위함)
+ * @param tolerance 같은 위치로 볼 거리
+ */
+function samePositions(a: THREE.BufferGeometry, b: THREE.BufferGeometry, tolerance: number) {
+  const p = a.getAttribute("position"), q = b.getAttribute("position");
+  if (!p || !q || p.count !== q.count) return false;
+  for (let i = 0; i < p.count; i++) if (Math.abs(p.getX(i) - q.getX(i)) > tolerance || Math.abs(p.getY(i) - q.getY(i)) > tolerance || Math.abs(p.getZ(i) - q.getZ(i)) > tolerance) return false;
+  return true;
+}
+
+/**
+ * 외곽선 메시용 지오메트리: 위치·스킨·UV·모프 위치는 원본과 공유하고 법선만 매끄러운 외곽선 법선으로 바꿈
+ * 모프 법선은 빼서 표정 모프가 외곽선 방향을 흔들지 않게 함
+ */
+function outlineGeometry(source: THREE.BufferGeometry, tolerance: number) {
+  const geometry = new THREE.BufferGeometry();
+  for (const [name, attribute] of Object.entries(source.attributes)) if (name !== "normal") geometry.setAttribute(name, attribute);
+  const normal = source.getAttribute("normal");
+  if (normal) geometry.setAttribute("normal", new THREE.BufferAttribute(smoothOutlineNormals(source.getAttribute("position").array, normal.array, tolerance), 3));
+  if (source.index) geometry.setIndex(source.index);
+  for (const group of source.groups) geometry.addGroup(group.start, group.count, group.materialIndex);
+  if (source.morphAttributes.position) geometry.morphAttributes.position = source.morphAttributes.position;
+  geometry.morphTargetsRelative = source.morphTargetsRelative;
+  return geometry;
+}
+
+/** 외곽선 메시 그리는 순서 (스텐실로 비친 부분을 덮지 않게 모든 재질 뒤) */
+const OUTLINE_ORDER = 100;
+const STENCIL_FUNCS = { equal: THREE.EqualStencilFunc, notEqual: THREE.NotEqualStencilFunc } as const;
+/** 재질에 스텐실 쓰기·검사 설정 */
+export function applyStencil(material: THREE.Material, stencil: { ref: number; write?: boolean; test?: "equal" | "notEqual" }) {
+  material.stencilWrite = true;   // three.js는 이 값이 켜져야 스텐실 검사도 함
+  material.stencilRef = stencil.ref;
+  material.stencilFunc = stencil.test ? STENCIL_FUNCS[stencil.test] : THREE.AlwaysStencilFunc;
+  material.stencilZPass = stencil.write ? THREE.ReplaceStencilOp : THREE.KeepStencilOp;
+}
+/**
+ * 여러 재질 메시에서 순서(order)가 0이 아닌 재질을 같은 지오메트리·뼈·모프 배열을 쓰는 복제 메시로 떼어 renderOrder로 그림
+ * (three.js는 한 메시 안 재질 순서를 정할 수 없어서)
+ * @param orderOf 재질 이름 → 순서
+ */
+export function splitByOrder(root: THREE.Object3D, orderOf: (name: string) => number, life: { add(fn: () => void): void }) {
+  const skip = new THREE.MeshBasicMaterial({ visible: false });
+  life.add(() => skip.dispose());
+  const meshes: THREE.SkinnedMesh[] = [];
+  root.traverse((node) => { const mesh = node as THREE.SkinnedMesh; if (mesh.isSkinnedMesh && Array.isArray(mesh.material) && !mesh.name.endsWith("__outline")) meshes.push(mesh); });
+  for (const mesh of meshes) {
+    const materials = mesh.material as THREE.Material[];
+    const orders = [...new Set(materials.map((material) => orderOf(material.name)).filter((order) => order !== 0))];
+    for (const order of orders) {
+      const part = new THREE.SkinnedMesh(mesh.geometry, materials.map((material) => orderOf(material.name) === order ? material : skip));
+      part.bind(mesh.skeleton, mesh.bindMatrix);
+      part.morphTargetInfluences = mesh.morphTargetInfluences; part.morphTargetDictionary = mesh.morphTargetDictionary;
+      part.frustumCulled = false; part.renderOrder = order; part.name = mesh.name + "__order" + order;
+      part.position.copy(mesh.position); part.quaternion.copy(mesh.quaternion); part.scale.copy(mesh.scale);
+      mesh.parent!.add(part);
+    }
+    if (orders.length) mesh.material = materials.map((material) => orderOf(material.name) === 0 ? material : skip);
+  }
+}
+
+/**
+ * 겹치면 깨지는 모프 묶음의 합을 1 이하로: 묶음 앞쪽부터 남은 몫 안에서만 씀
+ * @param weights 모프 이름 → 세기 (바로 고침)
+ * @param groups 묶음 목록 (앞쪽 모프 우선)
+ */
+export function limitExclusiveMorphs(weights: Map<string, number>, groups: string[][] = []) {
+  for (const group of groups) {
+    let left = 1;
+    for (const morph of group) {
+      const w = clamp(weights.get(morph) || 0, 0, left);
+      if (weights.has(morph)) weights.set(morph, w);
+      left -= w;
+    }
+  }
+}
+
+/**
+ * 충돌체 (캡슐, to가 없으면 구): from·to 뼈의 지역 좌표 offset 지점을 잇는 선분에서 radius 안으로 흔들림 뼈 끝점이 못 들어옴
+ */
+export type SpringCollider = { from: THREE.Object3D; to?: THREE.Object3D | null; fromOffset?: THREE.Vector3; toOffset?: THREE.Vector3; radius: number };
+/**
+ * 흔들림 사슬 하나의 설정: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘
+ * radius = 뼈 끝점의 반지름(모델 단위), colliders = 부딪힐 충돌체
+ */
+export type SpringSpec = { roots: THREE.Object3D[]; stiffness?: number; drag?: number; gravity?: number; radius?: number; colliders?: SpringCollider[] };
+const colliderA = new THREE.Vector3(), colliderB = new THREE.Vector3(), colliderAB = new THREE.Vector3(), colliderP = new THREE.Vector3();
+/**
+ * 점이 충돌체 안이면 표면 밖으로 밀어낸 위치로 바꿈 (선분에서 가장 가까운 점 기준)
+ * @param point 바꿀 점 (월드)
+ * @param a·b 충돌체 선분 양 끝 (월드, 구면 a = b)
+ * @param distance 떨어져 있어야 할 거리 (충돌체 반지름 + 뼈 반지름)
+ * @returns 밀어냈으면 true
+ */
+export function pushOutOfCapsule(point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, distance: number) {
+  colliderAB.copy(b).sub(a);
+  const len2 = colliderAB.lengthSq(), t = len2 > 1e-12 ? clamp(colliderP.copy(point).sub(a).dot(colliderAB) / len2, 0, 1) : 0;
+  const closest = colliderP.copy(a).addScaledVector(colliderAB, t);
+  const away = point.clone().sub(closest), d = away.length();
+  if (d >= distance) return false;
+  if (d < 1e-9) away.set(0, 1, 0); else away.divideScalar(d);
+  point.copy(closest).addScaledVector(away, distance);
+  return true;
+}
+/** 점과 선분 사이 거리 */
+export const capsuleDistance = (point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3) => {
+  colliderAB.copy(b).sub(a);
+  const len2 = colliderAB.lengthSq(), t = len2 > 1e-12 ? clamp(colliderP.copy(point).sub(a).dot(colliderAB) / len2, 0, 1) : 0;
+  return point.distanceTo(colliderP.copy(a).addScaledVector(colliderAB, t));
+};
+/** 충돌체의 지금 선분 양 끝 (월드) */
+const colliderEnds = (collider: SpringCollider, a: THREE.Vector3, b: THREE.Vector3) => {
+  a.copy(collider.fromOffset || new THREE.Vector3()).applyMatrix4(collider.from.matrixWorld);
+  if (collider.to) b.copy(collider.toOffset || new THREE.Vector3()).applyMatrix4(collider.to.matrixWorld); else b.copy(a);
+};
+/**
+ * 흔들림(스프링) 뼈 준비: 뼈마다 끝점(자식 뼈 위치)이 관성·복원력·중력으로 따라가고, 뼈를 끝점 쪽으로 돌림 (VRM 스프링 본과 같은 방식)
+ * 힘은 뼈 길이에 비례해 모델 단위(cm·m)와 무관. 부르기 전에 뼈의 월드 행렬이 지금 자세로 갱신돼 있어야 함
+ * @returns step(dt): 사슬 위쪽부터 한 프레임 진행
+ */
+export function createSprings(specs: SpringSpec[]) {
+  type Joint = { node: THREE.Object3D; restLocal: THREE.Quaternion; axis: THREE.Vector3; length: number; prev: THREE.Vector3; tail: THREE.Vector3; stiffness: number; drag: number; gravity: number; colliders: Array<{ collider: SpringCollider; distance: number }> };
+  const joints: Joint[] = [];
+  const head = new THREE.Vector3(), restDir = new THREE.Vector3(), next = new THREE.Vector3(), inertia = new THREE.Vector3(), turn = new THREE.Quaternion(), parentQ = new THREE.Quaternion();
+  for (const spec of specs) for (const root of spec.roots) {
+    root.updateWorldMatrix(true, true);
+    root.traverse((node) => {
+      // FBXLoader는 여러 메시가 쓰는 뼈를 같은 자리(길이 0)에 복제해 첫 자식으로 붙이므로, 길이 있는 자식 뼈를 다음 마디로 씀
+      const child = node.children.find((each) => (each as THREE.Bone).isBone && each.position.lengthSq() >= 1e-12);
+      if (!child) return;
+      const tail = child.getWorldPosition(new THREE.Vector3()), radius = spec.radius ?? 0;
+      // 충돌 거리는 늘 충돌체 반지름 + 뼈 반지름 (기본 자세에서 가까운 뼈도 표면 밖으로 밀어 냄. 처음 거리로 줄이면 자세에 따라 파고듦)
+      const colliders = (spec.colliders || []).map((collider) => ({ collider, distance: collider.radius + radius }));
+      joints.push({ node, restLocal: node.quaternion.clone(), axis: child.position.clone().normalize(), length: tail.distanceTo(node.getWorldPosition(head)),
+        prev: tail.clone(), tail, stiffness: spec.stiffness ?? 1, drag: spec.drag ?? 0.4, gravity: spec.gravity ?? 0, colliders });
+    });
+  }
+  return {
+    count: joints.length,
+    /** 한 프레임 진행 @param dt 초 */
+    step(dt: number) {
+      for (const joint of joints) {
+        const { node } = joint;
+        node.quaternion.copy(joint.restLocal);
+        node.parent!.getWorldQuaternion(parentQ);
+        node.getWorldPosition(head);
+        restDir.copy(joint.axis).applyQuaternion(turn.copy(parentQ).multiply(joint.restLocal));   // 기본 자세의 뼈 방향 (월드)
+        // 다음 끝점 = 지금 끝점 + 관성(감쇠) + 제자리 방향으로 당기는 힘 + 중력
+        inertia.copy(joint.tail).sub(joint.prev).multiplyScalar(1 - joint.drag);
+        next.copy(joint.tail).add(inertia).addScaledVector(restDir, joint.stiffness * dt * joint.length * 10);
+        next.y -= joint.gravity * dt * joint.length * 10;
+        next.sub(head).normalize().multiplyScalar(joint.length).add(head);   // 뼈 길이 유지
+        // 밀어낸 뒤 길이를 맞추면 다시 안으로 들어갈 수 있어 몇 번 반복해 수렴시킴
+        for (let pass = 0; pass < 4; pass++) {
+          let pushed = false;
+          for (const { collider, distance } of joint.colliders) { colliderEnds(collider, colliderA, colliderB); pushed = pushOutOfCapsule(next, colliderA, colliderB, distance) || pushed; }
+          if (!pushed) break;
+          next.sub(head).normalize().multiplyScalar(joint.length).add(head);
+        }
+        joint.prev.copy(joint.tail); joint.tail.copy(next);
+        turn.setFromUnitVectors(restDir, next.clone().sub(head).normalize());
+        node.quaternion.copy(parentQ.clone().invert().multiply(turn).multiply(parentQ).multiply(joint.restLocal));
+        node.updateMatrixWorld(true);
+      }
+    },
+  };
+}
+
+/** 가장 가까운 좌표축 방향(±x·±y·±z 중 하나) */
+const snapAxis = (vector: THREE.Vector3) => {
+  const sizes = [Math.abs(vector.x), Math.abs(vector.y), Math.abs(vector.z)];
+  const axis = sizes.indexOf(Math.max(...sizes));
+  return new THREE.Vector3().setComponent(axis, Math.sign(vector.getComponent(axis)) || 1);
+};
+/** 방향 판정에 쓰는 사람형 뼈 위치 (월드) */
+export type OrientationPoints = { hips: THREE.Vector3; head: THREE.Vector3; leftUpperArm: THREE.Vector3; rightUpperArm: THREE.Vector3; leftEye?: THREE.Vector3 | null; rightEye?: THREE.Vector3 | null };
+/**
+ * 사람형 뼈 위치로 모델을 화면 기준(이름상 왼쪽 → +x, 위 → +y, 얼굴 정면 → 카메라 +z)으로 옮기는 변환 판정
+ * 파일 좌표계 차이(Z-up, 정면 축, 왼손·오른손)는 늘 90도 단위라 축 정렬 변환으로 반올림 (모델 자체의 기울어진 자세는 그대로 둠)
+ * 정면은 두 눈이 머리 뼈보다 앞에 있는 쪽. 이름상 왼쪽·위로 정한 정면과 반대면 좌우가 뒤집힌 파일(mirror)
+ * @returns 모델 좌표 → 화면 좌표 행렬(회전, mirror면 행렬식 -1), 판정할 수 없으면 null
+ */
+export function orientationOf(points: OrientationPoints): { matrix: THREE.Matrix4; mirror: boolean } | null {
+  const rise = points.head.clone().sub(points.hips);
+  const across = points.leftUpperArm.clone().sub(points.rightUpperArm);
+  if (rise.lengthSq() < 1e-12) return null;
+  const up = snapAxis(rise);
+  across.addScaledVector(up, -across.dot(up));
+  if (across.lengthSq() < 1e-12) return null;
+  const left = snapAxis(across);
+  const front = new THREE.Vector3().crossVectors(left, up);
+  let mirror = false;
+  if (points.leftEye && points.rightEye) {
+    const eyes = points.leftEye.clone().add(points.rightEye).multiplyScalar(0.5).sub(points.head);
+    eyes.addScaledVector(up, -eyes.dot(up));
+    const ahead = eyes.dot(front);
+    if (ahead < 0 && -ahead > Math.abs(eyes.dot(left))) { mirror = true; front.negate(); }
+  }
+  // 열이 left·up·front 인 행렬의 전치 = 모델 축을 화면 축으로 (직교 행렬이라 역행렬과 같음)
+  return { matrix: new THREE.Matrix4().makeBasis(left, up, front).transpose(), mirror };
+}
+/**
+ * 모델 방향 보정을 감싸는 그룹에 걸기: 자동 판정(orientationOf) → avatar.json orientation(mirror·yaw) 덮어쓰기
+ * 좌우 반전은 그룹 scale.x = -1 (three.js가 행렬식이 음수면 앞면 판정을 뒤집어 면·외곽선이 그대로 맞음)
+ * @param frame 모델을 담은 그룹 @param points 사람형 뼈 위치 (없으면 자동 판정 안 함)
+ * @param option avatar.json orientation
+ * @returns 적용한 보정 (진단용)
+ */
+export function applyOrientation(frame: THREE.Object3D, points: OrientationPoints | null, option: AvatarProfile["orientation"] = {}) {
+  const auto = option.auto !== false && points ? orientationOf(points) : null;
+  const matrix = auto ? auto.matrix.clone() : new THREE.Matrix4();
+  let mirror = auto?.mirror ?? false;
+  const flipX = new THREE.Matrix4().makeScale(-1, 1, 1);
+  if (option.mirror !== undefined && option.mirror !== mirror) { matrix.premultiply(flipX); mirror = option.mirror; }
+  if (option.yaw) matrix.premultiply(new THREE.Matrix4().makeRotationY(option.yaw * DEG));
+  // 행렬 = 회전 × (반전이면 x 반전): 회전 부분만 quaternion으로
+  const rotation = matrix.determinant() < 0 ? matrix.clone().multiply(flipX) : matrix;
+  frame.quaternion.setFromRotationMatrix(rotation);
+  frame.scale.set(matrix.determinant() < 0 ? -1 : 1, 1, 1);
+  frame.updateMatrixWorld(true);
+  return { auto: !!auto, mirror, matrix };
+}
+
+/**
+ * 3D rig 생성: avatar.json과 모델을 불러와 캔버스에 그릴 준비
+ * @param base 모델 폴더 주소 (끝에 /)
+ * @param pet 펫 창(전신)이면 true, 창 안(상반신)이면 false
+ * @returns rig, 불러오는 사이 꺼졌으면 null
+ */
+export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNormals }: {
+  base: string; life: Lifetime; canvas: HTMLCanvasElement; W: number; H: number; pet: boolean;
+  /** 외곽선 법선 출처 (설정 드롭다운, 없으면 avatar.json 값) */
+  outlineNormals?: OutlineNormals;
+}): Promise<AvatarRig | null> {
+  const profile = await (await fetch(base + "avatar.json")).json() as AvatarProfile;
+  if (profile.outline && outlineNormals) profile.outline.normals = outlineNormals;
+  const textureLoader = new THREE.TextureLoader();
+  const loader = new FBXLoader();
+  const model = await loader.loadAsync(base + profile.model);
+  if (life.stopped) return null;
+  // 방향 보정 그룹: 파일 좌표계와 상관없이 위 +y·정면 +z·이름상 왼쪽 +x 로 (아래 코드는 이 화면 기준을 가정)
+  const root = new THREE.Group();
+  root.add(model);
+  model.updateMatrixWorld(true);
+  const pointOf = (name: HumanBone) => { const id = profile.bones[name]; const node = id ? model.getObjectByName(id) : null; return node ? node.getWorldPosition(new THREE.Vector3()) : null; };
+  const [hipsAt, headAt, leftArmAt, rightArmAt] = (["hips", "head", "leftUpperArm", "rightUpperArm"] as const).map(pointOf);
+  applyOrientation(root, hipsAt && headAt && leftArmAt && rightArmAt
+    ? { hips: hipsAt, head: headAt, leftUpperArm: leftArmAt, rightUpperArm: rightArmAt, leftEye: pointOf("leftEye"), rightEye: pointOf("rightEye") } : null, profile.orientation);
+
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: true, stencil: true });   // 스텐실(눈썹이 앞머리 위로 비침)에 필요, three.js 기본은 꺼짐
+  renderer.setClearColor(0x000000, 0);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const scene = new THREE.Scene();
+  scene.add(root);
+  const light = new THREE.DirectionalLight(0xffffff, profile.light?.intensity ?? 2.2);
+  light.position.set(...(profile.light?.direction ?? [0.6, 1.2, 1.6]));
+  scene.add(light, new THREE.AmbientLight(0xffffff, profile.light?.ambient ?? 0.9));
+  life.add(() => {
+    root.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      for (const material of ([] as THREE.Material[]).concat(mesh.material || [])) material.dispose();
+    });
+    renderer.dispose();
+  });
+
+  // ---------- 재질: MToon으로 바꾸고 숨길 것은 숨김 ----------
+  const textures = new Map<string, THREE.Texture>();
+  /**
+   * 폴더 기준 텍스처 (같은 파일은 한 번만)
+   * @param linear true면 색이 아닌 수치 맵(AO 등)이라 색 공간 변환 없이 읽음
+   */
+  const texture = (file?: string, linear = false) => {
+    if (!file) return undefined;
+    let found = textures.get(file);
+    if (!found) { found = textureLoader.load(base + file); found.colorSpace = linear ? THREE.NoColorSpace : THREE.SRGBColorSpace; found.wrapS = found.wrapT = THREE.RepeatWrapping;   /* Unity·UE처럼 반복 (효과 메시 UV가 0~1 밖을 씀) */ textures.set(file, found); life.add(() => found!.dispose()); }
+    return found;
+  };
+  const hidden = new Set(profile.hide || []);
+  // 얼굴 SDF 그림자 uniform (매 프레임 머리·빛 방향으로 갱신)
+  const faceSdfUniforms = {
+    faceSdfMap: { value: profile.faceSdf ? texture(profile.faceSdf.map, true)! : null },
+    faceSdfThreshold: { value: 0.5 }, faceSdfUseR: { value: 1 }, faceSdfSoft: { value: profile.faceSdf?.softness ?? 0.02 },
+  };
+  type HighColorSpec = NonNullable<NonNullable<AvatarProfile["materials"]>[string]["highColor"]>;
+  /**
+   * MToon 재질 셰이더에 조각 덧붙이기 (원래 MToon onBeforeCompile을 먼저 실행)
+   * sdf: 그림자 판정(getShading)을 얼굴 SDF 판정으로 바꿈. R·G가 모두 0인 곳(귀·목 등)은 원래 조명 그대로
+   * highColor: UTS2 HighColor처럼 half-Lambert(N·H)를 거듭제곱한 하이라이트를 빛 색·마스크와 곱해 더하고, 그림자 쪽은 onShadow만큼 줄임
+   */
+  const extendMToon = (material: MToonMaterial, parts: { sdf?: boolean; highColor?: HighColorSpec }) => {
+    const uniforms: Record<string, THREE.IUniform> = {};
+    let head = "", body = "";
+    if (parts.sdf) {
+      Object.assign(uniforms, faceSdfUniforms);
+      head += "uniform sampler2D faceSdfMap;\nuniform float faceSdfThreshold;\nuniform float faceSdfUseR;\nuniform float faceSdfSoft;\n";
+      body += `
+    #ifdef MTOON_USE_UV
+      vec3 sdfTexel = texture2D( faceSdfMap, vUv ).rgb;
+      if ( max( sdfTexel.r, sdfTexel.g ) > 0.02 ) {
+        float sdfValue = mix( sdfTexel.g, sdfTexel.r, faceSdfUseR );
+        shading = smoothstep( faceSdfThreshold - faceSdfSoft, faceSdfThreshold + faceSdfSoft, sdfValue ) * shadow;
+      }
+    #endif`;
+    }
+    if (parts.highColor) {
+      const spec = parts.highColor, mask = texture(spec.mask, true);
+      Object.assign(uniforms, {
+        highColor: { value: new THREE.Color(spec.color) }, highColorExponent: { value: Math.pow(2, 11 - 10 * (spec.power ?? 0.7)) },
+        highColorOnShadow: { value: spec.onShadow ?? 0.5 }, highColorMask: { value: mask ?? null }, highColorStrength: { value: spec.strength ?? 1 }, highColorToonEdge: { value: spec.toon ? 1 - Math.pow(spec.power ?? 0.7, 5) : -1 },
+      });
+      head += "uniform vec3 highColor;\nuniform float highColorExponent;\nuniform float highColorOnShadow;\nuniform float highColorStrength;\nuniform float highColorToonEdge;\n" + (mask ? "#define USE_HIGHCOLOR_MASK\nuniform sampler2D highColorMask;\n" : "");
+      body += `
+    {
+      float highHalfLambert = 0.5 * dot( normalize( directLight.direction + geometryViewDir ), geometryNormal ) + 0.5;
+      float highAmount = highColorToonEdge >= 0.0
+        ? smoothstep( highColorToonEdge - 0.005, highColorToonEdge + 0.005, highHalfLambert )   // 툰: 1 - power⁵ 넘는 곳만 딱 끊어 칠함
+        : pow( clamp( highHalfLambert, 0.0, 1.0 ), highColorExponent );
+      #if defined( USE_HIGHCOLOR_MASK ) && defined( MTOON_USE_UV )
+        highAmount *= texture2D( highColorMask, vUv ).g;
+      #endif
+      reflectedLight.directDiffuse += highColor * directLight.color * highAmount * highColorStrength * mix( highColorOnShadow, 1.0, shading );
+    }`;
+    }
+    const mtoonCompile = material.onBeforeCompile.bind(material);   // MToon이 버전 상수 등을 채우는 원래 단계는 먼저 실행
+    material.onBeforeCompile = (shader, renderer) => {
+      mtoonCompile(shader, renderer);
+      Object.assign(shader.uniforms, uniforms);
+      const anchor = "float shading = getShading( dotNL, shadow, material.shadingShift );";
+      shader.fragmentShader = head + shader.fragmentShader.replaceAll(anchor, anchor + body);
+    };
+    const key = material.customProgramCacheKey.bind(material), tag = (parts.sdf ? "|sdf" : "") + (parts.highColor ? "|high" + (parts.highColor.mask ? "M" : "") : "");
+    material.customProgramCacheKey = () => key() + tag;
+  };
+  root.traverse((node) => {
+    if (hidden.has(node.name)) node.visible = false;
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.frustumCulled = false;   // 뼈로 움직인 메시가 경계 밖으로 잘리지 않게
+    const swap = (material: THREE.Material) => {
+      const spec = profile.materials?.[material.name];
+      if (!spec) return material;
+      const toon = new MToonMaterial({
+        ...(spec.map ? { map: texture(spec.map) } : {}), ...(spec.shade ? { shadeMultiplyTexture: texture(spec.shade) } : {}),
+        // AO(lilToon의 그림자 경계 마스크): 어두운 텍셀일수록 그림자 경계를 밀어 늘 그늘지게 함
+        ...(spec.ao ? { shadingShiftTexture: texture(spec.ao, true), shadingShiftTextureScale: spec.aoScale ?? 1 } : {}),
+        shadeColorFactor: new THREE.Color(1, 1, 1),
+        shadingShiftFactor: spec.shadingShift ?? -0.05, shadingToonyFactor: spec.shadingToony ?? 0.95,
+        transparent: !!spec.transparent, alphaTest: spec.alphaTest ?? 0,
+        side: spec.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+        ...(profile.rim ? { parametricRimColorFactor: new THREE.Color(profile.rim.color), parametricRimFresnelPowerFactor: profile.rim.power ?? 4, rimLightingMixFactor: profile.rim.mix ?? 0.5 } : {}),
+      });
+      toon.name = material.name;
+      const sdf = !!profile.faceSdf && profile.faceSdf.material === material.name;
+      if (sdf || spec.highColor) extendMToon(toon, { sdf, highColor: spec.highColor });
+      toon.visible = !spec.hidden;
+      if (spec.stencil) applyStencil(toon, spec.stencil);
+      material.dispose();
+      return toon;
+    };
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
+  });
+
+  // ---------- 외곽선: 같은 뼈·모프를 쓰는 복제 메시에 MToon 외곽선 재질(뒤집어 부풀려 그림) ----------
+  if (profile.outline) {
+    const height = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y;
+    const skip = new Set(profile.outline.skip || []);
+    /**
+     * 외곽선 재질 (원본 재질의 투명 처리·텍스처를 따름)
+     * @param vertexWidth true면 정점 속성 outlineWidth를 두께에 곱함 (모델 제공 외곽선의 정점 색 R)
+     */
+    const outlineMaterial = (source: THREE.Material, vertexWidth = false) => {
+      const material = new MToonMaterial({
+        isOutline: true, outlineWidthMode: "worldCoordinates", outlineWidthFactor: profile.outline!.width * height,
+        outlineColorFactor: new THREE.Color(profile.outline!.color || "#2b2430"), outlineLightingMixFactor: 0.3, side: THREE.BackSide,
+        alphaTest: (source as THREE.Material & { alphaTest?: number }).alphaTest ?? 0,
+        ...((source as MToonMaterial).map ? { map: (source as MToonMaterial).map! } : {}),
+      });
+      material.visible = source.visible && !skip.has(source.name);
+      const stencil = profile.materials?.[source.name]?.stencil;
+      if (stencil?.test) applyStencil(material, { ref: stencil.ref, test: stencil.test });   // 앞머리 외곽선도 비친 눈썹을 덮지 않게
+      if (vertexWidth) {
+        const mtoonCompile = material.onBeforeCompile.bind(material);
+        material.onBeforeCompile = (shader, renderer) => {
+          mtoonCompile(shader, renderer);
+          shader.vertexShader = "attribute float outlineWidth;\n" + shader.vertexShader.replace("vec3 outlineOffset = outlineWidthFactor * worldNormalLength * objectNormal;", "vec3 outlineOffset = outlineWidthFactor * outlineWidth * worldNormalLength * objectNormal;");
+        };
+        const key = material.customProgramCacheKey.bind(material);
+        material.customProgramCacheKey = () => key() + "|outlineWidth";
+      }
+      life.add(() => material.dispose());
+      return material;
+    };
+    const meshes: THREE.SkinnedMesh[] = [], authored = new Map<string, THREE.SkinnedMesh>();
+    root.traverse((node) => {
+      const mesh = node as THREE.SkinnedMesh;
+      if (!mesh.isSkinnedMesh) return;
+      if (mesh.name.endsWith("_Outline")) authored.set(mesh.name, mesh);
+      else if (mesh.visible && !hidden.has(mesh.parent?.name || "")) meshes.push(mesh);
+    });
+    const used = new Set<THREE.Object3D>();   // 쓴 모델 제공 외곽선 (묶음을 켜도 나머지는 숨김)
+    for (const mesh of meshes) {
+      const candidate = profile.outline.normals === "model" ? authored.get(mesh.name + "_Outline") : undefined;
+      const own = candidate && samePositions(candidate.geometry, mesh.geometry, height * 1e-4) ? candidate : undefined;   // 모양이 다른 외곽선 메시는 매끄러운 법선으로 대신
+      if (own) {   // 모델 제공 외곽선 메시: 다듬은 법선·정점 색 R(두께 배율)을 그대로 쓰고 재질만 MToon 외곽선으로
+        const materials = ([] as THREE.Material[]).concat(mesh.material);
+        const color = own.geometry.getAttribute("color");
+        if (color) own.geometry.setAttribute("outlineWidth", new THREE.BufferAttribute(Float32Array.from({ length: color.count }, (_, i) => color.getX(i)), 1));
+        const ownMaterials = ([] as THREE.Material[]).concat(own.material).map((_, i) => outlineMaterial(materials[Math.min(i, materials.length - 1)], !!color));
+        own.material = Array.isArray(own.material) ? ownMaterials : ownMaterials[0];
+        own.visible = true; own.frustumCulled = false; own.renderOrder = OUTLINE_ORDER;
+        for (let node: THREE.Object3D | null = own.parent; node && node !== root; node = node.parent) node.visible = true;
+        used.add(own);
+        continue;
+      }
+      const materials = ([] as THREE.Material[]).concat(mesh.material);
+      const geometry = outlineGeometry(mesh.geometry, height * 1e-5);   // 모델 키의 10만분의 1 안이면 같은 위치
+      life.add(() => geometry.dispose());
+      const outline = new THREE.SkinnedMesh(geometry, Array.isArray(mesh.material) ? materials.map((material) => outlineMaterial(material)) : outlineMaterial(materials[0]));
+      outline.bind(mesh.skeleton, mesh.bindMatrix);
+      outline.morphTargetInfluences = mesh.morphTargetInfluences;   // 같은 배열을 써서 표정·옷 모프를 그대로 따름
+      outline.morphTargetDictionary = mesh.morphTargetDictionary;
+      outline.frustumCulled = false; outline.renderOrder = OUTLINE_ORDER;
+      outline.name = mesh.name + "__outline";
+      mesh.parent!.add(outline);
+      outline.position.copy(mesh.position); outline.quaternion.copy(mesh.quaternion); outline.scale.copy(mesh.scale);
+    }
+    for (const mesh of authored.values()) if (!used.has(mesh)) mesh.visible = false;
+  }
+
+  // ---------- 그리는 순서: order가 있는 재질은 같은 뼈·모프를 쓰는 복제 메시로 떼어 그 순서로 그림 ----------
+  splitByOrder(root, (name) => profile.materials?.[name]?.order ?? 0, life);
+
+  // ---------- 뼈 ----------
+  const byName = new Map<string, THREE.Object3D>();
+  root.traverse((node) => { if (!byName.has(node.name)) byName.set(node.name, node); });
+  // 모델의 원래 지역 회전 (애니메이션 클립을 옮길 때 기준, 팔 내림 보정 전)
+  const bindLocal = new Map<string, THREE.Quaternion>();
+  for (const [name, node] of byName) bindLocal.set(name, node.quaternion.clone());
+  const bone = (name: HumanBone) => { const id = profile.bones[name]; return id ? byName.get(id) || null : null; };
+  root.updateMatrixWorld(true);
+  const worldOf = (node: THREE.Object3D | null) => node ? node.getWorldPosition(new THREE.Vector3()) : null;
+  /** 월드 축 기준 회전(delta)을 뼈의 지역 회전에 반영: L' = L × (W⁻¹ × D × W) */
+  const turnWorld = (node: THREE.Object3D, delta: THREE.Quaternion, restLocal: THREE.Quaternion, restWorld: THREE.Quaternion) => {
+    node.quaternion.copy(restLocal).multiply(restWorld.clone().invert().multiply(delta).multiply(restWorld));
+  };
+  // 기본 자세: T자로 벌린 위팔을 몸 옆으로 내림 (뼈 방향으로 계산해 모델 축과 무관)
+  const hipsPos = worldOf(bone("hips")) || new THREE.Vector3();
+  for (const side of ["left", "right"] as const) {
+    const upper = bone(`${side}UpperArm`), lower = bone(`${side}LowerArm`);
+    if (!upper || !lower || !profile.armDown) continue;
+    const from = worldOf(lower)!.sub(worldOf(upper)!).normalize();
+    const out = Math.sign(worldOf(upper)!.x - hipsPos.x) || 1;
+    const angle = profile.armDown * DEG;
+    const target = new THREE.Vector3(out * Math.cos(angle), -Math.sin(angle), 0.08).normalize();
+    const delta = new THREE.Quaternion().setFromUnitVectors(from, target);
+    turnWorld(upper, delta, upper.quaternion.clone(), upper.getWorldQuaternion(new THREE.Quaternion()));
+    root.updateMatrixWorld(true);
+  }
+  // 채널을 덧씌우는 뼈의 바탕 자세 (애니메이션이 정한 자세, 없으면 기본 자세). 매 프레임 여기서 시작해 덧씌움이 쌓이지 않게 함
+  // AnimationMixer는 값이 직전 프레임과 같으면 뼈에 쓰지 않으므로, 기본 자세가 아니라 직전 바탕 자세로 되돌려야 함
+  // (기본 자세로 되돌리면 클립 값이 몇 프레임 그대로인 구간에서 뼈가 기본 자세로 튐)
+  const MOVED: HumanBone[] = ["hips", "spine", "chest", "neck", "head", "leftEye", "rightEye"];
+  const basePose = new Map<THREE.Object3D, THREE.Quaternion>();
+  for (const name of MOVED) { const node = bone(name); if (node) basePose.set(node, node.quaternion.clone()); }
+
+  // ---------- 크기·카메라 ----------
+  const box = new THREE.Box3().setFromObject(root);
+  const top = box.max.y, bottom = box.min.y, fullH = top - bottom;
+  const shoulders = (() => { const l = worldOf(bone("leftUpperArm")), r = worldOf(bone("rightUpperArm")); return l && r ? l.distanceTo(r) : fullH * 0.2; })();
+  const bodyWidthWorld = shoulders * 2.1;
+  const centerX = (worldOf(bone("head")) || hipsPos).x;
+  const cutY = top - fullH * 0.47;   // 창 안은 허리 위만 (Live2D 모델의 상반신 잘림선과 같은 비율)
+  const bustScale = Math.min((W * 0.98) / bodyWidthWorld, (H * 0.95) / (top - cutY));
+  const fullScale = Math.min((W * 0.98) / bodyWidthWorld, (H * 0.95) / fullH);
+  const scale = pet ? fullScale : bustScale;   // 캔버스 px / 월드 단위
+  const camera = new THREE.OrthographicCamera(-W / 2 / scale, W / 2 / scale, H / 2 / scale, -H / 2 / scale, -100 * fullH, 100 * fullH);
+  // 모델 위 끝이 캔버스 y = H×0.05, 가로 가운데가 캔버스 가운데에 오게
+  const camTop = top + (H * 0.05) / scale;
+  camera.position.set(centerX, camTop - H / 2 / scale, 10 * fullH);
+  camera.lookAt(centerX, camTop - H / 2 / scale, 0);
+  camera.updateMatrixWorld(true);
+  const projected = new THREE.Vector3();
+  /** 월드 좌표 → 캔버스(배율 1) 좌표 */
+  const toCanvas = (point: THREE.Vector3) => { projected.copy(point).project(camera); return { x: (projected.x + 1) / 2 * W, y: (1 - projected.y) / 2 * H }; };
+  const headPos = worldOf(bone("head")) || new THREE.Vector3(centerX, top - fullH * 0.1, 0);
+  const PET_BUBBLE = 150;
+  const metrics: RigMetrics = {
+    W, H, visW: bodyWidthWorld * scale, noseX: toCanvas(headPos).x, chibiHeadDrop: 0, walkBodyWidth: bodyWidthWorld * scale,
+    waistPet: H * 0.05 + (top - cutY) * fullScale, waistWin: H * 0.05 + (top - cutY) * bustScale, waistPct: (H * 0.05 + (top - cutY) * fullScale) / H * 100,
+    petHeadRatio: bustScale / fullScale, headGain: bustScale / scale,
+    petKMin: 0.45, petKMax: Math.max(1.2, ((typeof screen !== "undefined" && screen.availHeight ? screen.availHeight : 1080) - PET_BUBBLE) / H), petBubble: PET_BUBBLE,
+    petBustOffset: 0,
+  };
+
+  // ---------- 모프 ----------
+  const morphSlots = new Map<string, Array<[THREE.Mesh, number]>>();
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.morphTargetDictionary) return;
+    for (const [name, index] of Object.entries(mesh.morphTargetDictionary)) {
+      const key = morphKey(name);
+      (morphSlots.get(key) || morphSlots.set(key, []).get(key)!).push([mesh, index]);
+    }
+  });
+
+  // ---------- 몸 애니메이션 ----------
+  const springRoots = new Set<THREE.Object3D>();
+  for (const spec of profile.springs || []) for (const id of spec.roots) { const node = byName.get(id); if (node) springRoots.add(node); }
+  const springBones = new Set<THREE.Object3D>();
+  for (const node of springRoots) node.traverse((child) => { springBones.add(child); });
+  /**
+   * 클립 불러오기: 모델에 있는 뼈의 회전 트랙만 (흔들림 뼈·위치·모프 트랙은 뺌)
+   * 다른 도구(UE 등)가 내보낸 클립은 좌표 변환이 기본 자세에 섞여 있어, 뼈마다 기본 자세 차이를 빼서 옮김:
+   * 모델 회전 = 모델 기본 자세 × (클립 기본 자세)⁻¹ × 클립 회전
+   */
+  const loadClip = async (file: string) => {
+    const source = await loader.loadAsync(base + file);
+    const clip = source.animations[0];
+    if (!clip) return null;
+    const clipBind = new Map<string, THREE.Quaternion>();
+    source.traverse((node) => { if (!clipBind.has(node.name)) clipBind.set(node.name, node.quaternion.clone()); });
+    const q = new THREE.Quaternion(), offset = new THREE.Quaternion();
+    clip.tracks = clip.tracks.filter((track) => {
+      const dot = track.name.lastIndexOf("."), name = track.name.slice(0, dot), node = byName.get(name);
+      if (track.name.slice(dot) !== ".quaternion" || !node || springBones.has(node)) return false;
+      offset.copy(bindLocal.get(name)!).multiply(clipBind.get(name)?.clone().invert() || new THREE.Quaternion());
+      for (let i = 0; i < track.values.length; i += 4) {
+        q.fromArray(track.values, i).premultiply(offset).normalize().toArray(track.values, i);
+      }
+      return true;
+    });
+    return clip;
+  };
+  const mixer = new THREE.AnimationMixer(root);
+  const idleClip = profile.animations?.idle ? await loadClip(profile.animations.idle).catch(() => null) : null;
+  const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
+  idleAction?.play();
+  const gestureActions = new Map<string, THREE.AnimationAction>();
+  for (const [name, file] of Object.entries(profile.animations?.gestures || {})) {
+    const clip = await loadClip(file).catch(() => null);
+    if (!clip) continue;
+    const action = mixer.clipAction(clip);
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;   // 끝 자세를 붙잡은 채 대기 동작으로 섞여 돌아감
+    gestureActions.set(name, action);
+  }
+  if (life.stopped) return null;
+  let gesture: { action: THREE.AnimationAction; until: number } | null = null;
+  /** 몸짓이 끝났으면 대기 동작으로 섞어 돌아가기 */
+  const endGesture = (now: number) => {
+    if (!gesture || now < gesture.until) return;
+    gesture.action.fadeOut(0.3);
+    if (idleAction) { idleAction.enabled = true; idleAction.fadeIn(0.3).play(); }
+    gesture = null;
+  };
+
+  // ---------- 흔들림(스프링) ----------
+  // 사람형 뼈로 만든 충돌체 (반지름은 모델 키 대비, 원본 VRChat 충돌체 크기 참고: 다리 5cm·머리 7cm·가슴 11~13cm 정도)
+  const colliderScale = profile.colliders?.scale ?? 1;
+  const headLocalUp = (() => { const node = bone("head"); return node ? new THREE.Vector3(0, fullH * 0.045, 0).applyQuaternion(node.getWorldQuaternion(new THREE.Quaternion()).invert()) : undefined; })();
+  const COLLIDERS: Array<[ColliderGroup, HumanBone, HumanBone | null, number, THREE.Vector3?]> = [
+    ["head", "head", null, 0.05, headLocalUp],
+    // 가슴은 원본 PhysBone 충돌체(가슴 구 13cm·11cm ≈ 키의 8%·7%)처럼 크게: 앞머리가 조끼 앞면을 뚫지 않게
+    ["body", "chest", null, 0.08], ["body", "chest", "neck", 0.05], ["body", "spine", "chest", 0.065], ["body", "hips", "spine", 0.06],
+    ["legs", "leftUpperLeg", "rightUpperLeg", 0.035],
+    ["legs", "leftUpperLeg", "leftLowerLeg", 0.045], ["legs", "rightUpperLeg", "rightLowerLeg", 0.045],
+    ["legs", "leftLowerLeg", "leftFoot", 0.03], ["legs", "rightLowerLeg", "rightFoot", 0.03],
+    // 팔은 소매(걷어 올린 셔츠) 두께까지
+    ["arms", "leftUpperArm", "leftLowerArm", 0.03], ["arms", "rightUpperArm", "rightLowerArm", 0.03],
+    ["arms", "leftLowerArm", "leftHand", 0.026], ["arms", "rightLowerArm", "rightHand", 0.026],
+  ];
+  const collidersOf = (groups: ColliderGroup[] = []) => COLLIDERS.filter(([group, from]) => groups.includes(group) && bone(from)).map(([, from, to, ratio, offset]): SpringCollider =>
+    ({ from: bone(from)!, to: to ? bone(to) : null, fromOffset: offset, radius: ratio * fullH * colliderScale }));
+  root.updateMatrixWorld(true);
+  const springs = createSprings((profile.springs || []).map((spec) => ({ ...spec, radius: (spec.radius ?? 0.012) * fullH, colliders: collidersOf(spec.colliders),
+    roots: spec.roots.map((id) => byName.get(id)).filter((node): node is THREE.Object3D => !!node) })));
+
+  // ---------- 얼굴 SDF: 빛이 얼굴 정면에서 돌아간 각도 ----------
+  // 처음 자세에서 모델은 카메라(+Z)를 봄 → 머리 뼈 지역 좌표의 앞·오른쪽·위 방향을 기억해 두고 매 프레임 월드로 돌림
+  const headBone = bone("head");
+  const headWorldQ = headBone ? headBone.getWorldQuaternion(new THREE.Quaternion()).invert() : new THREE.Quaternion();
+  const faceAxes = { forward: new THREE.Vector3(0, 0, 1).applyQuaternion(headWorldQ), right: new THREE.Vector3(1, 0, 0).applyQuaternion(headWorldQ), up: new THREE.Vector3(0, 1, 0).applyQuaternion(headWorldQ) };
+  const sdfQ = new THREE.Quaternion(), sdfF = new THREE.Vector3(), sdfR = new THREE.Vector3(), sdfU = new THREE.Vector3(), sdfL = new THREE.Vector3();
+  /** 머리 수평면에 투영한 빛 방향으로 SDF 문턱값(정면 0 → 옆 0.5 → 뒤 1)과 쓸 채널 결정 */
+  const updateFaceSdf = () => {
+    if (!headBone) return;
+    headBone.getWorldQuaternion(sdfQ);
+    sdfF.copy(faceAxes.forward).applyQuaternion(sdfQ); sdfR.copy(faceAxes.right).applyQuaternion(sdfQ); sdfU.copy(faceAxes.up).applyQuaternion(sdfQ);
+    sdfL.copy(light.position).normalize();
+    sdfL.addScaledVector(sdfU, -sdfL.dot(sdfU));
+    if (sdfL.lengthSq() < 1e-6) return;
+    sdfL.normalize();
+    faceSdfUniforms.faceSdfThreshold.value = Math.acos(clamp(sdfF.dot(sdfL), -1, 1)) / Math.PI;
+    faceSdfUniforms.faceSdfUseR.value = (sdfR.dot(sdfL) > 0) !== !!profile.faceSdf!.swap ? 1 : 0;
+  };
+
+  // ---------- 매 프레임 ----------
+  const values = new Map<string, number>();
+  const expressionWeights = new Map<string, number>();
+  let frameFn: (() => void) | null = null;
+  let lastTick = performance.now();
+  const keyOf = channelKeyOf;
+  const euler = new THREE.Euler(), deltaQ = new THREE.Quaternion(), parentQ = new THREE.Quaternion(), worldQ = new THREE.Quaternion();
+  // 고개 채널은 Live2D 물리 입력값(±30)이라 실제 각도로 그대로 쓰면 크고 딱딱함 → 배율을 줄이고 관성을 줘서 따라가게 함
+  const HEAD_GAIN = { yaw: 0.6, pitch: 0.5, roll: 0.5 }, HEAD_FOLLOW = 7;   // 배율, 따라가는 빠르기(초당)
+  // 고개·몸 채널은 Live2D에선 물리 입력이라 늦게 따라감 → 3D에선 뼈마다 덧씌움 회전을 들고 목표 쪽으로 slerp로 따라가게 함
+  /** 고개·몸 뼈의 지금 덧씌움 회전 */
+  const smoothed = new Map<HumanBone, THREE.Quaternion>((["neck", "head", "chest", "spine"] as HumanBone[]).map((name) => [name, new THREE.Quaternion()]));
+  /**
+   * 덧씌울 회전을 뼈의 지금 자세(애니메이션 포함) 월드 회전 앞에 곱함: L' = P⁻¹ × D × P × L
+   * @param delta 월드 축 기준 회전
+   */
+  const applyDelta = (node: THREE.Object3D, delta: THREE.Quaternion) => {
+    node.parent!.getWorldQuaternion(parentQ);
+    worldQ.copy(parentQ).multiply(node.quaternion).premultiply(delta);
+    node.quaternion.copy(parentQ.invert().multiply(worldQ));
+  };
+  /**
+   * 이번 프레임 채널 값으로 뼈 회전 (고개는 목 40%·머리 60%로 나누고 쿼터니언 slerp로 따라감)
+   * @param dt 지난 프레임부터 흐른 시간(초)
+   */
+  const applyBones = (dt: number) => {
+    const v = (key: string) => values.get(key) || 0;
+    const yaw = clamp(v("headTurn"), -30, 30) * HEAD_GAIN.yaw, pitch = clamp(v("headTilt"), -30, 30) * HEAD_GAIN.pitch, roll = clamp(v("headRoll"), -30, 30) * HEAD_GAIN.roll;
+    const follow = Math.min(1, dt * HEAD_FOLLOW);
+    /** 목표 회전(월드 축, 도)을 쿼터니언으로 만들고 지금 회전에서 slerp로 따라가 적용 */
+    const turnSmooth = (name: HumanBone, x: number, y: number, z: number) => {
+      const node = bone(name), current = smoothed.get(name)!;
+      if (!node || !node.parent) return;
+      current.slerp(deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ")), follow);
+      applyDelta(node, current);
+    };
+    /** 월드 축 회전(도) 바로 적용 */
+    const turn = (name: HumanBone, x: number, y: number, z: number) => {
+      const node = bone(name);
+      if (!node || !node.parent || (!x && !y && !z)) return;
+      applyDelta(node, deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ")));
+    };
+    turnSmooth("neck", -pitch * 0.4, yaw * 0.4, roll * 0.4);
+    turnSmooth("head", -pitch * 0.6, yaw * 0.6, roll * 0.6);
+    turnSmooth("chest", v("bodyLean") * 0.25 - v("breath") * 1.2, clamp(v("bodyShiftX"), -30, 30) * 0.2, 0);
+    turnSmooth("spine", 0, 0, clamp(v("bodyShiftZ"), -30, 30) * 0.2);
+    const eyeX = clamp(v("eyeLookX"), -1, 1) * 18, eyeY = clamp(v("eyeLookY"), -1, 1) * 14;
+    turn("leftEye", -eyeY, eyeX, 0);
+    turn("rightEye", -eyeY, eyeX, 0);
+  };
+  /** 이번 프레임 채널·표정·소품으로 모프 세기 계산·적용 */
+  const applyMorphs = () => {
+    const weights = new Map<string, number>(Object.entries(profile.baseMorphs || {}));
+    const add = (morph: string, w: number) => weights.set(morph, (weights.get(morph) || 0) + w);
+    for (const [channel, bindings] of Object.entries(profile.channels || {})) {
+      const value = values.get(channel) || 0;
+      for (const binding of bindings) { const w = bindingWeight(binding, value); if (w) add(binding.morph, w); }
+    }
+    for (const [name, w] of expressionWeights) for (const [morph, amount] of Object.entries(profile.expressions?.[name] || {})) add(morph, amount * w);
+    for (const [key, bindings] of Object.entries(profile.outfit || {})) {
+      const raw = values.get("outfit." + key) || 0, item = OUTFIT_ITEMS.find((each) => each.key === key);
+      const on = clamp(raw / ((item && item.on) || 1), 0, 1);
+      for (const binding of bindings) add(binding.morph, binding.invert ? 1 - on : on);
+    }
+    limitExclusiveMorphs(weights, profile.exclusiveMorphs);
+    for (const slots of morphSlots.values()) for (const [mesh, index] of slots) mesh.morphTargetInfluences![index] = 0;
+    for (const [morph, w] of weights) for (const [mesh, index] of morphSlots.get(morph) || []) mesh.morphTargetInfluences![index] = clamp(w, 0, 1);
+  };
+
+  // ---------- 터치: 뼈를 화면에 투영한 캡슐 ----------
+  const SEGMENTS: Array<{ part: string; from: HumanBone; to: HumanBone; radius: number }> = [
+    { part: "waist", from: "neck", to: "hips", radius: shoulders * 0.55 },
+    { part: "arm", from: "leftUpperArm", to: "leftLowerArm", radius: shoulders * 0.16 },
+    { part: "arm", from: "leftLowerArm", to: "leftHand", radius: shoulders * 0.14 },
+    { part: "arm", from: "rightUpperArm", to: "rightLowerArm", radius: shoulders * 0.16 },
+    { part: "arm", from: "rightLowerArm", to: "rightHand", radius: shoulders * 0.14 },
+    { part: "leg", from: "leftUpperLeg", to: "leftLowerLeg", radius: shoulders * 0.2 },
+    { part: "leg", from: "leftLowerLeg", to: "leftFoot", radius: shoulders * 0.16 },
+    { part: "leg", from: "rightUpperLeg", to: "rightLowerLeg", radius: shoulders * 0.2 },
+    { part: "leg", from: "rightLowerLeg", to: "rightFoot", radius: shoulders * 0.16 },
+  ];
+  const PARTS = ["head", ...SEGMENTS.map((segment) => segment.part)];
+  /** 점과 선분 사이 거리의 제곱 */
+  const segDist2 = (px: number, py: number, a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+    const t = len2 > 1e-6 ? clamp(((px - a.x) * dx + (py - a.y) * dy) / len2, 0, 1) : 0;
+    const qx = a.x + dx * t - px, qy = a.y + dy * t - py;
+    return qx * qx + qy * qy;
+  };
+  const headRadiusWorld = Math.max(fullH * 0.07, (top - headPos.y) * 0.75);
+
+  return {
+    metrics,
+    supports: (feature) => (profile.features || []).includes(feature),
+    set(id, value, weight = 1) { const key = keyOf(id); if (!key) return; const current = values.get(key) || 0; values.set(key, weight === 1 ? value : current + (value - current) * weight); },
+    add(id, value, weight = 1) { const key = keyOf(id); if (key) values.set(key, (values.get(key) || 0) + value * weight); },
+    multiply(id, value, weight = 1) { const key = keyOf(id); if (key) values.set(key, (values.get(key) || 0) * (1 + (value - 1) * weight)); },
+    expressionNames: () => Object.keys(profile.expressions || {}),
+    expression(name, weight) { expressionWeights.set(name, weight); },
+    earHide() {},
+    bodyShape() {},
+    onFrame(fn) { frameFn = fn; },
+    pick(x, y) {
+      root.updateMatrixWorld(true);
+      const head = toCanvas(worldOf(bone("head")) || headPos);
+      const headTop = toCanvas(new THREE.Vector3(head.x, top, 0));
+      const headR = headRadiusWorld * (metrics.visW / bodyWidthWorld);
+      const headCenterY = (head.y + headTop.y) / 2;
+      if ((x - head.x) ** 2 + (y - headCenterY) ** 2 <= headR * headR) return 0;
+      for (let i = 0; i < SEGMENTS.length; i++) {
+        const segment = SEGMENTS[i], a = worldOf(bone(segment.from)), b = worldOf(bone(segment.to));
+        if (!a || !b) continue;
+        const r = segment.radius * (metrics.visW / bodyWidthWorld);
+        if (segDist2(x, y, toCanvas(a), toCanvas(b)) <= r * r) return i + 1;
+      }
+      return -1;
+    },
+    touchShape(_x, y, handle): TouchShape {
+      const topY = toCanvas(new THREE.Vector3(centerX, top, 0)).y, bottomY = toCanvas(new THREE.Vector3(centerX, bottom, 0)).y;
+      return { part: PARTS[handle] ?? null, ratioY: (y - topY) / (bottomY - topY), inChest: false };
+    },
+    chibiRegion(y) { return y < toCanvas(worldOf(bone("neck")) || headPos).y ? "head" : "body"; },
+    setResolution(k) {
+      const ratio = (devicePixelRatio || 1) * 1.5 * Math.max(1, k);
+      if (renderer.getPixelRatio() === ratio && canvas.width > 0) return;
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(W, H, false);
+    },
+    resetClock() { lastTick = performance.now(); },
+    tick(time) {
+      const dt = clamp((time - lastTick) / 1000, 0, 0.05); lastTick = time;
+      values.clear(); expressionWeights.clear();
+      frameFn?.();
+      for (const [node, pose] of basePose) node.quaternion.copy(pose);   // 지난 프레임의 덧씌움을 걷어 내고 바탕 자세에서 시작
+      endGesture(performance.now());
+      mixer.update(dt);
+      for (const [node, pose] of basePose) pose.copy(node.quaternion);   // 믹서가 바꾼 값(안 바꿨으면 그대로)을 바탕 자세로 기억
+      applyBones(dt);
+      applyMorphs();
+      root.updateMatrixWorld(true);
+      if (dt > 0) springs.step(dt);
+      if (profile.faceSdf) updateFaceSdf();
+      renderer.render(scene, camera);
+    },
+    gesture(name, ms) {
+      const action = gestureActions.get(name);
+      if (!action) return;
+      if (gesture && gesture.action !== action) gesture.action.fadeOut(0.2);
+      idleAction?.fadeOut(0.25);
+      action.reset().setEffectiveWeight(1).fadeIn(0.25).play();
+      gesture = { action, until: performance.now() + Math.max(action.getClip().duration * 1000, ms) };
+    },
+    systemTicker() {},
+  };
+}

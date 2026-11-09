@@ -26,7 +26,7 @@ export const inject = ['webServer', 'connection']
  */
 /**
  * 설정 중 이 파일이 읽는 값 (volatile 참조일 수 있어 readLive로 읽음)
- * @typedef {{ tts?: unknown, appIcon?: unknown }} HostConfig
+ * @typedef {{ tts?: unknown, appIcon?: unknown, avatarModelDir?: unknown }} HostConfig
  */
 
 // 말풍선 음성(TTS). 설정 화면이 쓰는 값은 모두 volatile이어야 한다(Settings는 volatile 필드만 쓴다).
@@ -101,20 +101,27 @@ export const Config = z.object({
   canvasToggle: z.boolean().default(false).volatile(),
   // 캔버스 숨김/표시 단축키 (canvasToggle이 켜져 있을 때만 동작, 비우면 없음). 예: "Ctrl+Shift+H"
   canvasToggleKey: z.string().default('Ctrl+Shift+H').volatile(),
+  // 실험: 3D 모델 폴더(절대 경로, avatar.json과 모델 파일). 비우면 기본 Live2D 캐릭터. 모델은 배포하지 않고 사용자 폴더에서만 읽는다
+  avatarModelDir: z.string().default('').volatile(),
+  // 실험: 3D 외곽선 법선. smooth = 같은 위치 법선 평균(기본), model = 모델에 든 외곽선 메시(다듬은 법선·두께)
+  avatarOutline: z.union([z.const('smooth'), z.const('model')]).default('smooth').volatile(),
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
 /** 호스트 쪽 진단 상태 조회 경로 (설정 화면이 시작 후 한 번 읽어 콘솔에 남김) */
 export const STATUS_PATH = '/deepseek-harness-kr/status'
+/** 3D 모델 폴더(avatarModelDir) 파일 경로 (인증된 요청만) */
+export const AVATAR_PATH = '/deepseek-harness-kr/avatar'
 const assets = fileURLToPath(new URL('../assets/', import.meta.url))
 /** @type {Record<string, string | undefined>} */
-const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream' }
+const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream', '.fbx': 'application/octet-stream', '.vrm': 'application/octet-stream', '.glb': 'model/gltf-binary', '.jpg': 'image/jpeg' }
 
 /**
  * 자산 파일 요청 처리기 생성. GET·HEAD만 받고 ETag가 같으면 304
  * @param {string} [root] 자산 폴더 (기본 assets/)
+ * @param {string} [prefix] 요청 경로 앞부분 (기본 ASSET_PATH)
  * @returns {RequestHandler}
  */
-export function createAssetHandler(root = assets) {
+export function createAssetHandler(root = assets, prefix = ASSET_PATH) {
   return async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return
@@ -122,8 +129,8 @@ export function createAssetHandler(root = assets) {
     try {
       // 경로 해석 전에 디코딩. 경로 문자열로 벗어나기·심볼릭 링크로 벗어나기 모두 거절로 처리
       const path = decodeURIComponent((req.url || '').split('?')[0])
-      if (!path.startsWith(ASSET_PATH + '/')) { res.writeHead(404); res.end(); return }
-      const suffix = path.slice(ASSET_PATH.length + 1)
+      if (!path.startsWith(prefix + '/')) { res.writeHead(404); res.end(); return }
+      const suffix = path.slice(prefix.length + 1)
       if (!suffix || suffix.includes('\\') || suffix.includes('\0')) { res.writeHead(404); res.end(); return }
       const base = await realpath(root)
       const target = await realpath(resolve(base, suffix))
@@ -187,6 +194,14 @@ export function apply(ctx, config, { applyIcon = applyShortcutIcon } = {}) {
   const rejection = (req) => { const connection = ctx.connection; return typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : 503 }
   /** 앱 바로가기 아이콘의 마지막 실패 사유 (성공하거나 해당 없으면 null) */
   let appIconProblem = /** @type {{ reason: string, message?: string } | null} */ (null)
+  // 3D 모델 폴더: 설정값(volatile)을 요청마다 읽고, 비어 있으면 404. 사용자 폴더라 인증된 요청만 받는다
+  ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: AVATAR_PATH, handler: async (req, res) => {
+    const denied = rejection(req)
+    if (denied !== undefined) { res.writeHead(denied); res.end(); return }
+    const dir = readLive(config?.avatarModelDir)
+    if (typeof dir !== 'string' || !dir.trim()) { res.writeHead(404); res.end(); return }
+    await createAssetHandler(dir.trim(), AVATAR_PATH)(req, res)
+  } }), 'deepseek-harness-kr: avatar')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: STATUS_PATH, handler: createStatusHandler(() => ({ appIcon: appIconProblem }), rejection) }), 'deepseek-harness-kr: status')
   ctx.effect(() => {
     const pet = createPetManager({ assets })

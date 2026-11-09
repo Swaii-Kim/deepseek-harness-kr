@@ -112,7 +112,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       document.head.appendChild(script);
     });
     (async () => {
-      if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);   // 이미 있으면 기다리지 않고 바로 캔버스를 만듦
+      // 3D 모델(설정의 avatarModelDir)은 창 안에서만 쓰고, 펫 창은 Live2D 그대로
+      const AVATAR = !pet && prefs.avatar?.enabled === true;
+      if (AVATAR) { if (!window.DscRigThree) await load("vendor/rig-three.js").catch((error) => log.warnOnce("rig-three", "3D 렌더러를 불러오지 못했습니다:", error)); }
+      else if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);   // 이미 있으면 기다리지 않고 바로 캔버스를 만듦
       if (life.stopped) return;   // 불러오는 사이 꺼졌으면 여기서 멈춤
 
       const W = 300, H = 300;
@@ -125,8 +128,11 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       let chestLongTimer = 0;   // 3초 넘게 '흔들었을' 때 자극적인 대사로 넘어가는 감시 타이머
       const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };   // acc = 흔든 양, last = 마지막으로 흔든 시각
       // 모델(렌더러) 통로: 모델 불러오기·크기 값·표정 파일·터치용 메시 판정·그리기는 rig가 맡고, 아래 동작 코드는 rig로만 모델에 씀 (character/rig.ts)
-      const rig = await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
-      if (!rig) return;   // 불러오는 사이 꺼졌으면 여기서 멈춤
+      const rig = AVATAR
+        ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline })
+          .catch((error) => { log.warnOnce("rig-three-load", "3D 모델을 불러오지 못했습니다 (avatarModelDir·avatar.json 확인):", error); return null; }) ?? null)
+        : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
+      if (!rig) return;   // 불러오는 사이 꺼졌거나 3D 모델을 못 불러왔으면 여기서 멈춤
       const setParam = rig.set, addParam = rig.add, systemTicker = rig.systemTicker;
       const { visW, noseX: noseCanvasX, chibiHeadDrop, walkBodyWidth: WALK_BODY_WIDTH, waistPet: WAIST_PET, waistWin: WAIST_WIN, waistPct: WAIST_PCT,
         petHeadRatio: PET_HEAD_RATIO, headGain: HEAD_GAIN, petKMin: PET_K_MIN, petKMax: PET_K_MAX, petBubble: PET_BUBBLE, petBustOffset } = rig.metrics;
@@ -205,7 +211,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 몸짓 한 번 재생 (펫 창에도 전달, 방향은 무작위, 튕김이 있는 몸짓은 몸도 튕김)
        * @param dur 몸짓 길이(ms)
        */
-      const play = (name: string, dur: number) => { relay("play", [name, dur]); gestureState.name = name; gestureState.start = performance.now(); gestureState.dur = dur; gestureState.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
+      const play = (name: string, dur: number) => { relay("play", [name, dur]); rig.gesture?.(name, dur); gestureState.name = name; gestureState.start = performance.now(); gestureState.dur = dur; gestureState.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
       const BOB_KICK: Record<string, number> = { bounce: 60, laugh: 50, nod: -45 };   // 몸짓 시작 때 몸 튕김 세기
       let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6000;
       /**

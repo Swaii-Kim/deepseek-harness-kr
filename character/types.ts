@@ -53,6 +53,8 @@ export interface CharacterPrefs {
   drag?: { key?: string }
   /** 플러그인·자동화 패널 때문에 창 안 캐릭터를 숨길지 여부 */
   pageHidden?: boolean
+  /** 실험: 3D 모델 폴더를 쓸지 여부 (처음 뜰 때만 읽음) */
+  avatar?: { enabled?: boolean; outline?: "smooth" | "model" }
 }
 
 /** 펫 창 preload가 넣어 주는 window.dscPet (메인 프로세스와의 통로) */

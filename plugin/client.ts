@@ -29,6 +29,8 @@ interface PluginSettings {
   canvasToggle?: boolean
   canvasToggleKey?: string
   dragKey?: string
+  avatarModelDir?: string
+  avatarOutline?: string
   tts?: TtsSettings
 }
 /** 말풍선 음성 설정 (plugins/dsh-tts 설정과 같은 모양) */
@@ -277,6 +279,8 @@ function characterPrefs(value: PluginSettings) {
     intro: { enabled: value.intro !== false },
     // 모바일(터치 전용) 화면에서 캐릭터를 숨길지: 캐릭터가 매 프레임 읽는다 (기본 표시)
     mobile: { enabled: value.mobileCharacter !== false },
+    // 실험: 3D 모델 폴더가 있으면 창 안 캐릭터를 3D 렌더러로 (캐릭터가 처음 뜰 때만 읽음)
+    avatar: { enabled: typeof value.avatarModelDir === 'string' && value.avatarModelDir.trim() !== '', outline: value.avatarOutline === 'model' ? 'model' as const : 'smooth' as const },
     // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
     drag: { key: value.dragKey ?? 'Alt' },
   }
@@ -969,6 +973,21 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
           React.createElement('input', { type: 'number', min: 0.5, max: 60, step: 0.5, style: { width: 90 }, value: sleepMinutes(state.value?.idleSleepMinutes), disabled: off,
             /** 대기 시간(분)을 범위 안으로 정리해 저장 */
             onChange: (event) => change('idleSleepMinutes', sleepMinutes(event.target.value)) }))),
+      React.createElement('section', { 'aria-label': ko ? '3D 모델 (실험)' : '3D model (experimental)', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
+        React.createElement('strong', null, ko ? '3D 모델 (실험)' : '3D model (experimental)'),
+        React.createElement('p', { style: { margin: 0, opacity: 0.7 } }, ko ? 'avatar.json과 모델 파일이 있는 폴더를 넣으면 창 안 캐릭터를 3D로 그립니다. 비우면 기본 캐릭터. 화면을 새로 불러올 때 적용됩니다.' : 'Set a folder with avatar.json and the model to draw the in-window character in 3D. Empty uses the default character. Applies on reload.'),
+        React.createElement('label', { style: row },
+          React.createElement('span', null, ko ? '모델 폴더' : 'Model folder'),
+          React.createElement('input', { type: 'text', style: { flex: 1, maxWidth: 360 }, defaultValue: state.value?.avatarModelDir ?? '', placeholder: 'D:\\models\\avatar', disabled: off,
+            /** 입력을 마치면 폴더 경로 저장 */
+            onBlur: (event: React.FocusEvent<HTMLInputElement>) => { if (event.target.value !== (state.value?.avatarModelDir ?? '')) change('avatarModelDir', event.target.value.trim()) } })),
+        React.createElement('label', { style: row },
+          React.createElement('span', null, ko ? '외곽선 법선' : 'Outline normals'),
+          React.createElement('select', { value: state.value?.avatarOutline === 'model' ? 'model' : 'smooth', disabled: off,
+            /** 고른 외곽선 법선 저장 */
+            onChange: (event: React.ChangeEvent<HTMLSelectElement>) => change('avatarOutline', event.target.value) },
+            React.createElement('option', { value: 'smooth' }, ko ? '매끄러운 법선 (기본)' : 'Smoothed normals (default)'),
+            React.createElement('option', { value: 'model' }, ko ? '모델 제공 외곽선' : 'Model-provided outline')))),
       React.createElement('section', { 'aria-label': ko ? '단축키 - 캐릭터와 말풍선' : 'Shortcuts - Character and speech bubbles', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
         React.createElement('strong', null, ko ? '단축키 - 캐릭터와 말풍선' : 'Shortcuts - Character and speech bubbles'),
         React.createElement('p', { id: SHORTCUT_HINT_ID, style: { margin: 0, opacity: 0.7 } },
