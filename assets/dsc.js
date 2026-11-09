@@ -771,6 +771,19 @@
     return false;
   }
 
+  // character/gaze.ts
+  var DEFAULT_GAZE = {
+    rangePx: [600, 500],
+    headShare: [0.85, 0.8],
+    headDeg: [22, 13],
+    headSpring: [38, 9.5],
+    eyeLimit: [0.45, 0.3],
+    eyeSpring: [900, 55],
+    eyeSpringCalm: [420, 42],
+    bone: { gain: [0.6, 0.5, 0.5], follow: 7, neckShare: 0.4, eyeDeg: [18, 14] },
+    responsiveness: 1
+  };
+
   // character/rig-live2d.ts
   var FEATURES = /* @__PURE__ */ new Set(["bodyType", "earHide"]);
   async function loadLive2DScripts(load) {
@@ -1068,6 +1081,7 @@
     return {
       metrics,
       behaviors: BEHAVIORS,
+      gaze: DEFAULT_GAZE,
       adultAllowed: true,
       supports: (feature) => FEATURES.has(feature),
       set: setParam,
@@ -2121,6 +2135,7 @@
         }) ?? null) : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
         if (!rig) return;
         const setParam = rig.set, addParam = rig.add, systemTicker = rig.systemTicker;
+        const GAZE = rig.gaze;
         const {
           visW,
           noseX: noseCanvasX,
@@ -3149,18 +3164,19 @@
             targetY = 0.05 + attention.y * 0.2;
           } else if (now - lastMove < 2500 && !talking) {
             const rect = canvas.getBoundingClientRect();
-            targetX = clamp((mouseX - (rect.left + rect.width / 2)) / 600, -1, 1);
-            targetY = clamp((rect.top + rect.height * 0.25 - mouseY) / 500, -1, 1);
+            targetX = clamp((mouseX - (rect.left + rect.width / 2)) / GAZE.rangePx[0], -1, 1);
+            targetY = clamp((rect.top + rect.height * 0.25 - mouseY) / GAZE.rangePx[1], -1, 1);
           } else {
             if (now > attention.next || !introCalm && talking && Math.abs(attention.x) > 0.3 && Math.random() < dt * 2) pickAttention(now, talking);
             targetX = attention.x;
             targetY = attention.y;
           }
-          const eyeStiffness = introCalm ? 420 : 900, eyeDamping = introCalm ? 42 : 55;
+          const [eyeStiffness, eyeDamping] = introCalm ? GAZE.eyeSpringCalm : GAZE.eyeSpring;
+          const [headStiffness, headDamping] = GAZE.headSpring;
           spring(eyeLookX, targetX, dt, eyeStiffness, eyeDamping);
           spring(eyeLookY, targetY, dt, eyeStiffness, eyeDamping);
-          spring(headLookX, targetX * 0.85, dt, 38, 9.5);
-          spring(headLookY, targetY * 0.8, dt, 38, 9.5);
+          spring(headLookX, targetX * GAZE.headShare[0], dt, headStiffness, headDamping);
+          spring(headLookY, targetY * GAZE.headShare[1], dt, headStiffness, headDamping);
           look.x = headLookX.x;
           look.y = headLookY.x;
         };
@@ -3227,8 +3243,8 @@
           }
         };
         const baseMotion = ({ now, dt, seconds, talking, muttering }) => {
-          const motion = { yaw: headLookX.x * 22 + noise(seconds * 0.33, 1) * 6 * energy };
-          motion.pitch = headLookY.x * 13 + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
+          const motion = { yaw: headLookX.x * GAZE.headDeg[0] + noise(seconds * 0.33, 1) * 6 * energy };
+          motion.pitch = headLookY.x * GAZE.headDeg[1] + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
           motion.roll = noise(seconds * 0.27, 3) * 7.5 * energy - headLookX.x * headLookY.x * 7 + pose.headZ;
           const staring = behaviors.tagged(TAGS.stare, now);
           stareWeight += ((staring ? 1 : 0) - stareWeight) * Math.min(1, dt * 6);
@@ -3333,7 +3349,7 @@
         const writeHeadBody = (motion) => {
           if (stareWeight > 0.01) {
             const k = 1 - stareWeight * 0.92;
-            motion.yaw = headLookX.x * 22 * (1 - stareWeight) + (motion.yaw - headLookX.x * 22) * k;
+            motion.yaw = headLookX.x * GAZE.headDeg[0] * (1 - stareWeight) + (motion.yaw - headLookX.x * GAZE.headDeg[0]) * k;
             motion.pitch *= k;
             motion.roll *= k;
             motion.bodyX *= k;
@@ -3356,8 +3372,8 @@
           ]) addParam(id, value);
         };
         const writeEyes = (motion, { seconds }, { weight: blendWeight, eye: blendEye }) => {
-          addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -0.45, 0.45) * (1 - blendWeight) + blendEye * blendWeight - motion.swayYaw / 30 * (1 - blendWeight));
-          addParam(PARAMS.eyeLookY, clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -0.3, 0.3));
+          addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -GAZE.eyeLimit[0], GAZE.eyeLimit[0]) * (1 - blendWeight) + blendEye * blendWeight - motion.swayYaw / 30 * (1 - blendWeight));
+          addParam(PARAMS.eyeLookY, clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -GAZE.eyeLimit[1], GAZE.eyeLimit[1]));
           setParam(PARAMS.breath, 0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI / 3.6));
         };
         const writeBrows = ({ seconds }) => {

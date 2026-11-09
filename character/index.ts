@@ -135,6 +135,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
       if (!rig) return;   // 불러오는 사이 꺼졌거나 3D 모델을 못 불러왔으면 여기서 멈춤
       const setParam = rig.set, addParam = rig.add, systemTicker = rig.systemTicker;
+      const GAZE = rig.gaze;   // 시선 반응성 (커서 범위·고개 비율·각도·스프링·눈 제한, character/gaze.ts)
       const { visW, noseX: noseCanvasX, chibiHeadDrop, walkBodyWidth: WALK_BODY_WIDTH, waistPet: WAIST_PET, waistWin: WAIST_WIN, waistPct: WAIST_PCT,
         petHeadRatio: PET_HEAD_RATIO, headGain: HEAD_GAIN, petKMin: PET_K_MIN, petKMax: PET_K_MAX, petBubble: PET_BUBBLE, petBustOffset } = rig.metrics;
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};
@@ -1227,16 +1228,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         else if (talking && introCalm) { targetX = attention.x * 0.25; targetY = 0.05 + attention.y * 0.2; }   // 시작 화면에서 말할 땐 보는 사람을 봄 (마우스·딴 곳을 따라가지 않음)
         else if (now - lastMove < 2500 && !talking) {             // 마우스를 움직이면 눈은 커서를, 고개는 반쯤
           const rect = canvas.getBoundingClientRect();
-          targetX = clamp((mouseX - (rect.left + rect.width / 2)) / 600, -1, 1);
-          targetY = clamp(((rect.top + rect.height * 0.25) - mouseY) / 500, -1, 1);
+          targetX = clamp((mouseX - (rect.left + rect.width / 2)) / GAZE.rangePx[0], -1, 1);
+          targetY = clamp(((rect.top + rect.height * 0.25) - mouseY) / GAZE.rangePx[1], -1, 1);
         } else {
           if (now > attention.next || (!introCalm && talking && Math.abs(attention.x) > 0.3 && Math.random() < dt * 2)) pickAttention(now, talking);
           targetX = attention.x; targetY = attention.y;
         }
         // 눈은 빠르게(휙), 고개는 천천히 따라감 → 눈이 먼저 가고 고개가 뒤따르는 버튜버 느낌
-        const eyeStiffness = introCalm ? 420 : 900, eyeDamping = introCalm ? 42 : 55;   // 시작 화면(크게 보일 때)은 눈이 튀지 않게 조금 부드럽게
+        const [eyeStiffness, eyeDamping] = introCalm ? GAZE.eyeSpringCalm : GAZE.eyeSpring;   // 시작 화면(크게 보일 때)은 눈이 튀지 않게 조금 부드럽게
+        const [headStiffness, headDamping] = GAZE.headSpring;
         spring(eyeLookX, targetX, dt, eyeStiffness, eyeDamping); spring(eyeLookY, targetY, dt, eyeStiffness, eyeDamping);
-        spring(headLookX, targetX * 0.85, dt, 38, 9.5); spring(headLookY, targetY * 0.8, dt, 38, 9.5);
+        spring(headLookX, targetX * GAZE.headShare[0], dt, headStiffness, headDamping); spring(headLookY, targetY * GAZE.headShare[1], dt, headStiffness, headDamping);
         look.x = headLookX.x; look.y = headLookY.x;
       };
       // ---- 말하기 (입 모양 · 고개 끄덕 · 눈썹) ----
@@ -1306,8 +1308,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @returns 다음 단계들이 더해 갈 고개·몸 값
        */
       const baseMotion = ({ now, dt, seconds, talking, muttering }: Frame) => {
-        const motion = { yaw: headLookX.x * 22 + noise(seconds * 0.33, 1) * 6 * energy } as Motion;   // 나머지 값은 아래에서 차례로 채운다
-        motion.pitch = headLookY.x * 13 + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
+        const motion = { yaw: headLookX.x * GAZE.headDeg[0] + noise(seconds * 0.33, 1) * 6 * energy } as Motion;   // 나머지 값은 아래에서 차례로 채운다
+        motion.pitch = headLookY.x * GAZE.headDeg[1] + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
         motion.roll = noise(seconds * 0.27, 3) * 7.5 * energy - headLookX.x * headLookY.x * 7 + pose.headZ;
         // 말하는 동안 고개를 천천히 좌우로 기울이고 살짝 돌림 (입만 움직이고 얼굴이 굳어 보이지 않게)
         const staring = behaviors.tagged(TAGS.stare, now);
@@ -1390,7 +1392,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /** 눈 맞춤 동안 얼굴·몸 흔들림을 거의 멈추고 고개·몸 파라미터 쓰기 (±30으로 자름) */
       const writeHeadBody = (motion: Motion) => {
-        if (stareWeight > 0.01) { const k = 1 - stareWeight * 0.92; motion.yaw = headLookX.x * 22 * (1 - stareWeight) + (motion.yaw - headLookX.x * 22) * k; motion.pitch *= k; motion.roll *= k; motion.bodyX *= k; motion.bodyZ *= k; }
+        if (stareWeight > 0.01) { const k = 1 - stareWeight * 0.92; motion.yaw = headLookX.x * GAZE.headDeg[0] * (1 - stareWeight) + (motion.yaw - headLookX.x * GAZE.headDeg[0]) * k; motion.pitch *= k; motion.roll *= k; motion.bodyX *= k; motion.bodyZ *= k; }
         motion.yaw = clamp(motion.yaw, -30, 30); motion.pitch = clamp(motion.pitch, -30, 30); motion.roll = clamp(motion.roll, -30, 30);
         for (const [id, value] of [[PARAMS.headTurn, motion.yaw], [PARAMS.headTilt, motion.pitch], [PARAMS.headRoll, motion.roll], [PARAMS.headTurnDirect, motion.yaw], [PARAMS.headTiltDirect, motion.pitch], [PARAMS.headRollDirect, motion.roll],
           [PARAMS.bodyShiftX, clamp(motion.bodyX, -30, 30)], [PARAMS.bodyShiftY, clamp(motion.bodyY, -30, 30)], [PARAMS.bodyShiftZ, clamp(motion.bodyZ, -30, 30)], [PARAMS.bodyLean, clamp(motion.lean, -30, 30)]] as [string, number][]) addParam(id, value);
@@ -1399,8 +1401,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 눈동자(머리 기준 상대 위치, 행동이 자세를 덮어쓰면 그 눈동자로 섞음 예: 삐짐 외면·몰래 보기)와 숨쉬기 파라미터 쓰기 */
       const writeEyes = (motion: Motion, { seconds }: Frame, { weight: blendWeight, eye: blendEye }: BlendResult) => {
         // 눈동자는 작게만 (크게 움직이면 흰자가 드러나 곁눈질처럼 보임)
-        addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -0.45, 0.45) * (1 - blendWeight) + blendEye * blendWeight - motion.swayYaw / 30 * (1 - blendWeight));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
-        addParam(PARAMS.eyeLookY, clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -0.3, 0.3));
+        addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -GAZE.eyeLimit[0], GAZE.eyeLimit[0]) * (1 - blendWeight) + blendEye * blendWeight - motion.swayYaw / 30 * (1 - blendWeight));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
+        addParam(PARAMS.eyeLookY, clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -GAZE.eyeLimit[1], GAZE.eyeLimit[1]));
         setParam(PARAMS.breath, 0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI / 3.6));
       };
       // ---- 눈썹 (귀가 따라 움직임) ----

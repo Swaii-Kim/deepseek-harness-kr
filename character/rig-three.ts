@@ -8,6 +8,7 @@ import { PARAMS } from "./model-profile.ts";
 import { addBindingWeight, addTargetWeight, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import { createTaa } from "./taa.ts";
+import { resolveGaze, type GazeOverrides } from "./gaze.ts";
 import type { Lifetime } from "./lifetime.ts";
 import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
 
@@ -53,6 +54,8 @@ export type AvatarProfile = {
   features?: RigFeature[];
   /** 쓸 캐릭터 고유 행동 ID (character/behaviors, 기본은 없음 = 모든 입력이 기본 반응) */
   behaviors?: string[];
+  /** 시선 반응성 덮어쓰기 (character/gaze.ts GazeProfile 중 바꿀 값만, 예: { "responsiveness": 1.5, "headDeg": [30, 18] }) */
+  gaze?: GazeOverrides;
   /** 성적 표현이 든 행동을 켜도 되는지 (기본 true, VRM은 메타의 성적 표현 허용 여부) */
   adultAllowed?: boolean;
   /** 함께 켜면 모양이 겹쳐 깨지는 모프 묶음 (예: 눈웃음 + 눈 감기). 앞쪽 모프가 우선이고, 합이 1을 넘으면 뒤쪽을 줄임 */
@@ -811,7 +814,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const keyOf = channelKeyOf;
   const euler = new THREE.Euler(), deltaQ = new THREE.Quaternion(), parentQ = new THREE.Quaternion(), worldQ = new THREE.Quaternion();
   // 고개 채널은 Live2D 물리 입력값(±30)이라 실제 각도로 그대로 쓰면 크고 딱딱함 → 배율을 줄이고 관성을 줘서 따라가게 함
-  const HEAD_GAIN = { yaw: 0.6, pitch: 0.5, roll: 0.5 }, HEAD_FOLLOW = 7;   // 배율, 따라가는 빠르기(초당)
+  // 배율·따라가는 빠르기(초당)·목 비율·눈 각도는 시선 프로필(avatar.json gaze.bone, character/gaze.ts)
+  const gaze = resolveGaze(profile.gaze), { gain: headGain, neckShare, eyeDeg } = gaze.bone;
   // 고개·몸 채널은 Live2D에선 물리 입력이라 늦게 따라감 → 3D에선 뼈마다 덧씌움 회전을 들고 목표 쪽으로 slerp로 따라가게 함
   /** 고개·몸 뼈의 지금 덧씌움 회전 */
   const smoothed = new Map<HumanBone, THREE.Quaternion>((["neck", "head", "chest", "spine"] as HumanBone[]).map((name) => [name, new THREE.Quaternion()]));
@@ -825,13 +829,13 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     node.quaternion.copy(parentQ.invert().multiply(worldQ));
   };
   /**
-   * 이번 프레임 채널 값으로 뼈 회전 (고개는 목 40%·머리 60%로 나누고 쿼터니언 slerp로 따라감)
+   * 이번 프레임 채널 값으로 뼈 회전 (고개는 목·머리로 나누고(기본 40%·60%) 쿼터니언 slerp로 따라감)
    * @param dt 지난 프레임부터 흐른 시간(초)
    */
   const applyBones = (dt: number) => {
     const v = (key: string) => values.get(key) || 0;
-    const yaw = clamp(v("headTurn"), -30, 30) * HEAD_GAIN.yaw, pitch = clamp(v("headTilt"), -30, 30) * HEAD_GAIN.pitch, roll = clamp(v("headRoll"), -30, 30) * HEAD_GAIN.roll;
-    const follow = Math.min(1, dt * HEAD_FOLLOW);
+    const yaw = clamp(v("headTurn"), -30, 30) * headGain[0], pitch = clamp(v("headTilt"), -30, 30) * headGain[1], roll = clamp(v("headRoll"), -30, 30) * headGain[2];
+    const follow = gaze.bone.follow > 0 ? Math.min(1, dt * gaze.bone.follow) : 1;   // 0이면 따라가지 않고 바로
     /** 목표 회전(월드 축, 도)을 쿼터니언으로 만들고 지금 회전에서 slerp로 따라가 적용 */
     const turnSmooth = (name: HumanBone, x: number, y: number, z: number) => {
       const node = bone(name), current = smoothed.get(name)!;
@@ -845,11 +849,11 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       if (!node || !node.parent || (!x && !y && !z)) return;
       applyDelta(node, deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ")));
     };
-    turnSmooth("neck", -pitch * 0.4, yaw * 0.4, roll * 0.4);
-    turnSmooth("head", -pitch * 0.6, yaw * 0.6, roll * 0.6);
+    turnSmooth("neck", -pitch * neckShare, yaw * neckShare, roll * neckShare);
+    turnSmooth("head", -pitch * (1 - neckShare), yaw * (1 - neckShare), roll * (1 - neckShare));
     turnSmooth("chest", v("bodyLean") * 0.25 - v("breath") * 1.2, clamp(v("bodyShiftX"), -30, 30) * 0.2, 0);
     turnSmooth("spine", 0, 0, clamp(v("bodyShiftZ"), -30, 30) * 0.2);
-    const eyeX = clamp(v("eyeLookX"), -1, 1) * 18, eyeY = clamp(v("eyeLookY"), -1, 1) * 14;
+    const eyeX = clamp(v("eyeLookX"), -1, 1) * eyeDeg[0], eyeY = clamp(v("eyeLookY"), -1, 1) * eyeDeg[1];
     turn("leftEye", -eyeY, eyeX, 0);
     turn("rightEye", -eyeY, eyeX, 0);
   };
@@ -902,6 +906,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   return {
     metrics,
     behaviors: profile.behaviors || [],
+    gaze,
     adultAllowed: profile.adultAllowed !== false,
     supports: (feature) => (profile.features || []).includes(feature),
     set(id, value, weight = 1) { const key = keyOf(id); if (!key) return; const current = values.get(key) || 0; values.set(key, weight === 1 ? value : current + (value - current) * weight); },

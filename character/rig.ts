@@ -1,6 +1,7 @@
 // 캐릭터 동작(index.ts)과 모델 렌더러 사이의 경계. 동작 코드는 모델 형식(Live2D·3D)을 모르고 이 통로만 쓴다.
 // 채널 이름은 model-profile.ts의 PARAMS 값(Live2D 파라미터 ID)과 소품 정의(shared/settings.js)의 ID를 그대로 쓰고,
 // 다른 형식의 rig는 그 이름을 의미 이름으로 되찾아 뼈·모프에 대응시킴 (없는 채널은 조용히 무시).
+import type { GazeProfile } from "./gaze.ts";
 
 /** 캔버스(배율 1) 기준 크기 값. 배치·말풍선·펫 창 계산이 읽음 */
 export type RigMetrics = {
@@ -44,6 +45,8 @@ export interface AvatarRig {
   readonly metrics: RigMetrics;
   /** 이 모델이 쓰는 캐릭터 고유 행동 ID 목록 (character/behaviors). 비면 모든 입력이 기본 반응 */
   readonly behaviors: readonly string[];
+  /** 시선 반응성 (기본값에 모델 설정을 합치고 반응성 배율을 적용한 값, character/gaze.ts) */
+  readonly gaze: GazeProfile;
   /** 성적 표현이 든 행동을 켜도 되는 모델인지 (VRM 메타가 금지하면 false) */
   readonly adultAllowed: boolean;
   /** 기능 지원 여부 */

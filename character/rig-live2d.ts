@@ -2,6 +2,7 @@
 // 표정 파일·동물귀·터치용 메시 판정·그리기를 옮겨 왔고, 동작 코드는 rig.ts의 AvatarRig 통로로만 씀.
 import { MODEL_FILES, PARAMS, CHEST_DRAG_SIGN, PARTS, PART_REGIONS, EXPRESSION_FILES, GEOMETRY, BEHAVIORS } from "./model-profile.ts";
 import { meshBounds, meshHit } from "./hit.ts";
+import { DEFAULT_GAZE } from "./gaze.ts";
 import { clamp } from "./motion.ts";
 import { log } from "./log.ts";
 import type { Lifetime } from "./lifetime.ts";
@@ -318,6 +319,7 @@ export async function createLive2DRig({ base, life, pet, prefs, canvas, W, H, ch
   return {
     metrics,
     behaviors: BEHAVIORS,
+    gaze: DEFAULT_GAZE,
     adultAllowed: true,
     supports: (feature) => FEATURES.has(feature),
     set: setParam,

@@ -183,6 +183,10 @@ VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(P
 
 냄비·세숫대야·삐짐·가슴·아랫배 반응·소품 대사 같은 DeepSeek짱 고유 행동은 `character/behaviors/`에 있고, 모델 프로필의 행동 목록이 켤 행동을 고릅니다(Live2D는 `character/model-profile.ts`의 `BEHAVIORS`, 3D는 `avatar.json`의 `behaviors`이며 기본은 비어 있음). 목록에 없는 행동의 입력은 평소 탭·끌기 같은 기본 반응으로 처리합니다. 성적 표현이 든 행동(가슴·아랫배)은 VRM 메타가 금지하거나 `avatar.json`에 `"adultAllowed": false`가 있으면 꺼집니다.
 
+### 시선 반응성
+
+마우스·볼 곳을 눈과 고개가 따라가는 범위·각도·빠르기는 `character/gaze.ts`의 시선 프로필에 모여 있습니다. 기본값은 Live2D 모델 값이고, 3D 모델은 `avatar.json`의 `gaze`에 바꿀 값만 적으면 됩니다. 예를 들어 `"gaze": { "responsiveness": 1.5, "headDeg": [30, 18], "bone": { "gain": [0.9, 0.7, 0.5] } }`처럼 씁니다. `responsiveness`는 커서를 덜 움직여도 최대로 보게 하고 따라가는 속도를 올리는 배율이고, `headDeg`·`bone.gain`·`bone.eyeDeg`·`eyeLimit`은 고개·눈이 도는 크기입니다.
+
 ### ASAR 패치·포터블 (지원 종료)
 
 예전 방식에 쓰던 ASAR 패치 파일과 포터블 빌드 스크립트(`harness/`)는 저장소에서 삭제했습니다. 필요하면 git 기록에서 찾을 수 있습니다.
