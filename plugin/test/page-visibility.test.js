@@ -15,6 +15,8 @@ const sliceBetween = (startText, endText) => {
   assert.ok(end > start, `dsc.js에서 끝 지점을 찾지 못했습니다: ${endText}`)
   return source.slice(start, end)
 }
+// 시스템 티커 구독·모델 갱신·시계는 Live2D 렌더러(character/rig-live2d.ts)가 갖고, 창 안 코드는 rig로 씀
+const rigSource = readSource(new URL('../../character/rig-live2d.ts', import.meta.url))
 const pageHiddenLine = source.match(/const pageHiddenNow = [^\n]+/)?.[0]
 assert.ok(pageHiddenLine, 'pageHiddenNow 정의가 필요합니다')
 
@@ -84,7 +86,8 @@ function contextBase(pageHidden = false) {
 
 // PR24의 systemTicker/rafIdle/wakeRaf/raf 정의를 실제 소스에서 잘라 쓴다.
 const rafHelpers = [
-  sliceBetween('const systemTicker =', 'const model = await'),
+  rigSource.match(/const systemTicker = [^\n]+/)[0],
+  'const rig = { tick: (time) => app.ticker.update(time), resetClock: () => { app.ticker.lastTime = performance.now(); }, systemTicker };',
   // 초기 requestAnimationFrame(raf) 호출은 포함하지 않고 테스트가 프레임을 직접 돌린다.
   sliceBetween('let rafIdle = false;', '\n      requestAnimationFrame(raf);'),
 ].join('\n')

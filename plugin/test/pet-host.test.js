@@ -326,9 +326,10 @@ test('펫 창이 숨으면 페이지에 그리기 중지를 알리고, 페이지
 test('숨은 펫 창은 배치 루프와 PIXI 시스템 티커가 프레임마다 깨우지 않고, open 이 오면 다시 돈다', async () => {
   const dsc = readSource(new URL('../../character/index.ts', import.meta.url))
   // 상호작용 매니저의 Ticker.system 구독은 루프가 쉬는 동안만 끄고, 깨울 때 되돌린다 (autoInteract: false 라 쓰지 않음)
-  assert.match(dsc, /const systemTicker = \(on\) => \{ try \{ app\.renderer\.plugins\.interaction\.useSystemTicker = on; \} catch \{\} \};/)
+  // 시스템 티커 구독은 Live2D 렌더러(character/rig-live2d.ts)가 갖고, 창 안 코드는 rig.systemTicker로 씀
+  assert.match(readSource(new URL('../../character/rig-live2d.ts', import.meta.url)), /const systemTicker = \(on\) => \{ try \{ app\.renderer\.plugins\.interaction\.useSystemTicker = on; \} catch \{\} \};/)
   assert.match(dsc, /const wakeRaf = \(\) => \{ if \(rafIdle\) \{ rafIdle = false; systemTicker\(true\); requestAnimationFrame\(raf\); \} \};/)
-  assert.match(dsc, /autoInteract: false/)
+  assert.match(readSource(new URL('../../character/rig-live2d.ts', import.meta.url)), /autoInteract: false/)
   // 숨은 펫(petPower=false)은 루프를 다음 프레임에 이어 가지 않는다
   assert.match(dsc, /if \(PET \? !petPower : link\.open\) \{ rafIdle = true; systemTicker\(false\); return; \}\n\s*requestAnimationFrame\(raf\);/)
   // power on·open 은 루프를 다시 깨운다

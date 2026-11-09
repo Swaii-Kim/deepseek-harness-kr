@@ -15,10 +15,10 @@ import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-s
 import { createPetLink, type PetMessage } from "./pet-link.ts";
 import { log } from "./log.ts";
 import { parseSyllables } from "./speech.ts";
-import { meshBounds, meshHit } from "./hit.ts";
+import { createLive2DRig, loadLive2DScripts } from "./rig-live2d.ts";
 import { walkAreaValid, sameWalkArea, walkDisplayArea, walkBodySpan, planWalkOut, walkSafePose, planWalkReturn, walkOutAlpha, walkInAlpha, walkClipInset, walkEasePetOut,
   type WalkArea, type WalkClipInset, type WalkDisplay, type WalkPlan } from "./pet-walk.ts";
-import { MODEL_FILES, PARAMS, CHEST_DRAG_SIGN, VOWEL_EYE_SAFE, PARTS, PART_REGIONS, EXPRESSION_FILES, EYE_SWAP_EXPRESSIONS, GEOMETRY } from "./model-profile.ts";
+import { PARAMS, VOWEL_EYE_SAFE, EYE_SWAP_EXPRESSIONS, GEOMETRY } from "./model-profile.ts";
 import type { Lifetime } from "./lifetime.ts";
 import type { CharacterApi, CharacterPrefs, Motion, PetBridge, Pose, Rect, Viewport } from "./types.ts";
 import type { Syllable } from "./speech.ts";
@@ -112,195 +112,24 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       document.head.appendChild(script);
     });
     (async () => {
-      if (!window.Live2DCubismCore) await load("vendor/live2dcubismcore.min.js");
-      if (!window.PIXI) await load("vendor/pixi.min.js");
-      if (!window.PIXI.live2d) await load("vendor/cubism4.patched.js");
+      if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);   // 이미 있으면 기다리지 않고 바로 캔버스를 만듦
       if (life.stopped) return;   // 불러오는 사이 꺼졌으면 여기서 멈춤
 
       const W = 300, H = 300;
       const canvas = life.own(document.createElement("canvas"), (node) => node.remove()); canvas.id = "dsc-stage";
       const bubble = life.own(document.createElement("div"), (node) => node.remove()); bubble.id = "dsc-bubble";
       document.body.append(canvas, bubble);
-      // 티커는 스스로 rAF를 돌지 않는다(autoStart: false). 배치 루프(raf)가 배치 바로 뒤에 같은 프레임에서 app.ticker.update로 갱신·그리기를 돌린다
-      const app = new PIXI.Application({ view: canvas, width: W, height: H, sharedTicker: false, autoStart: false, backgroundAlpha: 0, antialias: true, autoDensity: true, resolution: (devicePixelRatio || 1) * 1.5 });   // 1.5배로 그려 줄여 보여 줌
-      /**
-       * PIXI 상호작용 매니저(InteractionManager)의 Ticker.system 구독 켜고 끄기
-       * PIXI 상호작용은 쓰지 않음(autoInteract: false, 터치 판정은 hitAt). 이 구독은 app.ticker를 멈춰도 프레임마다 화면을 깨우므로 배치 루프가 쉬는 동안만 끔
-       * (늘 꺼 두면 캐릭터가 보이는 동안 renderer 문맥 전환이 약 7% 늘어서 보이는 동안은 원래대로 둠, 실측)
-       * @param on true면 구독 켬
-       */
-      const systemTicker = (on: boolean) => { try { app.renderer.plugins.interaction.useSystemTicker = on; } catch {} };
-      life.add(() => app.destroy(true, { children: true }));   // 플러그인을 끄면 PIXI 앱·WebGL 자원 해제
-      const model = await PIXI.live2d.Live2DModel.from(BASE + MODEL_FILES.model, { autoUpdate: false, autoInteract: false, idleMotionGroup: MODEL_FILES.idleMotionGroup });
-      if (life.stopped) { model.destroy(); return; }
-      app.stage.addChild(model);
-      // 전용 티커로 모델도 갱신하고 긴 프레임은 제한
-      app.ticker.add(() => model.update(Math.min(app.ticker.deltaMS, 100)), undefined, PIXI.UPDATE_PRIORITY.HIGH);
-      const internalModel = model.internalModel, core = internalModel.coreModel;
-      internalModel.eyeBlink = undefined; internalModel.breath = undefined;
-      // ---- 모델 파라미터 통로: 애니메이션이 모델 파라미터를 읽고 쓰는 곳은 아래 함수들뿐 (ID는 model-profile.ts의 PARAMS) ----
-      /**
-       * 모델 파라미터 값 덮어쓰기
-       * @param id 파라미터 ID (PARAMS 값, 표정·소품 정의의 ID)
-       * @param value 쓸 값
-       * @param weight 지금 값과 섞는 비율 (1이면 그대로 덮어씀)
-       */
-      const setParam = (id: string, value: number, weight = 1) => core.setParameterValueById(id, value, weight);
-      /**
-       * 모델 파라미터에 값 더하기
-       * @param id 파라미터 ID (PARAMS 값, 표정·소품 정의의 ID)
-       * @param value 더할 값
-       * @param weight 더할 값에 곱하는 비율
-       */
-      const addParam = (id: string, value: number, weight = 1) => core.addParameterValueById(id, value, weight);
-      /**
-       * 모델 파라미터에 값 곱하기 (표정 파일의 Multiply 섞기)
-       * @param id 파라미터 ID (표정 정의의 ID)
-       * @param value 곱할 값
-       * @param weight 곱하는 정도 (0이면 그대로, 1이면 value를 그대로 곱함)
-       */
-      const multiplyParam = (id: string, value: number, weight = 1) => core.multiplyParameterValueById(id, value, weight);
-      /** 모델 파라미터의 id·최솟값·최댓값 (파라미터가 없거나 범위가 유한하지 않으면 null) */
-      const paramRange = (id: string) => {
-        const i = core.getParameterIndex(id);
-        if (i < 0) return null;
-        const min = core.getParameterMinimumValue(i), max = core.getParameterMaximumValue(i);
-        return Number.isFinite(min) && Number.isFinite(max) ? { id, min, max } : null;
-      };
       const dragLift = { x: 0, v: 0 };    // 위아래로 끌어올린 정도 (0~1)
       const dragShift = { x: 0, v: 0 };   // 좌우로 끌어당긴 정도 (-1~1)
       let chestFrom: { x: number; y: number; id: number; h: number[] } | null = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
       let chestLongTimer = 0;   // 3초 넘게 '흔들었을' 때 자극적인 대사로 넘어가는 감시 타이머
       const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };   // acc = 흔든 양, last = 마지막으로 흔든 시각
-      if (internalModel.physics) {
-        const evaluate = internalModel.physics.evaluate;
-        const chestParams = PARAMS.chestSwayVertical.map(paramRange).filter((found): found is { id: string; min: number; max: number } => !!found);     // 위아래
-        const chestXParams = PARAMS.chestSwayHorizontal.map(paramRange).filter((found): found is { id: string; min: number; max: number } => !!found);   // 좌우
-        /** 물리 계산 뒤 끌어올린·끌어당긴 정도만큼 가슴 파라미터에 더하기 */
-        internalModel.physics.evaluate = function (this: unknown, ...args: unknown[]) {
-          const result = evaluate.apply(this, args);
-          // 물리가 덮어쓴 뒤 가슴에만 더함 (파라미터 범위를 꽉 쓰고, 좌우는 방향 따라)
-          const lift = dragLift.x * CHEST_DRAG_SIGN, shift = dragShift.x * CHEST_DRAG_SIGN;
-          if (lift) for (const chestParam of chestParams) addParam(chestParam.id, lift * (lift > 0 ? chestParam.max : -chestParam.min));
-          if (shift) for (const chestParam of chestXParams) addParam(chestParam.id, shift * (shift > 0 ? chestParam.max : -chestParam.min) * 0.9);
-          return result;
-        };
-      }
-
-      // 창 안 캐릭터는 상반신(머리 ~ 허리)만 캔버스에 담고 아래는 잘린다.
-      // 바깥 펫 창(PET)은 다리·신발까지 전신이 보이도록 모델 전체를 캔버스에 맞춘다.
-      const WHOLE_BODY = !!pet;
-      core.update();
-      const cubismModel = core.getModel();
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      /** 보이는(불투명도 0.01 이상) drawable의 모든 정점(모델 좌표) 순회 */
-      const each = (fn: (x: number, y: number) => void) => {
-        for (let i = 0; i < cubismModel.drawables.count; i++) {
-          if (cubismModel.drawables.opacities[i] < 0.01) continue;
-          const vertices = internalModel.getDrawableVertices(i);
-          for (let j = 0; j < vertices.length; j += 2) fn(vertices[j], vertices[j + 1]);
-        }
-      };
-      each((x: number, y: number) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); });
-      const cutY = minY + (maxY - minY) * GEOMETRY.bustCut;
-      let bustMinX = Infinity, bustMaxX = -Infinity;   // 상반신(cutY 위) 정점의 가로 범위 (모델 좌표)
-      each((x: number, y: number) => { if (y < cutY) { bustMinX = Math.min(bustMinX, x); bustMaxX = Math.max(bustMaxX, x); } });
-      // 창 안(상반신 크롭) 배율. 펫 창은 전신을 담아 이보다 작게 그려지므로, 이 값과의 비율만큼 배율을 올려 머리 크기를 맞춘다
-      const bustScale = Math.min((W * 0.98) / (bustMaxX - bustMinX), (H * 0.95) / (cutY - minY));
-      // 펫 창(전신) 배율과, 창 안↔펫 창의 머리 크기 비율 (붙을 때·넘길 때 같은 비율을 쓴다)
-      const fullScale = Math.min((W * 0.98) / (maxX - minX), (H * 0.95) / (maxY - minY));
-      const PET_HEAD_RATIO = bustScale / fullScale;
-      // 펫 창 배율 범위. 상한은 '화면에 들어가는 만큼'뿐이고, 창 크기는 캐릭터에 맞춰 스스로 바뀐다 (pet/main.cjs 의 fit)
-      const PET_K_MIN = 0.45, PET_BUBBLE = 150;
-      const PET_K_MAX = Math.max(1.2, ((typeof screen !== "undefined" && screen.availHeight ? screen.availHeight : 1080) - PET_BUBBLE) / H);
-      // 허리(잘린 단면) 기준 정렬용 값. 펫 창과 창 안은 배율이 달라 캔버스 안 허리 높이도 다르다
-      const BUST_CX = (bustMinX + bustMaxX) / 2, FULL_CX = (minX + maxX) / 2;   // 모델 좌표에서 상반신·전신의 가로 중심
-      const WAIST_PET = H * 0.05 + (cutY - minY) * fullScale;   // 펫 창 캔버스(k=1)에서 허리 y
-      const WAIST_WIN = H * 0.05 + (cutY - minY) * bustScale;   // 창 안 캔버스(k=1)에서 허리 y
-      const WAIST_PCT = WAIST_PET / H * 100;                // 하반신 페이드를 시작할 높이(%)
-      // 펫 창(전신): 모델 전체의 가로·세로를 캔버스에 맞추고 몸 가운데를 캔버스 가운데에 둔다
-      const bodyWidth = WHOLE_BODY ? maxX - minX : bustMaxX - bustMinX;   // 캔버스에 담을 몸의 가로 (모델 좌표)
-      const modelScale = WHOLE_BODY ? fullScale : bustScale;
-      // 화면상 크기는 모델 배율 × 캔버스 배율(k). HEAD_GAIN을 곱하면 펫 창의 머리 크기가 창 안과 같아진다
-      const HEAD_GAIN = bustScale / modelScale;
-      model.scale.set(modelScale);
-      model.x = W / 2 - ((WHOLE_BODY ? minX : bustMinX) + bodyWidth / 2) * modelScale;
-      model.y = H * 0.05 - minY * modelScale;
-      // 꼬마 모습(체형 2)은 몸 전체가 작아져 공중에 뜨므로, 그만큼 내려서 발이 화면 바닥에 닿게 한다 (데스크톱 펫과 같음)
-      setParam(PARAMS.bodyType, 1); core.update();
-      let chibiMinY = Infinity, chibiMaxY = -Infinity, chibiMinX = Infinity, chibiMaxX = -Infinity;
-      each((x: number, y: number) => { chibiMinY = Math.min(chibiMinY, y); chibiMaxY = Math.max(chibiMaxY, y); chibiMinX = Math.min(chibiMinX, x); chibiMaxX = Math.max(chibiMaxX, x); });
-      setParam(PARAMS.bodyType, 0); core.update();
-      const baseY = model.y;
-      // 산책은 꼬마 모습으로 걷는다. 경계 계산·fade는 실제 걷는 몸 폭(꼬마 bbox, 캔버스 px)을 쓴다.
-      const CHIBI_WIDTH = Number.isFinite(chibiMinX) && chibiMaxX > chibiMinX ? (chibiMaxX - chibiMinX) * modelScale : bodyWidth * modelScale;
-      const WALK_BODY_WIDTH = Math.max(1, Math.min(bodyWidth * modelScale, CHIBI_WIDTH));
-      const chibiDrop = Math.max(0, H * 0.99 - chibiMaxY * modelScale - baseY);   // 꼬마일 때 내리는 거리 (캔버스 px)
-      const chibiHeadDrop = (chibiMinY - minY) * modelScale + chibiDrop;            // 꼬마일 때 머리 꼭대기가 내려가는 거리 (말풍선 위치용)
-      // 말풍선 꼬리 기준 = 얼굴(코) 가운데. 상반신 bbox에서 얼굴 중심이 놓이는 가로 비율로 잡는다(GEOMETRY.noseOffset).
-      const noseModelX = BUST_CX + (bustMaxX - bustMinX) * GEOMETRY.noseOffset;
-      // ---------- Core 계산을 Worker로 (결과는 1프레임 늦게 반영) ----------
-      // 정점 변형(Core update)은 Worker의 같은 모델이 맡고, 메인은 받은 결과를 Core 배열에 복사만 한다.
-      // 렌더러·터치 판정은 그대로 Core 배열을 읽는다. Worker를 못 쓰거나 실패하면 원래대로 메인에서 계산.
-      (() => {
-        const drawables = cubismModel.drawables, drawableCount = drawables.count;
-        /** 원래 Core update를 메인에서 실행 (Worker를 못 쓸 때) */
-        const localUpdate = () => Object.getPrototypeOf(cubismModel).update.call(cubismModel);
-        let w;
-        try { w = new Worker(BASE + "dsc-core-worker.js"); } catch { return; }
-        life.add(() => { try { w.terminate(); } catch {} });   // Worker는 PIXI 앱과 수명이 달라 따로 정리
-        let lo = Infinity, hi = 0;
-        for (let i = 0; i < drawableCount; i++) { const positions = drawables.vertexPositions[i]; lo = Math.min(lo, positions.byteOffset); hi = Math.max(hi, positions.byteOffset + positions.byteLength); }
-        const offsets = Array.from(drawables.vertexPositions as Float32Array[], (positions) => positions.byteOffset - lo).join();
-        const vertexBytes = new Uint8Array(drawables.vertexPositions[0].buffer, lo, hi - lo);
-        let ready = false, busy = false, result: ArrayBuffer | null = null, spare: ArrayBuffer | null = null;
-        /** Worker 사용 중단: 메인 계산으로 되돌리고 Worker 종료 */
-        const stop = () => { ready = false; delete cubismModel.update; try { w.terminate(); } catch {} };
-        /**
-         * Worker가 계산한 결과를 Core 배열에 복사
-         * @param buf 정점·불투명도·그리기 순서·렌더 순서·곱 색·스크린 색·동적 플래그를 이어 붙인 버퍼
-         */
-        const apply = (buf: ArrayBuffer) => {
-          const bytes = new Uint8Array(buf); let offset = 0;
-          vertexBytes.set(bytes.subarray(0, vertexBytes.length)); offset += vertexBytes.length;
-          drawables.opacities.set(new Float32Array(buf, offset, drawableCount)); offset += drawableCount * 4;
-          drawables.drawOrders.set(new Int32Array(buf, offset, drawableCount)); offset += drawableCount * 4;
-          drawables.renderOrders.set(new Int32Array(buf, offset, drawableCount)); offset += drawableCount * 4;
-          drawables.multiplyColors.set(new Float32Array(buf, offset, drawableCount * 4)); offset += drawableCount * 16;
-          drawables.screenColors.set(new Float32Array(buf, offset, drawableCount * 4)); offset += drawableCount * 16;
-          drawables.dynamicFlags.set(bytes.subarray(offset, offset + drawableCount));
-        };
-        /** Worker 오류 시 메인 계산으로 전환 (디버그 로그에 사유 기록) */
-        w.onerror = (event) => { log.debug("Core Worker 오류, 메인 계산으로 전환:", event.message); stop(); };
-        /** Worker 메시지 처리: 준비 확인(ready)·계산 결과(frame)·실패(fail) */
-        w.onmessage = (e) => {
-          const message = e.data;
-          if (message.type === "ready") {   // 같은 모델인지(개수·정점 배치) 확인한 뒤에만 넘김
-            if (message.count === drawableCount && message.params === cubismModel.parameters.count && message.parts === cubismModel.parts.count && message.offs.join() === offsets) ready = true; else { log.debug("Core Worker 모델 불일치, 메인 계산으로 전환"); stop(); }
-          } else if (message.type === "frame") { result = message.buf; busy = false; }
-          else if (message.type === "fail") { log.debug("Core Worker 실패, 메인 계산으로 전환:", message.message ?? "(사유 없음)"); stop(); }
-        };
-        /** Core update 대체: 지난 결과를 반영하고 이번 파라미터를 Worker로 보냄 (결과는 1프레임 늦게 반영) */
-        cubismModel.update = () => {
-          if (!ready) return localUpdate();
-          if (result) { apply(result); spare = result; result = null; }
-          if (!busy) {   // 이전 결과가 오기 전엔 새로 보내지 않음 (밀리지 않게)
-            const paramCount = cubismModel.parameters.count, inputs = new Float32Array(paramCount + cubismModel.parts.count);
-            inputs.set(cubismModel.parameters.values); inputs.set(cubismModel.parts.opacities, paramCount);
-            const transfer = [inputs.buffer]; if (spare) transfer.push(spare);
-            w.postMessage({ type: "frame", inp: inputs.buffer, out: spare }, transfer);
-            spare = null; busy = true;
-          }
-        };
-        w.postMessage({ type: "init", url: BASE + MODEL_FILES.moc });
-      })();
-
-      // 표정
-      const expressionParams: Record<string, Array<{ Id: string; Value: number; Blend?: string }>> = {};
-      await Promise.all(Object.entries(EXPRESSION_FILES).map(async ([expName, file]) => {
-        try { expressionParams[expName] = (await (await fetch(BASE + file)).json()).Parameters || []; } catch (error) { log.debug("표정 파일 로드 실패:", expName, error); expressionParams[expName] = []; }
-      }));
-      if (life.stopped) return;   // 표정 파일을 받는 사이 꺼졌으면 여기서 멈춤
+      // 모델(렌더러) 통로: 모델 불러오기·크기 값·표정 파일·터치용 메시 판정·그리기는 rig가 맡고, 아래 동작 코드는 rig로만 모델에 씀 (character/rig.ts)
+      const rig = await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
+      if (!rig) return;   // 불러오는 사이 꺼졌으면 여기서 멈춤
+      const setParam = rig.set, addParam = rig.add, systemTicker = rig.systemTicker;
+      const { visW, noseX: noseCanvasX, chibiHeadDrop, walkBodyWidth: WALK_BODY_WIDTH, waistPet: WAIST_PET, waistWin: WAIST_WIN, waistPct: WAIST_PCT,
+        petHeadRatio: PET_HEAD_RATIO, headGain: HEAD_GAIN, petKMin: PET_K_MIN, petKMax: PET_K_MAX, petBubble: PET_BUBBLE, petBustOffset } = rig.metrics;
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};
       // 소품·옷: [설정 이름, 모델 파라미터, 켰을 때 값] (데스크톱 펫의 표정 파일과 같은 값)
       // 항목 정의는 shared/settings.js: [설정 이름, 모델 파라미터, 켰을 때 값], 켤 때 대사 묶음, 체형 = PARAMS.bodyType 값
@@ -309,59 +138,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
       const outfitWeight: Record<string, number> = {};
       for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
-      // 동물귀(#22): 파라미터가 아니라 모델의 별도 파트(PARTS.animalEars)다. 파트 ID로 런타임 인덱스를 찾고,
-      // 파트가 없으면(다른 모델) 조용히 아무 것도 하지 않는다. 실제 적용은 bbox 계산이 끝난 뒤 프레임에서만 한다.
-      const EAR_PART_ID = PARTS.animalEars;
-      /**
-       * 파트 ID의 런타임 인덱스
-       * @returns 파트 목록에서 찾은 위치, 없으면 -1
-       */
-      const earPartIndexFor = (ids: ArrayLike<string> | null | undefined, id: string) => {
-        if (!ids) return -1;
-        const found = Array.from(ids).indexOf(id);
-        return found >= 0 ? found : -1;
-      };
-      const earPartIndex = earPartIndexFor(cubismModel.parts && cubismModel.parts.ids, EAR_PART_ID);
-      const earDrawables = [];
-      if (earPartIndex >= 0) for (let i = 0; i < cubismModel.drawables.count; i++) if (cubismModel.drawables.parentPartIndices[i] === earPartIndex) earDrawables.push(i);
-      const earSet = new Set(earDrawables);
-      /**
-       * drawable이 보이는지 여부 (불투명도 0.05 이상이고 보임 플래그가 켜짐)
-       * @param flags drawable의 동적 플래그 (1번 비트 = 보임)
-       */
-      const earVisible = (opacity: number, flags: number) => opacity >= 0.05 && (flags & 1) !== 0;
-      const earBaseVisible = new Map(earDrawables.map((i) => [i, earVisible(cubismModel.drawables.opacities[i], cubismModel.drawables.dynamicFlags[i])]));
-      /**
-       * 귀 숨김 정도에 맞춘 귀 파트 불투명도
-       * @param w 귀 숨김 정도 (0~1, 1이면 완전히 숨김)
-       */
-      const earOpacityValue = (w: number) => Math.max(0, Math.min(1, 1 - w));
-      /**
-       * 귀 숨김 정도를 목표 쪽으로 한 프레임만큼 옮긴 값
-       * @param w 지금 귀 숨김 정도 (0~1)
-       * @param on true면 숨기는 쪽(1), false면 보이는 쪽(0)으로
-       * @param dt 지난 프레임부터의 시간(초)
-       */
-      const earOpacityStep = (w: number, on: boolean, dt: number) => Math.min(1, Math.max(0, w + ((on ? 1 : 0) - w) * Math.min(1, dt * 6)));
-      /**
-       * 귀 파트 불투명도를 숨김 정도에 맞춰 설정
-       * @param w 귀 숨김 정도 (0~1)
-       * @returns 설정했으면 true (파트 배열이 없거나 인덱스가 없으면 false)
-       */
-      const applyEarOpacity = (parts: { opacities: Float32Array } | null | undefined, index: number, w: number) => {
-        if (!parts || !parts.opacities || index < 0) return false;
-        parts.opacities[index] = earOpacityValue(w);
-        return true;
-      };
-      let earWeight = (prefs.outfit || {}).earHide ? 1 : 0;   // 처음엔 저장된 상태 그대로 (로드 직후 깜빡이지 않게)
-      /**
-       * 터치 판정용 drawable 보임 여부. 귀 drawable은 earHide로 감쇠되기 전의 가시성을 hit 판정에만 유지(이슈 #22: 터치 영역 불변)
-       * earHide가 꺼져 있으면 평소처럼 현재 opacity/플래그로 판정하므로, 다른 원인으로 숨겨진 메시는 클릭 불가
-       * @param i drawable 번호
-       */
-      const earHitVisible = (i: number) => earWeight > 0.005
-        ? earBaseVisible.get(i) === true
-        : earVisible(cubismModel.drawables.opacities[i], cubismModel.drawables.dynamicFlags[i]);
       let basinUntil = 0, basinWeight = 0;   // 세숫대야 (머리를 천천히 쓸어내리면)
       let bodyWeight = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev: Record<string, any> | null = null, outfitTalk: ((key: string) => void) | null = null;
       // ---------- 바깥 펫 창 ----------
@@ -448,7 +224,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const PEEK_RISE = 550, PEEK_HOLD = 450, PEEK_SNAP = 150;     // 몰래 보기: 천천히 돌아봄 → 잠깐 봄 → 홱 외면 (ms)
 
       // 위치: 오른쪽 아래 구석, 입력창을 가리지 않는 가장 큰 크기
-      const visW = bodyWidth * modelScale, visH = H * 0.95;
+      const visH = H * 0.95;
       // 모바일(터치 전용) 화면에서 캐릭터를 숨기는 설정과, 브라우저 시각 뷰포트(주소창·키보드) 보정
       // 캐릭터가 매 프레임 읽으므로 MediaQueryList는 한 번만 만들고 값(matches)만 새로 읽는다.
       let coarseMql: MediaQueryList | null = null;
@@ -573,7 +349,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         plan: null, area: null, base: null, displayId: "", displayRequest: 0, alpha: 1, opacityApplied: false, returnFade: 0, recoverTimer: 0, safeHold: false, faceDir: null, recover: null };
       let walkCheck: ((now: number) => void) | null = null;
       // 시작 연출: 처음엔 화면 가운데에 크게 인사 → 본 화면이 뜨면 오른쪽 아래 제자리로 이동
-      const DPR = (devicePixelRatio || 1) * 1.5;   // 1.5배로 그려 줄여 보여 줌 (윤곽선 매끄럽게)
       const intro: { phase: string; start: number; moveStart: number; from: any; kc: number; skip?: boolean; begun?: boolean; cardAt?: number } = { phase: "center", start: performance.now(), moveStart: 0, from: null, kc: 1 };
       const veil = life.own(document.createElement("div"), (node) => node.remove());
       veil.style.cssText = "position:fixed;inset:0;z-index:29;background:radial-gradient(circle at 50% 55%,var(--dsc-veil1,#ffffffd9),var(--dsc-veil2,#eef0ffcc) 70%);backdrop-filter:blur(8px);opacity:0;transition:none;cursor:pointer";
@@ -583,7 +358,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 배율에 맞춘 렌더 해상도 설정. 크기를 다시 정하면 WebGL 버퍼가 지워지므로 해상도가 실제로 바뀔 때만 다시 정함
        * 지워진 버퍼는 같은 프레임의 그리기가 채움(raf)
        */
-      const setRes = (k: number) => { const res = DPR * Math.max(1, k); if (app.renderer.resolution === res) return; app.renderer.resolution = res; app.renderer.resize(W, H); };
+      const setRes = (k: number) => rig.setResolution(k);
       /**
        * 부드러운 가감속 곡선 (smoothstep, 0~1 밖은 잘라 냄)
        * @param progress 진행도 (0~1)
@@ -843,7 +618,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (renderOn === on) return;
         renderOn = on;
         if (!on) return;
-        app.ticker.lastTime = performance.now();   // 멈춰 있던 시간만큼 모델이 한꺼번에 움직이지 않게
+        rig.resetClock();   // 멈춰 있던 시간만큼 모델이 한꺼번에 움직이지 않게
         wakeRaf();   // 쉬고 있던 배치 루프가 있으면 깨워야 그려진다
       };
       // ---------- 배치: 한 프레임에 캐릭터 캔버스와 말풍선을 어디에 얼마나 크게 둘지 ----------
@@ -1162,7 +937,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const { fade, petFade } = fadeAmounts(k, y);
 
         const winBox = petWinBox();
-        const noseX = x + (model.x + noseModelX * model.scale.x) * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
+        const noseX = x + noseCanvasX * k;   // 말풍선 꼬리 기준: 얼굴(코) 가운데
         const viewArea = home.vp || viewport();
         const placeKey = introOn ? "" : placeKeyOf({ k, x, y, vp: viewArea, home, noseX, fade, petFade, winBox, walkNow });
         if (placeKey && placeKey === lastPlaceKey) return;
@@ -1204,7 +979,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         }
         // 배치가 정한 크기·해상도로 같은 프레임에서 모델을 갱신하고 그린다 (모델 갱신 HIGH → 그리기 LOW).
         // 그리기를 따로 돌리면 그린 뒤에 해상도가 바뀌어 지워진 버퍼가 화면에 나갈 수 있다.
-        if (renderOn) app.ticker.update(time);
+        if (renderOn) rig.tick(time);
         // 패널 숨김 때문에 쉬는 중이면(place가 hideForPage를 불렀거나 이벤트로 멈춘 경우) 다음 프레임을 예약하지 않는다.
         if (!PET && pageHiddenNow()) { rafIdle = true; systemTicker(false); return; }
         if (rafIdle) { systemTicker(false); return; }
@@ -1715,18 +1490,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /** 표정 파일(하트·눈물·땀 등)을 무게에 따라 섞기 */
       const writeExpressions = ({ now, dt }: Frame) => {
-        for (const [name, params] of Object.entries(expressionParams)) {
+        for (const name of rig.expressionNames()) {
           const target = hold[name] || (until[name] || 0) > now ? 1 : 0;
           // 하트·><·얄미운·빙글빙글 눈은 눈 그림 자체를 바꾸므로 한 번에 바꾸고, 그 순간 깜빡여 감춤
           const EYE_SWAP = EYE_EXP.includes(name);
           if (EYE_SWAP && (weight[name] > 0.5) !== (target > 0.5)) { blink.start = now - 0.07 * 1000; blink.next = Math.max(blink.next, now + 1500); }
           const w = weight[name] = EYE_SWAP ? target : (weight[name] || 0) + (target - (weight[name] || 0)) * Math.min(1, dt * 6);
           if (w < 0.01) continue;
-          for (const entry of params) {
-            if (entry.Blend === "Multiply") multiplyParam(entry.Id, entry.Value, w);
-            else if (entry.Blend === "Add") addParam(entry.Id, entry.Value, w);
-            else setParam(entry.Id, entry.Value, w);
-          }
+          rig.expression(name, w);
         }
       };
       // ---- 왼손 가슴 가리기 (팔 궤적은 character/motion.js coverForearm). 내릴 땐 같은 길을 거꾸로 ----
@@ -1756,18 +1527,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           if (w > 0.005) addParam(id, value * w);
         }
       };
-      /**
-       * 동물귀 숨김: 파라미터가 아니라 귀 파트(PARTS.animalEars)의 opacity 보간. 파트가 없으면 no-op
-       * bbox·크기·다른 파트는 건드리지 않음. 완전히 복구된 프레임에서만 opacity를 1로 되돌림
-       */
-      const writeEarHide = (outfit: Record<string, any>, dt: number) => {
-        const earWas = earWeight;
-        earWeight = earOpacityStep(earWeight, outfit.earHide === true, dt);
-        if (earPartIndex >= 0) {
-          if (earWeight > 0.005) applyEarOpacity(cubismModel.parts, earPartIndex, earWeight);
-          else if (earWas > 0.005) cubismModel.parts.opacities[earPartIndex] = 1;
-        }
-      };
+      /** 동물귀 숨김: 귀 파트를 목표 쪽으로 서서히 감춤 (모델에 귀가 없으면 rig가 아무것도 안 함) */
+      const writeEarHide = (outfit: Record<string, any>, dt: number) => rig.earHide(outfit.earHide === true, dt);
       /** 세숫대야와 체형 파라미터 쓰기 (산책·절전으로 나갈 때는 꼬마 모습, 꼬마 모습만큼 모델을 아래로) */
       const writeBodyShape = (outfit: Record<string, any>, now: number, dt: number) => {
         const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
@@ -1775,7 +1536,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (basinWeight > 0.005) addParam(PARAMS.basinProp, basinWeight);
         bodyWeight += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyWeight) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
         if (bodyWeight > 0.002) addParam(PARAMS.bodyType, bodyWeight);
-        model.y = baseY + chibiDrop * clamp(bodyWeight, 0, 1);
+        rig.bodyShape(bodyWeight);
       };
       /** 소품·옷·체형을 켜는 순간 한마디 (처음 불러올 때는 말 안 함), 이번 설정을 다음 비교용으로 보관 */
       const talkOutfitChange = (outfit: Record<string, any>) => {
@@ -1793,34 +1554,30 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         writeBodyShape(outfit, now, dt);
         talkOutfitChange(outfit);
       };
-      internalModel.motionManager.expressionManager = {
-        /** 정리할 것 없음 (Live2D 표정 매니저 자리 채우기용) */
-        destroy() {},
-        /** 한 프레임의 절차 애니메이션: 위 단계들을 정해진 순서대로 실행 (dt는 0.05초 상한) */
-        update() {
-          const now = performance.now(), dt = Math.min(0.05, (now - lastFrameAt) / 1000); lastFrameAt = now;
-          updateChestDrag(now, dt);
-          const frame = frameContext(now, dt);
-          updateEnergy(frame);
-          updateGaze(frame);
-          updateSpeech(frame);
-          updateMoodPose(dt);
-          const motion = baseMotion(frame);
-          applyGesture(motion, frame);
-          applyTouchAndShiver(motion, frame);
-          applyWalk(motion, frame);
-          applyCarry(motion, frame);
-          const sulk = applySulk(motion, frame);
-          writeHeadBody(motion);
-          writeEyes(motion, frame, sulk);
-          writeBrows(frame);
-          writeMouth(motion, frame, sulk);
-          writeBlink(motion, frame);
-          writeExpressions(frame);
-          writeCoverChest(frame);
-          writeOutfit(frame);
-        },
-      };
+      /** 한 프레임의 절차 애니메이션: 아래 단계들을 정해진 순서대로 실행 (dt는 0.05초 상한, rig가 모델 갱신 직전에 부름) */
+      rig.onFrame(() => {
+        const now = performance.now(), dt = Math.min(0.05, (now - lastFrameAt) / 1000); lastFrameAt = now;
+        updateChestDrag(now, dt);
+        const frame = frameContext(now, dt);
+        updateEnergy(frame);
+        updateGaze(frame);
+        updateSpeech(frame);
+        updateMoodPose(dt);
+        const motion = baseMotion(frame);
+        applyGesture(motion, frame);
+        applyTouchAndShiver(motion, frame);
+        applyWalk(motion, frame);
+        applyCarry(motion, frame);
+        const sulk = applySulk(motion, frame);
+        writeHeadBody(motion);
+        writeEyes(motion, frame, sulk);
+        writeBrows(frame);
+        writeMouth(motion, frame, sulk);
+        writeBlink(motion, frame);
+        writeExpressions(frame);
+        writeCoverChest(frame);
+        writeOutfit(frame);
+      });
 
       // ---------- 터치 (데스크톱 펫과 같은 부위 판정) ----------
       // 대사: 펫 코드(lines.js)에 든 기본 대사 + 기본 대사가 없는 상황만 짧게 채움. [표정] 꼬리표로 표정 지정.
@@ -2256,86 +2013,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 소품·옷·체형을 바꿨을 때의 대사. 도망·산책·삐진 중에는 말 안 함 */
       outfitTalk = (key: string) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };
 
-      const drawables = cubismModel.drawables, parts = cubismModel.parts;
-      const drawRegion = Array.from({ length: drawables.count }, (_, i) => {
-        for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PART_REGIONS[parts.ids[part]]) return PART_REGIONS[parts.ids[part]];
-        return null;
-      });
-      const chestDraw: number[] = [];
-      for (let i = 0; i < drawables.count; i++) for (let part = drawables.parentPartIndices[i]; part >= 0; part = parts.parentIndices[part]) if (PARTS.chestCenter.includes(parts.ids[part])) { chestDraw.push(i); break; }
-      /** 지금 보이는 가슴 메시들의 가운데(모델 좌표). 다 숨었으면 null */
-      const chestCenter = () => {
-        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-        for (const i of chestDraw) {
-          if (drawables.opacities[i] < 0.05) continue;
-          const vertices = internalModel.getDrawableVertices(i);
-          for (let j = 0; j < vertices.length; j += 2) { x0 = Math.min(x0, vertices[j]); x1 = Math.max(x1, vertices[j]); y0 = Math.min(y0, vertices[j + 1]); y1 = Math.max(y1, vertices[j + 1]); }
-        }
-        return x0 === Infinity ? null : { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
-      };
-      const chestBase = chestCenter();
-      const bodyBounds = { minX, minY, w: maxX - minX, h: maxY - minY };   // 전신 그림 영역 (펫과 같은 기준)
-      const ALPHA_SIZE = 512;
-      let alphaMaps: (Uint8Array | null)[] | null = null;
-      /** 텍스처마다 ALPHA_SIZE×ALPHA_SIZE 알파 지도 생성. 읽지 못한 텍스처는 null */
-      const buildAlpha = () => {
-        alphaMaps = model.textures.map((t: any) => {
-          try {
-            const alphaCanvas = life.own(document.createElement("canvas"), (node) => node.remove()); alphaCanvas.width = alphaCanvas.height = ALPHA_SIZE;
-            const ctx = alphaCanvas.getContext("2d", { willReadFrequently: true })!;   // 실패하면 아래에서 예외 → null
-            ctx.drawImage(t.baseTexture.resource.source, 0, 0, ALPHA_SIZE, ALPHA_SIZE);
-            const pixels = ctx.getImageData(0, 0, ALPHA_SIZE, ALPHA_SIZE).data, alpha = new Uint8Array(ALPHA_SIZE * ALPHA_SIZE);
-            for (let i = 0; i < alpha.length; i++) alpha[i] = pixels[i * 4 + 3];
-            return alpha;
-          } catch { return null; }
-        });
-      };
-      /**
-       * 텍스처 좌표 자리의 알파값(0~255). 알파 지도가 없는 텍스처는 255(불투명)로 취급
-       * @param textureIndex 텍스처 번호
-       * @param u 텍스처 가로 좌표(0~1)
-       * @param v 텍스처 세로 좌표(0~1, 아래가 0)
-       */
-      const alphaAt = (textureIndex: number, u: number, v: number) => {
-        const alphaMap = alphaMaps![textureIndex]; if (!alphaMap) return 255;   // pickDrawable이 먼저 만든다
-        return alphaMap[Math.min(ALPHA_SIZE - 1, Math.max(0, Math.floor((1 - v) * ALPHA_SIZE))) * ALPHA_SIZE + Math.min(ALPHA_SIZE - 1, Math.max(0, Math.floor(u * ALPHA_SIZE)))];
-      };
-      /** 터치를 받을 수 있는 drawable 여부. 귀는 earHide 감쇠 전 가시성으로 터치 판정 유지 */
-      const touchable = (i: number) => earSet.has(i) ? earHitVisible(i) : !(drawables.opacities[i] < 0.05 || !(drawables.dynamicFlags[i] & 1));
-      /**
-       * 그 자리에서 가장 앞에 그려진, 그림(알파)이 있는 터치 가능 메시 찾기
-       * @param x 캔버스(배율 1) x 좌표
-       * @param y 캔버스(배율 1) y 좌표
-       * @returns drawable 번호, 없으면 -1
-       */
-      const pickDrawable = (x: number, y: number) => {
-        if (!alphaMaps) buildAlpha();
-        const px = (x - model.x) / model.scale.x, py = (y - model.y) / model.scale.y;
-        let best = -1, bestOrder = -Infinity;
-        for (let i = 0; i < drawables.count; i++) {
-          if (!touchable(i)) continue;
-          const order = drawables.renderOrders[i];
-          if (order <= bestOrder) continue;
-          const vertices = internalModel.getDrawableVertices(i);
-          const [x0, y0, x1, y1] = meshBounds(vertices);
-          if (px < x0 || px > x1 || py < y0 || py > y1) continue;
-          if (meshHit(vertices, drawables.indices[i], drawables.vertexUvs[i], px, py, (u, v) => alphaAt(drawables.textureIndices[i], u, v))) { best = i; bestOrder = order; }
-        }
-        return best;
-      };
-      /**
-       * 꼬마 모습(체형 2)의 터치 부위. 가슴 반응 없이 머리(보이는 그림 위쪽 45%)·몸만 구분 (데스크톱 펫과 같음)
-       * @param y 캔버스 y 좌표
-       */
-      const chibiRegion = (y: number) => {
-        let y0 = Infinity, y1 = -Infinity;
-        for (let i = 0; i < drawables.count; i++) {
-          if (drawables.opacities[i] < 0.05) continue;
-          const vertices = internalModel.getDrawableVertices(i);
-          for (let j = 1; j < vertices.length; j += 2) { if (vertices[j] < y0) y0 = vertices[j]; if (vertices[j] > y1) y1 = vertices[j]; }
-        }
-        return ((y - model.y) / model.scale.y - y0) / (y1 - y0) < GEOMETRY.chibiHeadBottom ? "head" : "body";
-      };
       /**
        * 부위 그림(drawRegion)과 가슴 타원·높이로 터치 부위 결정
        * @param region 누른 메시가 속한 부위 그림 이름(없으면 null)
@@ -2353,19 +2030,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return ratioY < GEOMETRY.chestBottom ? "chest" : "body";
       };
       /**
-       * 누른 자리의 터치 부위(head·arm·leg·chest·lower·body) 판정. 가슴이 움직인 만큼 전신 기준 영역도 옮겨 판정
+       * 누른 자리의 터치 부위(head·arm·leg·chest·lower·body) 판정. 꼬마 모습은 머리·몸만, 그 밖엔 rig가 준 모양 정보로 정함
+       * 가슴·아랫배 반응이 없는 모델(rig.supports("chestTouch") 아님)은 그 자리를 몸으로 침
        * @param x 캔버스 x 좌표
        * @param y 캔버스 y 좌표
-       * @param drawable 누른 메시 번호
+       * @param drawable 누른 그림 번호 (rig.pick)
        */
       const touchRegion = (x: number, y: number, drawable: number) => {
-        if (bodyWeight > 0.5) return chibiRegion(y);
-        const scale = model.scale.x, currentChest = chestCenter();
-        const shiftX = currentChest && chestBase ? currentChest.x - chestBase.x : 0, shiftY = currentChest && chestBase ? currentChest.y - chestBase.y : 0;
-        const ratioX = (x - model.x - (bodyBounds.minX + shiftX) * scale) / (bodyBounds.w * scale);
-        const ratioY = (y - model.y - (bodyBounds.minY + shiftY) * scale) / (bodyBounds.h * scale);
-        const inChest = Math.pow((ratioX - GEOMETRY.chestCenterX) / GEOMETRY.chestRadiusX, 2) + Math.pow((ratioY - GEOMETRY.chestCenterY) / GEOMETRY.chestRadiusY, 2) <= 1;
-        return regionByShape(drawRegion[drawable], ratioY, inChest);
+        if (bodyWeight > 0.5) return rig.chibiRegion(y);
+        const shape = rig.touchShape(x, y, drawable), region = regionByShape(shape.part, shape.ratioY, shape.inChest);
+        return rig.supports("chestTouch") || (region !== "chest" && region !== "lower") ? region : "body";
       };
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
       const UI_HIT = 'button, a[href], input, textarea, select, summary, [contenteditable="true"], [class*="composerSeat"] [class*="_card"]';
@@ -2381,7 +2055,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return null;
         if (document.elementFromPoint(cx, cy)?.closest(UI_HIT)) return null;
         const x = (cx - rect.left) / curK, y = (cy - rect.top) / curK;
-        const drawable = pickDrawable(x, y);
+        const drawable = rig.pick(x, y);
         return drawable >= 0 ? [x, y, drawable] : null;
       };
 
@@ -3791,7 +3465,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const topLeft = screenOf(0, 0), bottomRight = screenOf(innerWidth, innerHeight);   // DSH 창 영역 (펫 창이 다시 붙을지 판단)
         const dock = {
           k: +petK.toFixed(3),
-          x: Math.round(bustCenterX - petK * (W / 2 + (BUST_CX - FULL_CX) * fullScale)),
+          x: Math.round(bustCenterX - petK * (W / 2 + petBustOffset)),
           y: Math.round(waistY - petK * WAIST_PET),
           win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) },
         };

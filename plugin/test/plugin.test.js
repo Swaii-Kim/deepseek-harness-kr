@@ -881,7 +881,7 @@ test('settings page offers accessories, outfit and body type, and shares them wi
 })
 
 test('core worker is registered for termination when the plugin unloads', async () => {
-  const source = readSource(new URL('../../character/index.ts', import.meta.url))
+  const source = readSource(new URL('../../character/rig-live2d.ts', import.meta.url))   // Core Worker는 Live2D 렌더러가 띄움
   assert.match(source, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\);? \} catch \{\} \}\)/)
   assert.match(bundle, /w\.terminate\(\)/)
 })
