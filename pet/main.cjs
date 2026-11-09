@@ -35,12 +35,19 @@ if (MAC) {
   app.commandLine.appendSwitch('use-mock-keychain')    // 사본(ad-hoc 서명)이 DSH 의 키체인 항목을 건드려 암호 창이 뜨는 일 방지
 }
 // 프로필(캐시·로컬 저장소): macOS 는 DSH 와 따로 둔 pet-profile, 그 밖은 기본(appData/DeepSeekChan Pet).
-// 다른 DSH 가 띄운 펫이 이미 쓰는 중이면 번호 붙은 폴더로. 쓰는 중 판별 = 다른 프로세스의 LevelDB 잠금(예전 펫 포함) 또는
-// 단일 인스턴스 잠금 실패 (잠금은 userData 폴더마다 하나라 동시에 뜨는 새 펫끼리도 갈림)
+// 다른 DSH 가 띄운 펫이 이미 쓰는 중이면 번호 붙은 폴더로. 쓰는 중 판별 = 다른 프로세스의 LevelDB 잠금(Windows, 예전 펫 포함)·
+// 단일 인스턴스 잠금 링크(macOS·Linux, 잠그기 전에 확인) 또는 단일 인스턴스 잠금 실패 (잠금은 userData 폴더마다 하나라 동시에 뜨는 새 펫끼리도 갈림)
+// macOS 는 잠금을 한 번 못 잡으면 다른 폴더를 잡아도 ready 가 오지 않아(실측) 멈춘 채 남으므로, 그때는 바로 끝내고 호스트가 다음 시도에 다시 띄우게 한다
 if (!app.commandLine.hasSwitch('user-data-dir')) {
   const base = MAC ? path.join(app.getPath('appData'), 'deepseek-harness-kr', 'pet-profile') : app.getPath('userData')
   /** 프로필 폴더 잡기: 다른 프로세스가 쓰는 폴더는 건너뛰고, 아니면 그 폴더의 단일 인스턴스 잠금 @param {string} directory */
-  const claimProfile = (directory) => { if (profileInUse(directory)) return false; app.setPath('userData', directory); return app.requestSingleInstanceLock() }
+  const claimProfile = (directory) => {
+    if (profileInUse(directory)) return false
+    app.setPath('userData', directory)
+    if (app.requestSingleInstanceLock()) return true
+    if (MAC) { process.stderr.write(`dsc-pet: profile lock failed: ${directory}\n`); app.exit(1) }
+    return false
+  }
   app.setPath('userData', chooseProfile(base, claimProfile))
 }
 protocol.registerSchemesAsPrivileged([{ scheme: 'dscpet', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
