@@ -16,22 +16,6 @@ const POUT: [string, number][] = [[PARAMS.cheekPuff, 0.5], [PARAMS.mouthPucker, 
 
 export const sulk: CharacterBehavior = {
   id: "deepseek-chan.sulk",
-  lines: {
-    head_sulk: [
-      "[홍조] 흥! 그럼 오늘은 안아 드리지 않을 거예요!",
-      "[홍조] 흥, 나중에 후회하실 거예요…!",
-      "[홍조] …만질 거면, 아예 달래 주시던가요.",
-      "[홍조] 흥! 등 돌리고 있을 거예요. …곁에 있으면 안 되지만.",
-      "[홍조] …한 번만 더 그러시면, 진짜 삐질 거예요.",
-    ],
-    head_after: [
-      "[홍조] …이번만 봐주는 거예요. 다음엔… 각오하세요.",
-      "[홍조] …다음엔 진짜, 책임지셔야 해요.",
-      "[홍조] 후… 이제 됐어요. …손은 아직 놓지 마시고요.",
-      "[홍조] …이번 일은 비밀로 해 드릴게요. 대신, 나중에.",
-      "[홍조] …주인님 나쁜 손. 오늘은 그렇게 기억해 둘게요.",
-    ],
-  },
   create(ctx) {
     let start = -1e9, until = 0, stareUntil = 0, dir = 1, yaw = 0, roll = 0;
     let peeks: { at: number; flip: boolean; done: boolean }[] = [];

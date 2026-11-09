@@ -8,13 +8,6 @@ export const HEAD_COVERED = "head.covered";
 
 export const basin: CharacterBehavior = {
   id: "deepseek-chan.basin",
-  lines: {
-    basin_on: [
-      "[하트] 밥 먹을 시간이에요? …입 벌려 주세요♪",
-      "[얄미운] 세숫대야 쓴 채로 먹는 거… 생각보다 불편해요.",
-      "잘 먹을게요. …다 먹으면 칭찬해 주세요.",
-    ],
-  },
   create(ctx) {
     let until = 0, weight = 0;
     return {

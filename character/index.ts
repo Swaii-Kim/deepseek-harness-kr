@@ -61,6 +61,27 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
   base: string; life: Lifetime; pet?: PetBridge | null; prefs?: CharacterPrefs; onSetting?: ((key: string, value: unknown) => void) | null;
 }): CharacterApi {
   const BASE = base;
+  const mergeStrings = (dst: Record<string, string>, src: unknown) => {
+    if (!src || typeof src !== "object") return;
+    for (const [k, v] of Object.entries(src)) if (typeof v === "string" && v) dst[k] = v;
+  };
+  const mergeLines = (data: unknown) => {
+    if (!data || typeof data !== "object") return;
+    const d = data as { text?: unknown; lines?: unknown };
+    mergeStrings(TEXT, d.text);
+    if (!d.lines || typeof d.lines !== "object") return;
+    for (const [k, arr] of Object.entries(d.lines)) {
+      if (!Array.isArray(arr)) continue;
+      const list = arr.filter((v): v is string => typeof v === "string" && !!v);
+      if (list.length) LINES[k] = list;
+    }
+  };
+  const linesLoad = (async () => {
+    try {
+      const res = await fetch(BASE + "dsc-lines.json");
+      if (res.ok) mergeLines(await res.json());
+    } catch { /* 파일이 없거나 깨지면 빈 상태로 동작 */ }
+  })();
   const prefs: CharacterPrefs = { ...initialPrefs };
   const hooks: { syncPageHidden?: () => void; togglePet?: () => void; toggleCanvas?: () => boolean; canvasHidden?: () => boolean } = {};   // 모델이 준비된 뒤 채워지는 동작 (펫 창·캔버스 토글, 패널 숨김 반영)
   let petUsed = false;   // 이 화면에서 바깥 펫 창을 쓴 적이 있는지 (내려갈 때 펫 창도 숨긴다)
@@ -76,14 +97,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
   const addEventListener = (type: string, fn: (event: any) => void, options?: boolean | AddEventListenerOptions) => life.listen(window, type, fn, options);
   /** life에 묶인 DOM 감시 생성 (MutationObserver 대신 쓰는 생성자) */
   const MutationObserver = function (fn: MutationCallback) { return life.observe(fn); } as unknown as typeof window.MutationObserver;
-  const TEXT = {
-    hello: "안녕하세요, 주인님! 오늘은… 저랑 뭐 해 볼까요?",
-    start: "알겠어요! …잘 부탁드려요, 주인님",
-    approval: "확인이 필요해요! …이거, 저 대신 눌러 주실 거죠?",
-    question: "여쭤볼 게 있어요! …잠깐만 저만 봐 주세요",
-    done: "다 했어요! …칭찬해 주실 거죠?",
-    error: "앗, 문제가 생겼어요… …한 번만 더 봐 주세요",
-  };
+  const TEXT: Record<string, string> = {};
+  const LINES: Record<string, string[]> = {};   // 대사 묶음 (assets/dsc-lines.json에서 채움)
   // DSH 화면에서 작업 상태를 읽는 부분(도구 이름·화면 문구·셀렉터)은 character/harness-signals.js
 
   /** 문서 본문(document.body)이 생긴 뒤 실행 */
@@ -138,11 +153,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const GAZE = rig.gaze;   // 시선 반응성 (커서 범위·고개 비율·각도·스프링·눈 제한, character/gaze.ts)
       const { visW, noseX: noseCanvasX, chibiHeadDrop, walkBodyWidth: WALK_BODY_WIDTH, waistPet: WAIST_PET, waistWin: WAIST_WIN, waistPct: WAIST_PCT,
         petHeadRatio: PET_HEAD_RATIO, headGain: HEAD_GAIN, petKMin: PET_K_MIN, petKMax: PET_K_MAX, petBubble: PET_BUBBLE, petBustOffset } = rig.metrics;
+      await linesLoad;   // 첫 대사 전에 대사 파일 로드 완료
+      if (life.stopped) return;
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};
       // 소품·옷: [설정 이름, 모델 파라미터, 켰을 때 값] (데스크톱 펫의 표정 파일과 같은 값)
       // 항목 정의는 shared/settings.js: [설정 이름, 모델 파라미터, 켰을 때 값], 켤 때 대사 묶음, 체형 = PARAMS.bodyType 값
       const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on] as [string, string, number]);
       const OUTFIT_LINE = Object.fromEntries(OUTFIT_ITEMS.filter((item) => item.line).map((item) => [item.key, item.line])) as Record<string, string>;
+      const OUTFIT_LINE_OFF: Record<string, string> = { skirt: "outfit_skirt_short", chestClothes: "outfit_chest_open" };
       const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
       const outfitWeight: Record<string, number> = {};
       for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
@@ -1009,6 +1027,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @param kind 대사 종류 (바깥에 알릴 때 씀, 없으면 mutter 또는 other)
        */
       const say = (text: string, ms = 3500, mutter = false, kind?: string) => {
+        if (typeof text !== "string" || !text) return;
         relay("say", [text, ms, mutter, kind]);
         bubble.textContent = text; bubble.classList.add("show");
         lastSayText = text;
@@ -1481,7 +1500,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 소품·옷·체형을 켜는 순간 한마디 (처음 불러올 때는 말 안 함), 이번 설정을 다음 비교용으로 보관 */
       const talkOutfitChange = (outfit: Record<string, any>) => {
         if (outfitPrev && outfitTalk) {   // 켜는 순간 한마디 (처음 불러올 때는 말 안 함)
-          for (const [key] of OUTFIT_PARAMS) if (outfit[key] && !outfitPrev[key]) outfitTalk(OUTFIT_LINE[key]);
+          for (const [key] of OUTFIT_PARAMS) {
+            if (outfit[key] && !outfitPrev[key]) outfitTalk(OUTFIT_LINE[key]);
+            else if (!outfit[key] && outfitPrev[key] && OUTFIT_LINE_OFF[key]) outfitTalk(OUTFIT_LINE_OFF[key]);
+          }
           if ((outfit.bodyType || "default") !== (outfitPrev.bodyType || "default")) outfitTalk("body_" + (outfit.bodyType || "default"));
         }
         outfitPrev = { ...outfit };
@@ -1521,84 +1543,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
 
       // ---------- 터치 (데스크톱 펫과 같은 부위 판정) ----------
       // 대사: 펫 코드(lines.js)에 든 기본 대사 + 기본 대사가 없는 상황만 짧게 채움. [표정] 꼬리표로 표정 지정.
-      const LINES: Record<string, string[]> = {
-        head: [
-          "[어두운, 얄미운] …거긴, 그렇게 쓰다듬지 마세요. 버릇 들면 어쩌려고요.",
-          "[어두운, 얄미운] …주인님, 그 손… 계속 두실 생각이세요?",
-          "[어두운, 얄미운] …한 번만 봐드리는 거예요.",
-          "[어두운, 얄미운] …머리카락 엉키면, 내일 아침에 빗겨 주셔야 해요.",
-          "[어두운, 얄미운] …손 놓으세요. 그렇게 보시면… 저도 참아야 하잖아요.",
-          "[어두운, 얄미운] …이번엔 그냥 넘어갈게요. 착한 척은 여기까지예요.",
-        ],
-        walk_out: [
-          "산책 좀 다녀올게요~ …따라오시면 안 돼요♪",
-          "잠깐 바람 쐬고 올게요! 몸 좀 풀고요",
-          "다리 좀 풀고 올게요~ 금방 올게요",
-          "혼자 걷는 게 좋아요. …돌아올 땐 옆에 있어 주세요.",
-          "바람이 좋아서요. 이 기분, 같이 나누고 싶네요.",
-        ],
-        walk_back: [
-          "다녀왔어요! …기다리셨죠? 얼굴에 쓰여 있어요♪",
-          "산책 끝! 그새 보고 싶으셨어요?",
-          "[하트] 다녀왔어요~ 안아 주세요.",
-          "금방 다녀왔는데… 왜 벌써 반가운 거예요.",
-          "[홍조] 발이 차가워졌어요… 손 좀 잡아 주시겠어요?",
-        ],
-        body: [
-          "[하트] 불렀어요? …손, 잡아 주세요.",
-          "[홍조] 왜요… 그렇게 빤히 보시면 더 부끄러운데.",
-          "[얄미운] 흐응~? 만지고 싶으신 거죠?",
-          "[식은땀] 앗, 깜짝이야! …놀라면 심장에 안 좋아요.",
-          "[하트, 홍조] 오늘도 화이팅이에요! …조금 가까이 있어도 돼요?",
-          "[얄미운] 그렇게 부르시면… 거절할 수 없잖아요.",
-          "[홍조] 옆에 있으면 마음이 놓여요. …그러니까 계속 있어 주세요.",
-          "[하트] 한 번 불러 주시면… 하루 종일 기분이 좋아요.",
-        ],
-        arm: [
-          "[홍조] 손 잡고 싶으신 거예요? …놓치면 안 돼요.",
-          "[홍조] 팔은 왜요~? …팔찌라도 채워 주실 거예요?",
-          "[얄미운] 그렇게 붙잡으면… 도망칠 맘도 없어지잖아요.",
-          "손끝이 따뜻해요… 조금만 더 있어 주세요.",
-          "[홍조] 팔에 힘이 들어오시는데… 저, 이러면 못 움직여요.",
-        ],
-        leg: [
-          "[식은땀, 홍조] 다, 다리는… 아직 안 돼요…!",
-          "[식은땀, 홍조] 거기 만지면… 힘이 확 풀려요…!",
-          "[홍조, ><] 으… 무릎은… 그렇게 안아 주시면 안 돼요…!",
-          "[식은땀, 홍조] 서 있는 것도 벅차요… 놓아 주세요…",
-          "[홍조, 하트] 거기, 감각이 예민하다니까요…",
-        ],
-        spam: [
-          "[어두운, 얄미운] …그만 좀 눌러요. 반응 다 보이잖아요.",
-          "[어두운, 얄미운] …주인님, 손가락이 너무 성실하시네요.",
-          "[어두운, 얄미운] …부탁인데, 잠깐만 쉬어 주세요.",
-        ],
-        makeup: [
-          "[홍조] …이제 안 누르실 거죠? 약속하세요.",
-          "[홍조] …이번엔 넘어갈게요. 대신 기억해 둘게요.",
-          "[홍조] …이제 진정하셨어요? 저는 아직인데.",
-        ],
-        working: [
-          "[식은땀] 지금 일하는 중이에요~ …나중에 하세요, 나중에♪",
-          "[식은땀] 잠깐만요… 지금 집중해야 하는데… 손이 자꾸…",
-          "[식은땀] 일 끝나면… 그때 만져 주세요. 약속하시고요.",
-          "[식은땀] 으… 지금 그러시면 작업이 안 끝나요…",
-        ],
-        sleep_out: [
-          "잠깐 쉬고 올게요~ …그리워하시면 금방 와요♪",
-          "절전 모드 들어갑니다~ 불러 주시면 바로요!",
-          "좀 쉬었다 올게요, 주인님♪ …꿈에서 봬요.",
-          "눈 좀 붙이고 올게요. …몰래 보고 계시면 안 돼요.",
-          "충전하러 갑니다~ 다녀오면 안아 주세요.",
-        ],
-        sleep_back: [
-          "다녀왔어요! …보고 싶으셨죠?",
-          "돌아왔어요! 기다리게 해서 죄송해요♪",
-          "[하트] 부르셨죠? …이리 와요.",
-          "푹 잤더니… 얼굴이 좋아 보이세요, 주인님.",
-          "[홍조] 자는 동안… 계속 곁에 있으셨어요?",
-        ],
-      };
       const EXP_NAME: Record<string, string> = { "홍조": "blush", "><": "squint", "하트": "heart", "얄미운": "smug", "식은땀": "sweat", "어두운": "dark", "눈물": "tears", "어지럼": "dizzy" };
       const lastLine: Record<string, number> = {};
       /**

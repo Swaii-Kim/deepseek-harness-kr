@@ -12,6 +12,8 @@ import { JSDOM, VirtualConsole } from 'jsdom'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const BASE = 'http://127.0.0.1/deepseek-harness-kr/assets/'
+// 대사 파일(assets/dsc-lines.json)은 이 저장소 것을 그대로 내준다 (대사 파일이 없던 기준 소스는 요청하지 않음)
+const LINES_JSON = readFile(join(here, '../../../assets/dsc-lines.json'), 'utf8').then(JSON.parse)
 
 // 저장소 root의 character/ 소스를 브라우저용 IIFE로 묶는다 (index.js·index.ts 모두)
 // behaviors를 주면 Live2D 프로필의 행동 목록(model-profile.ts BEHAVIORS)을 그 목록으로 바꿔 묶는다 (행동이 없는 모델 흉내)
@@ -210,7 +212,8 @@ export async function runTrace(code, { pet = false, fallbackRegion = null } = {}
   installFakeModel(win, clock, sink)
   installLayout(win, size)
   win.Math.random = seeded(20261108)
-  win.fetch = async (url) => String(url).includes('/model/exp/') ? { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamCheek', Value: 1, Blend: 'Add' }] }) } : { ok: false, json: async () => null }
+  win.fetch = async (url) => String(url).includes('/model/exp/') ? { ok: true, json: async () => ({ Parameters: [{ Id: 'ParamCheek', Value: 1, Blend: 'Add' }] }) }
+    : String(url).endsWith('/dsc-lines.json') ? { ok: true, json: () => LINES_JSON } : { ok: false, json: async () => null }
   Object.defineProperty(doc, 'currentScript', { configurable: true, get: () => ({ src: BASE + 'dsc.js' }) })
   // 펫 모드: 펫 창 preload가 넣어 주는 통로를 가짜로 두고, 화면(모니터)·창 위치를 정해 둔다
   const petBus = { handler: null, sent: [] }
