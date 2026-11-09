@@ -114,8 +114,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       document.head.appendChild(script);
     });
     (async () => {
-      // 3D 모델(설정의 avatarModelDir)은 창 안에서만 쓰고, 펫 창은 Live2D 그대로
-      const AVATAR = !pet && prefs.avatar?.enabled === true;
+      // 3D 모델(설정의 avatarModelDir). 펫 창은 메인 프로세스가 준 시작 설정으로 같은 모델을 dscpet://assets/__avatar/ 에서 읽음
+      const AVATAR = prefs.avatar?.enabled === true;
       if (AVATAR) { if (!window.DscRigThree) await load("vendor/rig-three.js").catch((error) => log.warnOnce("rig-three", "3D 렌더러를 불러오지 못했습니다:", error)); }
       else if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);   // 이미 있으면 기다리지 않고 바로 캔버스를 만듦
       if (life.stopped) return;   // 불러오는 사이 꺼졌으면 여기서 멈춤
@@ -130,7 +130,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       let chestFrom: { x: number; y: number; id: number; h: number[] } | null = null, chestPulling = false;
       // 모델(렌더러) 통로: 모델 불러오기·크기 값·표정 파일·터치용 메시 판정·그리기는 rig가 맡고, 아래 동작 코드는 rig로만 모델에 씀 (character/rig.ts)
       const rig = AVATAR
-        ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline, tuning: () => prefs.avatar })
+        ? await (window.DscRigThree?.createThreeRig({ base: new URL(pet ? "__avatar/" : "../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: !!pet, outlineNormals: prefs.avatar?.outline, tuning: () => prefs.avatar })
           .catch((error) => { log.warnOnce("rig-three-load", "3D 모델을 불러오지 못했습니다 (avatarModelDir·avatar.json 확인):", error); return null; }) ?? null)
         : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
       if (!rig) return;   // 불러오는 사이 꺼졌거나 3D 모델을 못 불러왔으면 여기서 멈춤
@@ -177,6 +177,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         dragKey: () => dragKeyRaw(),
         /** 외부 음성 상태 */
         voice: () => voiceState,
+        /** 펫 창도 같은 렌더러로: 3D 모델 사용 여부·외곽선 (창 안 캐릭터가 처음 뜰 때 정한 값) */
+        avatar: () => ({ enabled: AVATAR, outline: prefs.avatar?.outline }),
         /** 시작 연출이 끝났고 작업 중이 아니며 화면이 보이는 상태 여부 */
         idle: () => intro.phase === "done" && !running && !document.hidden,
         /** 캔버스만 숨김 상태 여부 */
@@ -2910,7 +2912,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           y: Math.round(waistY - petK * WAIST_PET),
           win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) },
         };
-        return { dock, outfit: prefs.outfit || {} };
+        // 3D 모델이면 눈썹 세기·부드러움 같은 조절값도 펫 창에 (설정에서 바꾸면 바로 반영)
+        return { dock, outfit: prefs.outfit || {}, avatar: AVATAR ? { browScale: prefs.avatar?.browScale, browSmooth: prefs.avatar?.browSmooth } : undefined };
       };
       /** 단축키로 펫 창을 열 자리: 지금 그린 자리 (잠들었거나 그린 적이 없으면 제자리), 화면 좌표 */
       const petOpenScreenPose = () => {
@@ -3006,6 +3009,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         const PET_COMMANDS: Record<string, (args: any[]) => void> = {
           /** 소품·옷 설정 반영 */
           outfit: (args: any[]) => { prefs.outfit = args[0]; renderPetPanel(); petSyncMenu(); },
+          /** 3D 모델 조절값(눈썹 세기·부드러움) 반영. 모델 사용 여부·외곽선은 시작 설정 그대로 */
+          avatar: (args: any[]) => { const value = args[0]; if (value && typeof value === "object") prefs.avatar = { ...prefs.avatar, browScale: value.browScale, browSmooth: value.browSmooth }; },
           /** 붙을 자리 갱신 */
           dock: (args: any[]) => { petDock = args[0]; },
           /** 외부 음성 상태 반영 */

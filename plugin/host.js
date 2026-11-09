@@ -208,7 +208,7 @@ export function apply(ctx, config, { applyIcon = applyShortcutIcon } = {}) {
   } }), 'deepseek-harness-kr: avatar')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: STATUS_PATH, handler: createStatusHandler(() => ({ appIcon: appIconProblem }), rejection) }), 'deepseek-harness-kr: status')
   ctx.effect(() => {
-    const pet = createPetManager({ assets })
+    const pet = createPetManager({ assets, avatarDir: () => readLive(config?.avatarModelDir) })
     const unregister = ctx.webServer.register({ kind: 'prefix', path: PET_PATH, handler: createPetHandler(pet, rejection) })
     return () => { unregister?.(); pet.dispose() }
   }, 'deepseek-harness-kr: pet')

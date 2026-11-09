@@ -349,6 +349,7 @@
     };
     link.post = (path, body = {}) => {
       deps.onUse();
+      if ((path === "warm" || path === "open") && deps.avatar) body = { ...body, avatar: deps.avatar() };
       return fetch2(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.ok ? response.json() : postRefused(path, response)).then((reply) => {
         if (reply?.state) link.petState = reply.state;
         return reply;
@@ -452,11 +453,12 @@
       if (link.opening && now() - link.opening > 15e3) link.opening = 0;
       if (!link.open && !link.opening && !link.follow) return;
       if (link.open || link.follow) {
-        const { dock, outfit } = deps.dockState();
-        const sig = JSON.stringify([dock, outfit]);
+        const { dock, outfit, avatar } = deps.dockState();
+        const sig = JSON.stringify([dock, outfit, avatar]);
         if (sig !== link.last) {
           link.last = sig;
           link.queue.push(["dock", [dock]], ["outfit", [outfit]]);
+          if (avatar !== void 0) link.queue.push(["avatar", [avatar]]);
         }
         const dragNow = deps.dragKey();
         if (dragNow !== link.dragMod) {
@@ -791,8 +793,8 @@
     if (!window.PIXI) await load("vendor/pixi.min.js");
     if (!window.PIXI.live2d) await load("vendor/cubism4.patched.js");
   }
-  async function createLive2DRig({ base, life, pet, prefs, canvas, W, H, chestDrag }) {
-    const BASE = base;
+  async function createLive2DRig({ base: base2, life, pet: pet2, prefs, canvas, W, H, chestDrag }) {
+    const BASE = base2;
     const app = new PIXI.Application({ view: canvas, width: W, height: H, sharedTicker: false, autoStart: false, backgroundAlpha: 0, antialias: true, autoDensity: true, resolution: (devicePixelRatio || 1) * 1.5 });
     const systemTicker = (on) => {
       try {
@@ -832,7 +834,7 @@
         return result;
       };
     }
-    const WHOLE_BODY = !!pet;
+    const WHOLE_BODY = !!pet2;
     core.update();
     const cubismModel = core.getModel();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -2062,8 +2064,8 @@
   };
 
   // character/index.ts
-  function createCharacter({ base, life, pet = null, prefs: initialPrefs = {}, onSetting = null }) {
-    const BASE = base;
+  function createCharacter({ base: base2, life, pet: pet2 = null, prefs: initialPrefs = {}, onSetting = null }) {
+    const BASE = base2;
     const prefs = { ...initialPrefs };
     const hooks = {};
     let petUsed = false;
@@ -2104,7 +2106,7 @@
         if (found.error) lastError = performance.now();
         if (found.tool) listeners.tool(found.tool);
       };
-      if (!pet) new MutationObserver((records) => {
+      if (!pet2) new MutationObserver((records) => {
         for (const record of records) for (const n of record.addedNodes) scanAdded(n);
       }).observe(document.body, { childList: true, subtree: true });
       const load = (src) => new Promise((ok, fail) => {
@@ -2115,7 +2117,7 @@
         document.head.appendChild(script);
       });
       (async () => {
-        const AVATAR = !pet && prefs.avatar?.enabled === true;
+        const AVATAR = prefs.avatar?.enabled === true;
         if (AVATAR) {
           if (!window.DscRigThree) await load("vendor/rig-three.js").catch((error) => log.warnOnce("rig-three", "3D 렌더러를 불러오지 못했습니다:", error));
         } else if (!window.Live2DCubismCore || !window.PIXI || !window.PIXI.live2d) await loadLive2DScripts(load);
@@ -2129,10 +2131,10 @@
         const dragLift = { x: 0, v: 0 };
         const dragShift = { x: 0, v: 0 };
         let chestFrom = null, chestPulling = false;
-        const rig = AVATAR ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline, tuning: () => prefs.avatar }).catch((error) => {
+        const rig = AVATAR ? await (window.DscRigThree?.createThreeRig({ base: new URL(pet2 ? "__avatar/" : "../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: !!pet2, outlineNormals: prefs.avatar?.outline, tuning: () => prefs.avatar }).catch((error) => {
           log.warnOnce("rig-three-load", "3D 모델을 불러오지 못했습니다 (avatarModelDir·avatar.json 확인):", error);
           return null;
-        }) ?? null) : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
+        }) ?? null) : await createLive2DRig({ base: BASE, life, pet: pet2, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });
         if (!rig) return;
         const setParam = rig.set, addParam = rig.add, systemTicker = rig.systemTicker;
         const GAZE = rig.gaze;
@@ -2158,7 +2160,7 @@
         const outfitWeight = {};
         for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;
         let bodyWeight = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev = null, outfitTalk = null;
-        const PET = pet;
+        const PET = pet2;
         const PET_URL = PET ? null : (() => {
           try {
             return new URL("../pet/", new URL(BASE, location.href)).href;
@@ -2193,6 +2195,8 @@
           dragKey: () => dragKeyRaw(),
           /** 외부 음성 상태 */
           voice: () => voiceState,
+          /** 펫 창도 같은 렌더러로: 3D 모델 사용 여부·외곽선 (창 안 캐릭터가 처음 뜰 때 정한 값) */
+          avatar: () => ({ enabled: AVATAR, outline: prefs.avatar?.outline }),
           /** 시작 연출이 끝났고 작업 중이 아니며 화면이 보이는 상태 여부 */
           idle: () => intro.phase === "done" && !running && !document.hidden,
           /** 캔버스만 숨김 상태 여부 */
@@ -2869,7 +2873,7 @@
           const spot = { k, noseX, headTop, vp: viewArea, home, introProgress };
           placeBubble(introOn, spot);
         };
-        const hideChipVisible = ({ pet: pet2 = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet2 && isHidden && !mobileHiddenNow && !pageHiddenNow();
+        const hideChipVisible = ({ pet: pet3 = PET, isHidden = hidden, mobileHiddenNow = mobileHidden() } = {}) => !pet3 && isHidden && !mobileHiddenNow && !pageHiddenNow();
         let placeErrorWarned = false;
         let rafIdle = false;
         const wakeRaf = () => {
@@ -4884,7 +4888,7 @@
             y: Math.round(waistY - petK * WAIST_PET),
             win: { l: Math.round(topLeft.x), t: Math.round(topLeft.y), r: Math.round(bottomRight.x), b: Math.round(bottomRight.y) }
           };
-          return { dock, outfit: prefs.outfit || {} };
+          return { dock, outfit: prefs.outfit || {}, avatar: AVATAR ? { browScale: prefs.avatar?.browScale, browSmooth: prefs.avatar?.browSmooth } : void 0 };
         };
         const petOpenScreenPose = () => {
           const pose2 = SLEEP.state === "active" && shown.k > 0 ? { k: shown.k, x: shown.x, y: shown.y } : dockTarget(homePose());
@@ -4993,6 +4997,11 @@
               prefs.outfit = args[0];
               renderPetPanel();
               petSyncMenu();
+            },
+            /** 3D 모델 조절값(눈썹 세기·부드러움) 반영. 모델 사용 여부·외곽선은 시작 설정 그대로 */
+            avatar: (args) => {
+              const value = args[0];
+              if (value && typeof value === "object") prefs.avatar = { ...prefs.avatar, browScale: value.browScale, browSmooth: value.browSmooth };
             },
             /** 붙을 자리 갱신 */
             dock: (args) => {
@@ -5211,9 +5220,9 @@
   }
 
   // character/standalone.ts
-  createCharacter({
-    base: new URL("./", document.currentScript.src).href,
-    life: createLifetime(),
-    pet: window.__dscPetMode ? window.dscPet : null
+  var base = new URL("./", document.currentScript.src).href;
+  var pet = window.__dscPetMode ? window.dscPet ?? null : null;
+  Promise.resolve(pet?.config?.()).catch(() => null).then((boot) => {
+    createCharacter({ base, life: createLifetime(), pet, prefs: boot?.avatar ? { avatar: boot.avatar } : {} });
   });
 })();

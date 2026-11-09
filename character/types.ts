@@ -69,6 +69,8 @@ export interface PetBridge {
   press(on: boolean): void
   /** 펫 창 우클릭 메뉴 열기 */
   menu(): void
+  /** 페이지 시작 설정 (3D 모델 여부·외곽선, 메인 프로세스가 호스트 설정을 전달. 예전 펫 앱엔 없음) */
+  config?(): Promise<{ avatar?: CharacterPrefs["avatar"] } | null>
 }
 
 /** 한 프레임 동안 단계 사이에 넘기는 고개·몸·표정 누적값 (character/index.ts 절차 애니메이션) */

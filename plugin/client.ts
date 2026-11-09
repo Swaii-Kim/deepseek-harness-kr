@@ -990,7 +990,7 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
             onChange: (event) => change('idleSleepMinutes', sleepMinutes(event.target.value)) }))),
       React.createElement('section', { 'aria-label': ko ? '3D 모델 (실험)' : '3D model (experimental)', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
         React.createElement('strong', null, ko ? '3D 모델 (실험)' : '3D model (experimental)'),
-        React.createElement('p', { style: { margin: 0, opacity: 0.7 } }, ko ? 'avatar.json과 모델 파일이 있는 폴더를 넣으면 창 안 캐릭터를 3D로 그립니다. 비우면 기본 캐릭터. 화면을 새로 불러올 때 적용됩니다.' : 'Set a folder with avatar.json and the model to draw the in-window character in 3D. Empty uses the default character. Applies on reload.'),
+        React.createElement('p', { style: { margin: 0, opacity: 0.7 } }, ko ? 'avatar.json과 모델 파일이 있는 폴더를 넣으면 캐릭터를 3D로 그립니다(바깥 펫 창 포함). 비우면 기본 캐릭터. 화면을 새로 불러올 때 적용됩니다.' : 'Set a folder with avatar.json and the model to draw the character in 3D (including the outside pet window). Empty uses the default character. Applies on reload.'),
         React.createElement('label', { style: row },
           React.createElement('span', null, ko ? '모델 폴더' : 'Model folder'),
           React.createElement('input', { type: 'text', style: { flex: 1, maxWidth: 360 }, defaultValue: state.value?.avatarModelDir ?? '', placeholder: 'D:\\models\\avatar', disabled: off,

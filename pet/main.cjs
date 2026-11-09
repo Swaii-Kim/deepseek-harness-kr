@@ -9,6 +9,8 @@ const { createPlacer } = require('./placement.cjs')
 const { chooseProfile, profileInUse } = require('./profile.cjs')
 // 소품·옷·체형 항목: 빌드가 shared/settings.js에서 만든 pet/settings.cjs (펫 앱 폴더째 런타임으로 복사된다)
 const { OUTFIT_ITEMS, BODY_TYPES } = require('./settings.cjs')
+// 3D 모델 폴더: 호스트가 보낸 폴더를 dscpet://assets/__avatar/ 로 내준다 (페이지는 시작할 때 dsc-config로 3D 여부를 받음)
+const { AVATAR_PREFIX, normalizeAvatar, avatarKey, avatarBoot, resolveInside } = require('./avatar.cjs')
 
 /** 명령줄 인자 `--이름=값`의 값 (없으면 빈 문자열) */
 const arg = (name) => { const hit = process.argv.find((option) => option.startsWith(`--${name}=`)); return hit ? hit.slice(name.length + 3) : '' }
@@ -160,9 +162,26 @@ function reloadIfStale() { if (stale && win && !win.isDestroyed() && !win.isVisi
 require('node:fs').watchFile(path.join(ASSETS, 'dsc.js'), { interval: 2000 }, (now, before) => { if (now.mtimeMs !== before.mtimeMs) { stale = true; reloadIfStale() } })
 // 숨기라는 말을 받은 뒤 늦게 온 '자리 잡음(placed)'으로 다시 보이지 않게, 마지막 지시가 open인지 기억함
 let wanted = false
+// 3D 모델 설정: known = 호스트가 한 번이라도 알려 줌, bootedKey = 지금 페이지가 시작할 때 받은 설정 (다르면 숨어 있을 때 새로 불러옴)
+let avatar = normalizeAvatar(null), avatarKnown = false, bootedKey = null
+const avatarWaiters = []
+const AVATAR_WAIT = 3000   // 호스트가 설정을 안 보내면(예전 호스트) 이 시간 뒤 Live2D로 시작
+/** 호스트가 보낸 3D 모델 설정 반영: 처음이면 기다리던 페이지에 알려 주고, 페이지가 받은 것과 달라졌으면 새로 불러오기 예약 */
+function setAvatar(message) {
+  avatar = normalizeAvatar(message); avatarKnown = true
+  for (const resolve of avatarWaiters.splice(0)) resolve()
+  if (bootedKey !== null && avatarKey(avatar) !== bootedKey) { stale = true; reloadIfStale() }
+}
+/** 페이지 시작 설정 (호스트 설정이 올 때까지 최대 AVATAR_WAIT 기다림) */
+async function pageConfig() {
+  if (!avatarKnown) await new Promise((resolve) => { avatarWaiters.push(resolve); setTimeout(resolve, AVATAR_WAIT) })
+  bootedKey = avatarKey(avatar)
+  return { avatar: avatarBoot(avatar) }
+}
 
 /** 호스트 메시지 처리: hide 는 여기서 숨김, open 은 회차 기억 뒤 페이지로, 그 밖(cmd)은 페이지로 */
 const fromHost = (message) => {
+  if (message.type === 'avatar') return setAvatar(message)
   if (message.type === 'hide') { wanted = false; return hide() }
   if (message.type === 'open') { wanted = true; seq = message.seq }
   toPage(message)   // open · cmd
@@ -170,8 +189,12 @@ const fromHost = (message) => {
 
 app.whenReady().then(() => {
   // dscpet://assets/… = 플러그인 assets, dscpet://assets/__app/… = 이 앱 폴더 (페이지와 assets가 한 출처여야 Core 계산 Worker를 만들 수 있음)
-  protocol.handle('dscpet', (request) => {
+  protocol.handle('dscpet', async (request) => {
     const url = new URL(request.url), pathname = decodeURIComponent(url.pathname), own = pathname.startsWith(OWN + '/')
+    if (pathname.startsWith(AVATAR_PREFIX)) {   // 3D 모델 폴더 (폴더 실제 경로 안쪽만)
+      const file = await resolveInside(avatar.dir, pathname.slice(AVATAR_PREFIX.length))
+      return file ? net.fetch(pathToFileURL(file).toString()) : new Response('', { status: 404 })
+    }
     const root = own ? APP : ASSETS
     const file = path.join(root, own ? pathname.slice(OWN.length) : pathname)
     if (!inside(root, file)) return new Response('', { status: 404 })
@@ -201,6 +224,7 @@ app.whenReady().then(() => {
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => logToHost('error', `pet page failed to load: ${errorCode} ${errorDescription} ${validatedURL}`))
   win.webContents.on('devtools-opened', detachDevTools)
   win.loadURL(`dscpet://assets${OWN}/index.html`)
+  ipcMain.handle('dsc-config', (event) => (event.sender === win.webContents ? pageConfig() : null))
   ipcMain.on('dsc', (event, message) => {
     if (event.sender !== win.webContents || !message || typeof message.type !== 'string') return
     switch (message.type) {
