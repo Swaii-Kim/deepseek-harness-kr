@@ -7,6 +7,7 @@ import { createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf
 import { PARAMS } from "./model-profile.ts";
 import { addBindingWeight, addTargetWeight, isVrmModel, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
+import { createTaa } from "./taa.ts";
 import type { Lifetime } from "./lifetime.ts";
 import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
 
@@ -77,6 +78,11 @@ export type AvatarProfile = {
    * auto = false면 자동 판정 끔, mirror = 좌우 반전을 직접 지정, yaw = 세로축으로 더 돌릴 각도(도)
    */
   orientation?: { auto?: boolean; mirror?: boolean; yaw?: number };
+  /**
+   * 렌더링 (실험): antialias = msaa(기본, MSAA + 1.5배 렌더 배율) 또는 taa(MSAA 끔 + 화면 배율 그대로 + 시간 누적 안티앨리어싱, taa.ts)
+   * scale = 렌더 배율에 더 곱할 값 (기본 1)
+   */
+  render?: { antialias?: "msaa" | "taa"; scale?: number };
 };
 
 /** 외곽선 법선 출처 */
@@ -420,7 +426,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   applyOrientation(root, hipsAt && headAt && leftArmAt && rightArmAt
     ? { hips: hipsAt, head: headAt, leftUpperArm: leftArmAt, rightUpperArm: rightArmAt, leftEye: pointOf("leftEye"), rightEye: pointOf("rightEye") } : null, profile.orientation);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: true, stencil: true });   // 스텐실(눈썹이 앞머리 위로 비침)에 필요, three.js 기본은 꺼짐
+  const taaMode = profile.render?.antialias === "taa", renderScale = profile.render?.scale ?? 1;
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: !taaMode, premultipliedAlpha: true, stencil: true });   // 스텐실(눈썹이 앞머리 위로 비침)에 필요, three.js 기본은 꺼짐
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   const scene = new THREE.Scene();
@@ -436,6 +443,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     });
     renderer.dispose();
   });
+  const taa = taaMode ? createTaa(renderer, life) : null;   // TAA는 MSAA 대신 지터·히스토리로 경계를 고름
 
   // ---------- 재질: 툰 재질로 바꾸고 숨길 것은 숨김 ----------
   const textures = new Map<string, THREE.Texture>();
@@ -821,7 +829,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     },
     chibiRegion(y) { return y < toCanvas(worldOf(bone("neck")) || headPos).y ? "head" : "body"; },
     setResolution(k) {
-      const ratio = (devicePixelRatio || 1) * 1.5 * Math.max(1, k);
+      const ratio = (devicePixelRatio || 1) * (taa ? 1 : 1.5) * Math.max(1, k) * renderScale;   // TAA는 화면 배율 그대로 (지터 누적이 초과 표본 역할)
       if (renderer.getPixelRatio() === ratio && canvas.width > 0) return;
       renderer.setPixelRatio(ratio);
       renderer.setSize(W, H, false);
@@ -841,7 +849,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       if (dt > 0) springs.step(dt);
       vrmRuntime?.update(dt);   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈
       if (profile.faceSdf) updateFaceSdf();
-      renderer.render(scene, camera);
+      if (taa) taa.render(scene, camera, time); else renderer.render(scene, camera);
     },
     gesture(name, ms) {
       const action = gestureActions.get(name);
