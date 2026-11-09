@@ -1,10 +1,11 @@
-// 3D 모델(FBX) 렌더러. three.js FBXLoader로 모델을 불러와 자체 툰 재질(toon-material.ts)로 그리고, 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
+// 3D 모델(FBX·VRM) 렌더러. three.js FBXLoader(VRM은 rig-vrm.ts)로 모델을 불러와 자체 툰 재질(toon-material.ts)로 그리고, 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
 // 모델 파일과 모델별 대응표(avatar.json)는 저장소 밖 사용자 폴더에 있고, 플러그인 호스트가 /deepseek-harness-kr/avatar/로 서빙함.
 // 이 파일은 따로 묶여(assets/vendor/rig-three.js) 3D 모델을 켰을 때만 불러옴 (window.DscRigThree).
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
 import { PARAMS } from "./model-profile.ts";
+import { addBindingWeight, addTargetWeight, isVrmModel, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import type { Lifetime } from "./lifetime.ts";
 import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
@@ -13,11 +14,14 @@ import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
 export type HumanBone = "hips" | "spine" | "chest" | "neck" | "head" | "leftEye" | "rightEye"
   | "leftUpperArm" | "rightUpperArm" | "leftLowerArm" | "rightLowerArm" | "leftHand" | "rightHand"
   | "leftUpperLeg" | "rightUpperLeg" | "leftLowerLeg" | "rightLowerLeg" | "leftFoot" | "rightFoot";
-/** 채널 값 → 모프 세기 변환. linear = 값×scale, invert = (1-값)×scale, positive·negative = 양수·음수 쪽만 */
-export type MorphBinding = { morph: string; map?: "linear" | "invert" | "positive" | "negative"; scale?: number };
+/**
+ * 채널 값 → 모프 세기 변환. linear = 값×scale, invert = (1-값)×scale, positive·negative = 양수·음수 쪽만
+ * 대상은 morph(모프 이름) 또는 expression(VRM 표정 이름) 중 하나
+ */
+export type MorphBinding = { morph?: string; expression?: string; map?: "linear" | "invert" | "positive" | "negative"; scale?: number };
 /** 모델 폴더의 avatar.json 형식 (모델별 대응표) */
 export type AvatarProfile = {
-  /** 모델 파일 (폴더 기준 상대 경로, FBX) */
+  /** 모델 파일 (폴더 기준 상대 경로, FBX 또는 VRM. VRM은 이 값만 있어도 되고 나머지는 덮어쓰기) */
   model: string;
   /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
   hide?: string[];
@@ -32,11 +36,11 @@ export type AvatarProfile = {
     stencil?: { ref: number; write?: boolean; test?: "equal" | "notEqual" };
     /** 그리는 순서 (작을수록 먼저, 기본 0). 스텐실을 쓰는 재질이 읽는 재질보다 먼저 그려지게 할 때 */
     order?: number }>;
-  /** 사람형 뼈 → 모델 뼈 이름 */
+  /** 사람형 뼈 → 모델 뼈 이름 (VRM은 VRM 사람형 뼈가 기본) */
   bones: Partial<Record<HumanBone, string>>;
-  /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프 대응 */
+  /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프·VRM 표정 대응 */
   channels?: Record<string, MorphBinding[]>;
-  /** 표정 이름 → 모프 세기 (0~1) */
+  /** 표정 이름 → 대상 세기 (0~1). 대상 이름은 VRM 표정 이름이 먼저, 아니면 모프 이름 */
   expressions?: Record<string, Record<string, number>>;
   /** 소품·옷 키(shared/settings.js) → 모프 (invert면 켰을 때 0, 껐을 때 1 = 숨김 모프) */
   outfit?: Record<string, Array<{ morph: string; invert?: boolean }>>;
@@ -395,17 +399,23 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   /** 외곽선 법선 출처 (설정 드롭다운, 없으면 avatar.json 값) */
   outlineNormals?: OutlineNormals;
 }): Promise<AvatarRig | null> {
-  const profile = await (await fetch(base + "avatar.json")).json() as AvatarProfile;
-  if (profile.outline && outlineNormals) profile.outline.normals = outlineNormals;
+  const json = await (await fetch(base + "avatar.json")).json() as AvatarProfile;
+  if (json.outline && outlineNormals) json.outline.normals = outlineNormals;
   const textureLoader = new THREE.TextureLoader();
   const loader = new FBXLoader();
-  const model = await loader.loadAsync(base + profile.model);
+  // VRM: three-vrm으로 읽고 VRM 값으로 프로필을 합성(avatar.json은 덮어쓰기)·MToon을 툰 재질로 바꿈
+  const vrm = isVrmModel(json.model) ? await loadVrm(base + json.model, json, life) : null;
+  const profile = vrm ? vrm.profile : json;
+  const vrmRuntime: VrmRuntime | null = vrm ? vrm.runtime : null;
+  const model = vrm ? vrm.model : await loader.loadAsync(base + profile.model);
   if (life.stopped) return null;
+  /** VRM 사람형 뼈 노드 (FBX·avatar.json으로 이름을 준 뼈는 없음 → 이름으로 찾음) */
+  const vrmNode = (name: HumanBone) => vrmRuntime?.nodes.get(name);
   // 방향 보정 그룹: 파일 좌표계와 상관없이 위 +y·정면 +z·이름상 왼쪽 +x 로 (아래 코드는 이 화면 기준을 가정)
   const root = new THREE.Group();
   root.add(model);
   model.updateMatrixWorld(true);
-  const pointOf = (name: HumanBone) => { const id = profile.bones[name]; const node = id ? model.getObjectByName(id) : null; return node ? node.getWorldPosition(new THREE.Vector3()) : null; };
+  const pointOf = (name: HumanBone) => { const id = profile.bones[name]; const node = vrmNode(name) ?? (id ? model.getObjectByName(id) : null); return node ? node.getWorldPosition(new THREE.Vector3()) : null; };
   const [hipsAt, headAt, leftArmAt, rightArmAt] = (["hips", "head", "leftUpperArm", "rightUpperArm"] as const).map(pointOf);
   applyOrientation(root, hipsAt && headAt && leftArmAt && rightArmAt
     ? { hips: hipsAt, head: headAt, leftUpperArm: leftArmAt, rightUpperArm: rightArmAt, leftEye: pointOf("leftEye"), rightEye: pointOf("rightEye") } : null, profile.orientation);
@@ -526,7 +536,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   // 모델의 원래 지역 회전 (애니메이션 클립을 옮길 때 기준, 팔 내림 보정 전)
   const bindLocal = new Map<string, THREE.Quaternion>();
   for (const [name, node] of byName) bindLocal.set(name, node.quaternion.clone());
-  const bone = (name: HumanBone) => { const id = profile.bones[name]; return id ? byName.get(id) || null : null; };
+  const bone = (name: HumanBone) => { const id = profile.bones[name]; return vrmNode(name) ?? (id ? byName.get(id) || null : null); };
   root.updateMatrixWorld(true);
   const worldOf = (node: THREE.Object3D | null) => node ? node.getWorldPosition(new THREE.Vector3()) : null;
   /** 월드 축 기준 회전(delta)을 뼈의 지역 회전에 반영: L' = L × (W⁻¹ × D × W) */
@@ -662,6 +672,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const collidersOf = (groups: ColliderGroup[] = []) => COLLIDERS.filter(([group, from]) => groups.includes(group) && bone(from)).map(([, from, to, ratio, offset]): SpringCollider =>
     ({ from: bone(from)!, to: to ? bone(to) : null, fromOffset: offset, radius: ratio * fullH * colliderScale }));
   root.updateMatrixWorld(true);
+  vrmRuntime?.rested();   // VRM 흔들림 뼈는 월드 좌표로 끝점을 들고 있어, 방향 보정·팔 내림 뒤 자세를 기준으로 다시 잡음
   const springs = createSprings((profile.springs || []).map((spec) => ({ ...spec, radius: (spec.radius ?? 0.012) * fullH, colliders: collidersOf(spec.colliders),
     roots: spec.roots.map((id) => byName.get(id)).filter((node): node is THREE.Object3D => !!node) })));
 
@@ -734,15 +745,17 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     turn("leftEye", -eyeY, eyeX, 0);
     turn("rightEye", -eyeY, eyeX, 0);
   };
-  /** 이번 프레임 채널·표정·소품으로 모프 세기 계산·적용 */
+  const vrmNames: ReadonlySet<string> = vrmRuntime?.expressionNames ?? new Set();
+  /** 이번 프레임 채널·표정·소품으로 모프·VRM 표정 세기 계산·적용 */
   const applyMorphs = () => {
     const weights = new Map<string, number>(Object.entries(profile.baseMorphs || {}));
+    const sink: WeightSink = { morphs: weights, expressions: new Map(), vrmNames };
     const add = (morph: string, w: number) => weights.set(morph, (weights.get(morph) || 0) + w);
     for (const [channel, bindings] of Object.entries(profile.channels || {})) {
       const value = values.get(channel) || 0;
-      for (const binding of bindings) { const w = bindingWeight(binding, value); if (w) add(binding.morph, w); }
+      for (const binding of bindings) { const w = bindingWeight(binding, value); if (w) addBindingWeight(sink, binding, w); }
     }
-    for (const [name, w] of expressionWeights) for (const [morph, amount] of Object.entries(profile.expressions?.[name] || {})) add(morph, amount * w);
+    for (const [name, w] of expressionWeights) for (const [target, amount] of Object.entries(profile.expressions?.[name] || {})) addTargetWeight(sink, target, amount * w);
     for (const [key, bindings] of Object.entries(profile.outfit || {})) {
       const raw = values.get("outfit." + key) || 0, item = OUTFIT_ITEMS.find((each) => each.key === key);
       const on = clamp(raw / ((item && item.on) || 1), 0, 1);
@@ -751,6 +764,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     limitExclusiveMorphs(weights, profile.exclusiveMorphs);
     for (const slots of morphSlots.values()) for (const [mesh, index] of slots) mesh.morphTargetInfluences![index] = 0;
     for (const [morph, w] of weights) for (const [mesh, index] of morphSlots.get(morph) || []) mesh.morphTargetInfluences![index] = clamp(w, 0, 1);
+    vrmRuntime?.setExpressions(sink.expressions);
   };
 
   // ---------- 터치: 뼈를 화면에 투영한 캡슐 ----------
@@ -825,6 +839,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       applyMorphs();
       root.updateMatrixWorld(true);
       if (dt > 0) springs.step(dt);
+      vrmRuntime?.update(dt);   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈
       if (profile.faceSdf) updateFaceSdf();
       renderer.render(scene, camera);
     },

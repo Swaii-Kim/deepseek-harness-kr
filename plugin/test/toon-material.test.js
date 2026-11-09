@@ -116,3 +116,13 @@ test('avatar.json 재질 설정은 이전 MToon 렌더와 같은 값으로 옮�
   assert.equal(plain.transparent, false)
   assert.deepEqual(toonOptionsOf('X', {}, texture, { color: '#fff' }).rim, { color: '#fff', fresnelPower: 4, lightingMix: 0.5 })
 })
+
+test('림 마스크 맵(MToon rimMultiplyTexture)은 줄 때만 define·uniform이 생기고, 텍스처 변환 행렬도 함께 생긴다', () => {
+  const map = new THREE.Texture()
+  assert.ok(!('TOON_RIM_MAP' in toonDefines({ rim: { color: '#fff' } })), '마스크 없으면 예전과 같은 프로그램')
+  assert.ok('TOON_RIM_MAP' in toonDefines({ rim: { color: '#fff', map } }))
+  const material = createToonMaterial({ rim: { color: '#fff', map }, uvTransforms: true })
+  assert.equal(material.uniforms.rimMap.value, map)
+  assert.ok(material.uniforms.rimMapUvTransform, '표정 UV 바인드·KHR_texture_transform 행렬')
+  assert.ok(!('rimMap' in createToonMaterial({ rim: { color: '#fff' } }).uniforms))
+})

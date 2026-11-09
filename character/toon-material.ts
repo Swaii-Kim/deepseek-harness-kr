@@ -10,8 +10,8 @@ export type FaceSdfUniforms = {
 };
 /** UTS HighColor(스페큘러 하이라이트): power = 날카로움(0~1), mask = 마스크 맵(G), onShadow = 그림자 쪽 세기, strength = 전체 세기, toon = 경계가 딱 떨어지는 툰 모드 */
 export type HighColorOptions = { color: THREE.ColorRepresentation; power?: number; mask?: THREE.Texture | null; onShadow?: number; strength?: number; toon?: boolean };
-/** 림 라이트 (MToon parametric rim): fresnelPower = 가장자리에 모이는 정도, lift = 림을 안쪽까지 끌어올림, lightingMix = 조명 영향 */
-export type RimOptions = { color?: THREE.ColorRepresentation; fresnelPower?: number; lift?: number; lightingMix?: number };
+/** 림 라이트 (MToon parametric rim): fresnelPower = 가장자리에 모이는 정도, lift = 림을 안쪽까지 끌어올림, lightingMix = 조명 영향, map = 림(매트캡 포함)에 곱하는 마스크 맵 (MToon rimMultiplyTexture) */
+export type RimOptions = { color?: THREE.ColorRepresentation; fresnelPower?: number; lift?: number; lightingMix?: number; map?: THREE.Texture | null };
 /** 툰 재질 설정 (빠진 값은 MToon 기본값) */
 export type ToonMaterialOptions = {
   name?: string;
@@ -32,9 +32,22 @@ export type ToonMaterialOptions = {
   faceSdf?: FaceSdfUniforms;
   highColor?: HighColorOptions;
   alphaTest?: number; transparent?: boolean; side?: THREE.Side;
+  /** 불투명도 (MToon opacity, 기본 1) */
+  opacity?: number;
+  /** 접선 공간 노멀 맵과 세기 (MToon normalMap·normalScale, 접선은 화면 미분으로 구함) */
+  normalMap?: THREE.Texture | null; normalScale?: THREE.Vector2;
+  /** 발광 (MToon emissive·emissiveIntensity·emissiveMap): 조명과 무관하게 더함. emissive를 주면 켜짐 */
+  emissive?: THREE.ColorRepresentation; emissiveIntensity?: number; emissiveMap?: THREE.Texture | null;
+  /** 매트캡 (MToon matcapFactor·matcapTexture): 시선 기준 법선으로 읽어 림에 더함 */
+  matcap?: { color?: THREE.ColorRepresentation; map: THREE.Texture };
+  /** 맵마다 텍스처 변환(offset·repeat·rotation: KHR_texture_transform, VRM 표정 UV 바인드)을 적용. 값은 updateUvTransforms로 갱신 */
+  uvTransforms?: boolean;
 };
-/** 외곽선 재질 설정: width = 두께(월드 단위), widthAttribute = 정점 속성 outlineWidth를 두께에 곱함, lightingMix = 조명 영향 */
-export type OutlineMaterialOptions = ToonMaterialOptions & { width: number; outlineColor?: THREE.ColorRepresentation; lightingMix?: number; widthAttribute?: boolean };
+/**
+ * 외곽선 재질 설정: width = 두께(월드 단위), widthAttribute = 정점 속성 outlineWidth를 두께에 곱함, lightingMix = 조명 영향
+ * widthMap = 두께에 G 채널을 곱하는 맵 (MToon outlineWidthMultiplyTexture)
+ */
+export type OutlineMaterialOptions = ToonMaterialOptions & { width: number; outlineColor?: THREE.ColorRepresentation; lightingMix?: number; widthAttribute?: boolean; widthMap?: THREE.Texture | null };
 
 /**
  * 얼굴 SDF 그림자 uniform 만들기
@@ -63,6 +76,39 @@ const rimUniforms = (rim: RimOptions = {}) => ({
   rimLift: { value: rim.lift ?? 0 }, rimLightingMix: { value: rim.lightingMix ?? 1 },
 });
 
+/** 텍스처 uniform → 그 텍스처 변환 행렬 uniform (uvTransforms 기능) */
+const UV_TRANSFORMS = [
+  ["map", "mapUvTransform"], ["shadeMap", "shadeMapUvTransform"], ["shadingShiftMap", "shadingShiftMapUvTransform"], ["normalMap", "normalMapUvTransform"],
+  ["emissiveMap", "emissiveMapUvTransform"], ["matcapMap", "matcapMapUvTransform"], ["outlineWidthMap", "outlineWidthMapUvTransform"],
+  ["rimMap", "rimMapUvTransform"],
+] as const;
+
+/** 켠 기능에만 있는 uniform (노멀 맵·발광·매트캡·텍스처 변환). 끈 기능의 uniform은 만들지 않아 FBX 재질은 예전과 같음 */
+function featureUniforms(options: OutlineMaterialOptions | ToonMaterialOptions): Record<string, THREE.IUniform> {
+  const widthMap = (options as OutlineMaterialOptions).widthMap;
+  return {
+    ...options.normalMap && { normalMap: { value: options.normalMap }, normalScale: { value: (options.normalScale ?? new THREE.Vector2(1, 1)).clone() } },
+    ...options.emissive !== undefined && { emissive: { value: new THREE.Color(options.emissive) }, emissiveIntensity: { value: options.emissiveIntensity ?? 1 }, emissiveMap: { value: options.emissiveMap ?? null } },
+    ...options.matcap && { matcapColor: { value: new THREE.Color(options.matcap.color ?? 0xffffff) }, matcapMap: { value: options.matcap.map } },
+    ...options.rim?.map && { rimMap: { value: options.rim.map } },
+    ...widthMap && { outlineWidthMap: { value: widthMap } },
+    ...options.uvTransforms && Object.fromEntries(UV_TRANSFORMS.map(([, transform]) => [transform, { value: new THREE.Matrix3() }])),
+  };
+}
+
+/**
+ * 텍스처 변환 행렬 uniform을 지금 텍스처의 offset·repeat·rotation으로 갱신 (MToon update()의 _updateTextureMatrix와 같음)
+ * @param uniforms uvTransforms로 만든 툰 재질의 uniform
+ */
+export function updateUvTransforms(uniforms: Record<string, THREE.IUniform>) {
+  for (const [map, transform] of UV_TRANSFORMS) {
+    const texture = uniforms[map]?.value as THREE.Texture | null | undefined;
+    if (!texture || !uniforms[transform]) continue;
+    if (texture.matrixAutoUpdate) texture.updateMatrix();
+    (uniforms[transform].value as THREE.Matrix3).copy(texture.matrix);
+  }
+}
+
 /**
  * 툰 재질 설정 → uniform (three.js 조명·공통 uniform 포함, 빠진 값은 MToon 기본값)
  * 텍스처는 UniformsUtils.merge가 복제하지 않게 합친 뒤에 넣음. 얼굴 SDF uniform은 같은 객체를 그대로 씀
@@ -76,8 +122,9 @@ export function toonUniforms(options: ToonMaterialOptions): Record<string, THREE
     shadingShiftMap: { value: options.shadingShiftMap ?? null }, shadingShiftMapScale: { value: options.shadingShiftMapScale ?? 1 },
     giEqualization: { value: options.giEqualization ?? 0.9 },
     uvScrollOffset: { value: new THREE.Vector2(...(options.uvOffset ?? [0, 0])) }, uvRotationPhase: { value: options.uvRotation ?? 0 },
-  }, rimUniforms(options.rim), options.highColor ? highColorUniforms(options.highColor) : {}, options.faceSdf ?? {});
+  }, rimUniforms(options.rim), options.highColor ? highColorUniforms(options.highColor) : {}, options.faceSdf ?? {}, featureUniforms(options));
   uniforms.alphaTest.value = options.alphaTest ?? 0;
+  uniforms.opacity.value = options.opacity ?? 1;
   return uniforms;
 }
 
@@ -85,11 +132,13 @@ export function toonUniforms(options: ToonMaterialOptions): Record<string, THREE
  * 셰이더 기능 define (켠 기능만). three.js는 define이 다르면 다른 프로그램으로 컴파일함
  * @param outline 외곽선 재질 설정 (외곽선이 아니면 없음)
  */
-export function toonDefines(options: ToonMaterialOptions, outline?: Pick<OutlineMaterialOptions, "widthAttribute">) {
+export function toonDefines(options: ToonMaterialOptions, outline?: Pick<OutlineMaterialOptions, "widthAttribute" | "widthMap">) {
   const flags: Record<string, boolean> = {
     TOON_MAP: !!options.map, TOON_SHADE_MAP: !!options.shadeMap, TOON_SHADING_SHIFT_MAP: !!options.shadingShiftMap,
     TOON_FACE_SDF: !!options.faceSdf, TOON_HIGHCOLOR: !!options.highColor, TOON_HIGHCOLOR_MASK: !!options.highColor?.mask,
-    OUTLINE: !!outline, OUTLINE_WIDTH_ATTRIBUTE: !!outline?.widthAttribute,
+    TOON_NORMAL_MAP: !!options.normalMap, TOON_EMISSIVE: options.emissive !== undefined, TOON_EMISSIVE_MAP: options.emissive !== undefined && !!options.emissiveMap,
+    TOON_MATCAP: !!options.matcap, TOON_RIM_MAP: !!options.rim?.map, TOON_UV_TRANSFORM: !!options.uvTransforms,
+    OUTLINE: !!outline, OUTLINE_WIDTH_ATTRIBUTE: !!outline?.widthAttribute, OUTLINE_WIDTH_MAP: !!outline?.widthMap,
   };
   return Object.fromEntries(Object.entries(flags).filter(([, on]) => on).map(([name]) => [name, ""]));
 }
@@ -103,10 +152,21 @@ const VERTEX = /* glsl */ `
 #include <clipping_planes_pars_vertex>
 varying vec2 vUv;
 varying vec3 vViewPosition;
+#ifdef TOON_UV_TRANSFORM
+  #define TOON_UV( transform, base ) ( ( transform * vec3( base, 1.0 ) ).xy )
+#else
+  #define TOON_UV( transform, base ) ( base )
+#endif
 #ifdef OUTLINE
   uniform float outlineWidthFactor;
   #ifdef OUTLINE_WIDTH_ATTRIBUTE
     attribute float outlineWidth;
+  #endif
+  #ifdef OUTLINE_WIDTH_MAP
+    uniform sampler2D outlineWidthMap;
+    #ifdef TOON_UV_TRANSFORM
+      uniform mat3 outlineWidthMapUvTransform;
+    #endif
   #endif
 #endif
 
@@ -132,6 +192,9 @@ void main() {
       vec3 outlineOffset = outlineWidthFactor * outlineWidth * worldNormalLength * objectNormal;
     #else
       vec3 outlineOffset = outlineWidthFactor * worldNormalLength * objectNormal;
+    #endif
+    #ifdef OUTLINE_WIDTH_MAP
+      outlineOffset *= texture2D( outlineWidthMap, TOON_UV( outlineWidthMapUvTransform, vUv ) ).g;   // MToon 두께 맵(G)
     #endif
     gl_Position = projectionMatrix * modelViewMatrix * vec4( outlineOffset + transformed, 1.0 );
     gl_Position.z += 1E-6 * gl_Position.w;   // 본체와 깊이가 겹쳐 깨지는 것 방지
@@ -183,6 +246,37 @@ uniform float uvRotationPhase;
   uniform vec3 outlineColor;
   uniform float outlineLightingMix;
 #endif
+#ifdef TOON_NORMAL_MAP
+  uniform sampler2D normalMap;
+  uniform vec2 normalScale;
+#endif
+#ifdef TOON_EMISSIVE
+  uniform vec3 emissive;
+  uniform float emissiveIntensity;
+  #ifdef TOON_EMISSIVE_MAP
+    uniform sampler2D emissiveMap;
+  #endif
+#endif
+#ifdef TOON_MATCAP
+  uniform vec3 matcapColor;
+  uniform sampler2D matcapMap;
+#endif
+#ifdef TOON_RIM_MAP
+  uniform sampler2D rimMap;
+#endif
+// 맵마다 텍스처 변환 (MToon의 <맵>UvTransform과 같음). 끄면 UV 그대로
+#ifdef TOON_UV_TRANSFORM
+  uniform mat3 mapUvTransform;
+  uniform mat3 shadeMapUvTransform;
+  uniform mat3 shadingShiftMapUvTransform;
+  uniform mat3 normalMapUvTransform;
+  uniform mat3 emissiveMapUvTransform;
+  uniform mat3 matcapMapUvTransform;
+  uniform mat3 rimMapUvTransform;
+  #define TOON_UV( transform, base ) ( ( transform * vec3( base, 1.0 ) ).xy )
+#else
+  #define TOON_UV( transform, base ) ( base )
+#endif
 
 #include <common>
 #include <alphatest_pars_fragment>
@@ -214,6 +308,23 @@ float getShading( const in float dotNL, const in float shift ) {
     if ( max( sdfTexel.r, sdfTexel.g ) <= 0.02 ) return shading;
     float sdfValue = mix( sdfTexel.g, sdfTexel.r, faceSdfUseR );
     return smoothstep( faceSdfThreshold - faceSdfSoft, faceSdfThreshold + faceSdfSoft, sdfValue );
+  }
+#endif
+
+#ifdef TOON_NORMAL_MAP
+  // 화면 미분으로 만든 접선 공간 (MToon·three.js getTangentFrame과 같음, 모델에 접선 속성이 없어도 됨)
+  mat3 toonTangentFrame( const in vec3 eyePos, const in vec3 surfNormal, const in vec2 mapUv ) {
+    vec3 q0 = dFdx( eyePos.xyz );
+    vec3 q1 = dFdy( eyePos.xyz );
+    vec2 st0 = dFdx( mapUv.st );
+    vec2 st1 = dFdy( mapUv.st );
+    vec3 q1perp = cross( q1, surfNormal );
+    vec3 q0perp = cross( surfNormal, q0 );
+    vec3 T = q1perp * st0.x + q0perp * st1.x;
+    vec3 B = q1perp * st0.y + q0perp * st1.y;
+    float det = max( dot( T, T ), dot( B, B ) );
+    float scale = ( det == 0.0 ) ? 0.0 : inversesqrt( det );
+    return mat3( T * scale, B * scale, surfNormal );
   }
 #endif
 
@@ -283,7 +394,7 @@ void main() {
   vec4 diffuseColor = vec4( diffuse, opacity );
   ReflectedLight reflectedLight = ReflectedLight( vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ) );
   #ifdef TOON_MAP
-    diffuseColor *= texture2D( map, uv );
+    diffuseColor *= texture2D( map, TOON_UV( mapUvTransform, uv ) );
   #endif
   #include <alphatest_fragment>
 
@@ -291,19 +402,33 @@ void main() {
   #ifdef DOUBLE_SIDED
     normal *= gl_FrontFacing ? 1.0 : -1.0;
   #endif
+  #ifdef TOON_NORMAL_MAP
+    // 접선 공간은 뒤집기 전 법선으로 (MToon과 같은 순서: 외곽선이면 노멀 맵 법선이 뒤집기를 덮어씀)
+    vec2 normalMapUv = TOON_UV( normalMapUvTransform, uv );
+    mat3 tbn = toonTangentFrame( - vViewPosition, normal, normalMapUv );
+    #ifdef DOUBLE_SIDED
+      tbn[0] *= gl_FrontFacing ? 1.0 : -1.0;
+      tbn[1] *= gl_FrontFacing ? 1.0 : -1.0;
+    #endif
+  #endif
   #ifdef OUTLINE
     normal *= -1.0;   // 뒤집어 그린 면의 법선을 바깥쪽으로 되돌림
+  #endif
+  #ifdef TOON_NORMAL_MAP
+    vec3 mapN = texture2D( normalMap, normalMapUv ).xyz * 2.0 - 1.0;
+    mapN.xy *= normalScale;
+    normal = normalize( tbn * mapN );
   #endif
 
   ToonMaterial material;
   material.diffuseColor = diffuseColor.rgb;
   material.shadeColor = shadeColor;
   #ifdef TOON_SHADE_MAP
-    material.shadeColor *= texture2D( shadeMap, uv ).rgb;
+    material.shadeColor *= texture2D( shadeMap, TOON_UV( shadeMapUvTransform, uv ) ).rgb;
   #endif
   material.shadingShift = shadingShift;
   #ifdef TOON_SHADING_SHIFT_MAP
-    material.shadingShift += texture2D( shadingShiftMap, uv ).r * shadingShiftMapScale;
+    material.shadingShift += texture2D( shadingShiftMap, TOON_UV( shadingShiftMapUvTransform, uv ) ).r * shadingShiftMapScale;
   #endif
 
   #include <lights_fragment_begin>
@@ -316,7 +441,26 @@ void main() {
   reflectedLight.directSpecular /= PI;
   vec3 rimMix = mix( vec3( 1.0 ), reflectedLight.directSpecular, rimLightingMix );
   vec3 rim = rimColor * pow( saturate( 1.0 - dot( viewDir, normal ) + rimLift ), rimFresnelPower );
+  #ifdef TOON_MATCAP
+    // 매트캡: 시선에 수직인 두 축으로 법선을 투영한 구면 UV (MToon과 같음)
+    vec3 matcapX = normalize( vec3( viewDir.z, 0.0, -viewDir.x ) );
+    vec3 matcapY = cross( viewDir, matcapX );
+    vec2 sphereUv = 0.5 + 0.5 * vec2( dot( matcapX, normal ), -dot( matcapY, normal ) );
+    rim += matcapColor * texture2D( matcapMap, TOON_UV( matcapMapUvTransform, sphereUv ) ).rgb;
+  #endif
+  #ifdef TOON_RIM_MAP
+    // 림 마스크: 림·매트캡을 이 맵의 색만큼만 (MToon rimMultiplyTexture, 머리카락 등 가장자리 밝힘을 고를 때)
+    rim *= texture2D( rimMap, TOON_UV( rimMapUvTransform, uv ) ).rgb;
+  #endif
   col += rimMix * rim;
+
+  #ifdef TOON_EMISSIVE
+    vec3 totalEmissive = emissive * emissiveIntensity;
+    #ifdef TOON_EMISSIVE_MAP
+      totalEmissive *= texture2D( emissiveMap, TOON_UV( emissiveMapUvTransform, uv ) ).rgb;
+    #endif
+    col += totalEmissive;
+  #endif
 
   #ifdef OUTLINE
     col = outlineColor * mix( vec3( 1.0 ), col, outlineLightingMix );
