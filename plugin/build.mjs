@@ -40,7 +40,7 @@ const client = await esbuild.build({
   footer: { js: 'return module.exports;\n} });' },
 })
 
-// 3D 렌더러(three.js·FBXLoader·MToon): 3D 모델을 켰을 때만 script 태그로 불러오는 따로 묶음
+// 3D 렌더러(three.js·FBXLoader·툰 재질): 3D 모델을 켰을 때만 script 태그로 불러오는 따로 묶음
 const rigThree = await esbuild.build({
   ...common,
   entryPoints: [join(root, 'character/rig-three-entry.ts')],

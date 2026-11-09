@@ -12,6 +12,10 @@ https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.htm
 ## pixi.js · pixi-live2d-display
 MIT License.
 
+## 3D 렌더러 (실험)
+`assets/vendor/rig-three.js` — three.js(FBXLoader 포함)를 함께 묶은 파일입니다. Copyright (c) 2010-2026 three.js authors — MIT License.
+`character/toon-material.ts`의 빛·그림자·림·외곽선 수식은 MToon(three-vrm)을 옮긴 것입니다. Copyright (c) 2019-2026 pixiv Inc. — MIT License.
+
 ## Live2D 모델 (DeepSeek짱)
 `assets/model/` — 오픈소스로 공개된 모델입니다.
 

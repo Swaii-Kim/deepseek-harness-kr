@@ -1,9 +1,9 @@
-// 3D 모델(FBX) 렌더러. three.js FBXLoader로 모델을 불러와 MToon 재질로 그리고, 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
+// 3D 모델(FBX) 렌더러. three.js FBXLoader로 모델을 불러와 자체 툰 재질(toon-material.ts)로 그리고, 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
 // 모델 파일과 모델별 대응표(avatar.json)는 저장소 밖 사용자 폴더에 있고, 플러그인 호스트가 /deepseek-harness-kr/avatar/로 서빙함.
 // 이 파일은 따로 묶여(assets/vendor/rig-three.js) 3D 모델을 켰을 때만 불러옴 (window.DscRigThree).
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
-import { MToonMaterial } from "@pixiv/three-vrm-materials-mtoon";
+import { createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
 import { PARAMS } from "./model-profile.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import type { Lifetime } from "./lifetime.ts";
@@ -21,7 +21,7 @@ export type AvatarProfile = {
   model: string;
   /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
   hide?: string[];
-  /** 재질 이름 → MToon 설정 (텍스처는 폴더 기준 상대 경로) */
+  /** 재질 이름 → 툰 재질 설정 (텍스처는 폴더 기준 상대 경로) */
   materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
     /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정), toon = 경계가 딱 떨어지는 툰 모드(UTS 스페큘러 끔) */
     highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean;
@@ -49,7 +49,7 @@ export type AvatarProfile = {
   /** 함께 켜면 모양이 겹쳐 깨지는 모프 묶음 (예: 눈웃음 + 눈 감기). 앞쪽 모프가 우선이고, 합이 1을 넘으면 뒤쪽을 줄임 */
   exclusiveMorphs?: string[][];
   /**
-   * 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름
+   * 외곽선 (툰 재질 외곽선, 뒷면을 부풀려 그림): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름
    * normals = smooth(같은 위치 법선 평균, 기본) 또는 model(모델에 든 "<메시>_Outline" 메시의 다듬은 법선과 정점 색 R 두께 배율)
    */
   outline?: { width: number; color?: string; skip?: string[]; normals?: OutlineNormals };
@@ -176,6 +176,26 @@ export function applyStencil(material: THREE.Material, stencil: { ref: number; w
   material.stencilRef = stencil.ref;
   material.stencilFunc = stencil.test ? STENCIL_FUNCS[stencil.test] : THREE.AlwaysStencilFunc;
   material.stencilZPass = stencil.write ? THREE.ReplaceStencilOp : THREE.KeepStencilOp;
+}
+/** avatar.json 재질 하나의 설정 */
+export type MaterialSpec = NonNullable<AvatarProfile["materials"]>[string];
+/**
+ * avatar.json 재질 설정 → 툰 재질 설정 (MToon으로 그리던 때와 같은 값: 그늘 색 흰색 × 그늘 맵, 경계 -0.05·0.95 기본)
+ * @param texture 폴더 기준 텍스처 (linear = 색 공간 변환 없이 읽는 수치 맵)
+ * @param rim avatar.json 림 라이트 (없으면 림 없음)
+ * @param faceSdf 이 재질이 얼굴 SDF 재질이면 공유 uniform
+ */
+export function toonOptionsOf(name: string, spec: MaterialSpec, texture: (file?: string, linear?: boolean) => THREE.Texture | undefined,
+  rim?: AvatarProfile["rim"], faceSdf?: FaceSdfUniforms): ToonMaterialOptions {
+  return {
+    name, map: texture(spec.map), shadeColor: 0xffffff, shadeMap: texture(spec.shade),
+    // AO(lilToon의 그림자 경계 마스크): 어두운 텍셀일수록 그림자 경계를 밀어 늘 그늘지게 함
+    shadingShiftMap: texture(spec.ao, true), shadingShiftMapScale: spec.aoScale ?? 1,
+    shadingShift: spec.shadingShift ?? -0.05, shadingToony: spec.shadingToony ?? 0.95,
+    transparent: !!spec.transparent, alphaTest: spec.alphaTest ?? 0, side: spec.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    rim: rim && { color: rim.color, fresnelPower: rim.power ?? 4, lightingMix: rim.mix ?? 0.5 },
+    faceSdf, highColor: spec.highColor && { ...spec.highColor, mask: texture(spec.highColor.mask, true) },
+  };
 }
 /**
  * 여러 재질 메시에서 순서(order)가 0이 아닌 재질을 같은 지오메트리·뼈·모프 배열을 쓰는 복제 메시로 떼어 renderOrder로 그림
@@ -407,7 +427,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     renderer.dispose();
   });
 
-  // ---------- 재질: MToon으로 바꾸고 숨길 것은 숨김 ----------
+  // ---------- 재질: 툰 재질로 바꾸고 숨길 것은 숨김 ----------
   const textures = new Map<string, THREE.Texture>();
   /**
    * 폴더 기준 텍스처 (같은 파일은 한 번만)
@@ -420,61 +440,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     return found;
   };
   const hidden = new Set(profile.hide || []);
-  // 얼굴 SDF 그림자 uniform (매 프레임 머리·빛 방향으로 갱신)
-  const faceSdfUniforms = {
-    faceSdfMap: { value: profile.faceSdf ? texture(profile.faceSdf.map, true)! : null },
-    faceSdfThreshold: { value: 0.5 }, faceSdfUseR: { value: 1 }, faceSdfSoft: { value: profile.faceSdf?.softness ?? 0.02 },
-  };
-  type HighColorSpec = NonNullable<NonNullable<AvatarProfile["materials"]>[string]["highColor"]>;
-  /**
-   * MToon 재질 셰이더에 조각 덧붙이기 (원래 MToon onBeforeCompile을 먼저 실행)
-   * sdf: 그림자 판정(getShading)을 얼굴 SDF 판정으로 바꿈. R·G가 모두 0인 곳(귀·목 등)은 원래 조명 그대로
-   * highColor: UTS2 HighColor처럼 half-Lambert(N·H)를 거듭제곱한 하이라이트를 빛 색·마스크와 곱해 더하고, 그림자 쪽은 onShadow만큼 줄임
-   */
-  const extendMToon = (material: MToonMaterial, parts: { sdf?: boolean; highColor?: HighColorSpec }) => {
-    const uniforms: Record<string, THREE.IUniform> = {};
-    let head = "", body = "";
-    if (parts.sdf) {
-      Object.assign(uniforms, faceSdfUniforms);
-      head += "uniform sampler2D faceSdfMap;\nuniform float faceSdfThreshold;\nuniform float faceSdfUseR;\nuniform float faceSdfSoft;\n";
-      body += `
-    #ifdef MTOON_USE_UV
-      vec3 sdfTexel = texture2D( faceSdfMap, vUv ).rgb;
-      if ( max( sdfTexel.r, sdfTexel.g ) > 0.02 ) {
-        float sdfValue = mix( sdfTexel.g, sdfTexel.r, faceSdfUseR );
-        shading = smoothstep( faceSdfThreshold - faceSdfSoft, faceSdfThreshold + faceSdfSoft, sdfValue ) * shadow;
-      }
-    #endif`;
-    }
-    if (parts.highColor) {
-      const spec = parts.highColor, mask = texture(spec.mask, true);
-      Object.assign(uniforms, {
-        highColor: { value: new THREE.Color(spec.color) }, highColorExponent: { value: Math.pow(2, 11 - 10 * (spec.power ?? 0.7)) },
-        highColorOnShadow: { value: spec.onShadow ?? 0.5 }, highColorMask: { value: mask ?? null }, highColorStrength: { value: spec.strength ?? 1 }, highColorToonEdge: { value: spec.toon ? 1 - Math.pow(spec.power ?? 0.7, 5) : -1 },
-      });
-      head += "uniform vec3 highColor;\nuniform float highColorExponent;\nuniform float highColorOnShadow;\nuniform float highColorStrength;\nuniform float highColorToonEdge;\n" + (mask ? "#define USE_HIGHCOLOR_MASK\nuniform sampler2D highColorMask;\n" : "");
-      body += `
-    {
-      float highHalfLambert = 0.5 * dot( normalize( directLight.direction + geometryViewDir ), geometryNormal ) + 0.5;
-      float highAmount = highColorToonEdge >= 0.0
-        ? smoothstep( highColorToonEdge - 0.005, highColorToonEdge + 0.005, highHalfLambert )   // 툰: 1 - power⁵ 넘는 곳만 딱 끊어 칠함
-        : pow( clamp( highHalfLambert, 0.0, 1.0 ), highColorExponent );
-      #if defined( USE_HIGHCOLOR_MASK ) && defined( MTOON_USE_UV )
-        highAmount *= texture2D( highColorMask, vUv ).g;
-      #endif
-      reflectedLight.directDiffuse += highColor * directLight.color * highAmount * highColorStrength * mix( highColorOnShadow, 1.0, shading );
-    }`;
-    }
-    const mtoonCompile = material.onBeforeCompile.bind(material);   // MToon이 버전 상수 등을 채우는 원래 단계는 먼저 실행
-    material.onBeforeCompile = (shader, renderer) => {
-      mtoonCompile(shader, renderer);
-      Object.assign(shader.uniforms, uniforms);
-      const anchor = "float shading = getShading( dotNL, shadow, material.shadingShift );";
-      shader.fragmentShader = head + shader.fragmentShader.replaceAll(anchor, anchor + body);
-    };
-    const key = material.customProgramCacheKey.bind(material), tag = (parts.sdf ? "|sdf" : "") + (parts.highColor ? "|high" + (parts.highColor.mask ? "M" : "") : "");
-    material.customProgramCacheKey = () => key() + tag;
-  };
+  // 얼굴 SDF 그림자 uniform (얼굴 재질이 같이 쓰고 매 프레임 머리·빛 방향으로 갱신)
+  const faceSdfUniforms = createFaceSdfUniforms(profile.faceSdf ? texture(profile.faceSdf.map, true)! : null, profile.faceSdf?.softness);
   root.traverse((node) => {
     if (hidden.has(node.name)) node.visible = false;
     const mesh = node as THREE.Mesh;
@@ -483,19 +450,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     const swap = (material: THREE.Material) => {
       const spec = profile.materials?.[material.name];
       if (!spec) return material;
-      const toon = new MToonMaterial({
-        ...(spec.map ? { map: texture(spec.map) } : {}), ...(spec.shade ? { shadeMultiplyTexture: texture(spec.shade) } : {}),
-        // AO(lilToon의 그림자 경계 마스크): 어두운 텍셀일수록 그림자 경계를 밀어 늘 그늘지게 함
-        ...(spec.ao ? { shadingShiftTexture: texture(spec.ao, true), shadingShiftTextureScale: spec.aoScale ?? 1 } : {}),
-        shadeColorFactor: new THREE.Color(1, 1, 1),
-        shadingShiftFactor: spec.shadingShift ?? -0.05, shadingToonyFactor: spec.shadingToony ?? 0.95,
-        transparent: !!spec.transparent, alphaTest: spec.alphaTest ?? 0,
-        side: spec.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
-        ...(profile.rim ? { parametricRimColorFactor: new THREE.Color(profile.rim.color), parametricRimFresnelPowerFactor: profile.rim.power ?? 4, rimLightingMixFactor: profile.rim.mix ?? 0.5 } : {}),
-      });
-      toon.name = material.name;
       const sdf = !!profile.faceSdf && profile.faceSdf.material === material.name;
-      if (sdf || spec.highColor) extendMToon(toon, { sdf, highColor: spec.highColor });
+      const toon = createToonMaterial(toonOptionsOf(material.name, spec, texture, profile.rim, sdf ? faceSdfUniforms : undefined));
       toon.visible = !spec.hidden;
       if (spec.stencil) applyStencil(toon, spec.stencil);
       material.dispose();
@@ -504,7 +460,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
   });
 
-  // ---------- 외곽선: 같은 뼈·모프를 쓰는 복제 메시에 MToon 외곽선 재질(뒤집어 부풀려 그림) ----------
+  // ---------- 외곽선: 같은 뼈·모프를 쓰는 복제 메시에 툰 외곽선 재질(뒤집어 부풀려 그림) ----------
   if (profile.outline) {
     const height = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y;
     const skip = new Set(profile.outline.skip || []);
@@ -513,24 +469,14 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
      * @param vertexWidth true면 정점 속성 outlineWidth를 두께에 곱함 (모델 제공 외곽선의 정점 색 R)
      */
     const outlineMaterial = (source: THREE.Material, vertexWidth = false) => {
-      const material = new MToonMaterial({
-        isOutline: true, outlineWidthMode: "worldCoordinates", outlineWidthFactor: profile.outline!.width * height,
-        outlineColorFactor: new THREE.Color(profile.outline!.color || "#2b2430"), outlineLightingMixFactor: 0.3, side: THREE.BackSide,
-        alphaTest: (source as THREE.Material & { alphaTest?: number }).alphaTest ?? 0,
-        ...((source as MToonMaterial).map ? { map: (source as MToonMaterial).map! } : {}),
+      // 표면 설정은 바탕 맵·알파 테스트만 따르고 나머지는 기본값 (MToon 외곽선 재질로 그리던 때와 같은 색)
+      const material = createOutlineMaterial({
+        width: profile.outline!.width * height, outlineColor: profile.outline!.color || "#2b2430", lightingMix: 0.3,
+        map: mapOf(source), alphaTest: source.alphaTest, widthAttribute: vertexWidth,
       });
       material.visible = source.visible && !skip.has(source.name);
       const stencil = profile.materials?.[source.name]?.stencil;
       if (stencil?.test) applyStencil(material, { ref: stencil.ref, test: stencil.test });   // 앞머리 외곽선도 비친 눈썹을 덮지 않게
-      if (vertexWidth) {
-        const mtoonCompile = material.onBeforeCompile.bind(material);
-        material.onBeforeCompile = (shader, renderer) => {
-          mtoonCompile(shader, renderer);
-          shader.vertexShader = "attribute float outlineWidth;\n" + shader.vertexShader.replace("vec3 outlineOffset = outlineWidthFactor * worldNormalLength * objectNormal;", "vec3 outlineOffset = outlineWidthFactor * outlineWidth * worldNormalLength * objectNormal;");
-        };
-        const key = material.customProgramCacheKey.bind(material);
-        material.customProgramCacheKey = () => key() + "|outlineWidth";
-      }
       life.add(() => material.dispose());
       return material;
     };
@@ -545,7 +491,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     for (const mesh of meshes) {
       const candidate = profile.outline.normals === "model" ? authored.get(mesh.name + "_Outline") : undefined;
       const own = candidate && samePositions(candidate.geometry, mesh.geometry, height * 1e-4) ? candidate : undefined;   // 모양이 다른 외곽선 메시는 매끄러운 법선으로 대신
-      if (own) {   // 모델 제공 외곽선 메시: 다듬은 법선·정점 색 R(두께 배율)을 그대로 쓰고 재질만 MToon 외곽선으로
+      if (own) {   // 모델 제공 외곽선 메시: 다듬은 법선·정점 색 R(두께 배율)을 그대로 쓰고 재질만 툰 외곽선으로
         const materials = ([] as THREE.Material[]).concat(mesh.material);
         const color = own.geometry.getAttribute("color");
         if (color) own.geometry.setAttribute("outlineWidth", new THREE.BufferAttribute(Float32Array.from({ length: color.count }, (_, i) => color.getX(i)), 1));
