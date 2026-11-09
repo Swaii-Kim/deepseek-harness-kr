@@ -25,6 +25,8 @@ https://github.com/user-attachments/assets/7e7a96cc-efc8-416d-89a0-f574fdcda690
 - 모바일(터치 전용) 화면에서도 캐릭터를 보여 주고, 좁은 화면에서는 입력창 위로 비켜 섭니다
 - 플러그인·자동화 화면에서는 창 안 캐릭터와 말풍선을 잠시 숨깁니다. 대화 화면으로 돌아오면 기존 표시 상태로 복구하며, 이미 창 밖으로 꺼낸 독립 펫은 그대로 유지합니다.
 - 캐릭터를 Harness 창 밖으로 꺼내 다른 앱 위에 띄우는 바깥 펫 창 — [바깥 펫 창](#바깥-펫-창)
+- (beta) Live2D 대신 내 FBX·VRM 3D 모델로 캐릭터 그리기. 바깥 펫 창도 같은 모델로 그립니다 — [3D 모델](#3d-모델-beta)
+- (실험적) 대사 ex 파일로 상황별 대사 바꾸기 — [대사 ex](#대사-ex-실험적)
 - 파스텔 테마 (Harness의 밝은 모드·다크 모드 설정을 그대로 따름). 좁은 화면에서 겹쳐 뜨는 왼쪽 드로어·오른쪽 전체화면 패널은 내용이 비치지 않도록 불투명 배경으로 표시합니다
 - UI 번역 73개 네임스페이스를 제공하는 한국어 언어팩 (한국어·영어 화면 지원)
 - (선택) 말풍선 음성(TTS) — [말풍선 음성](#말풍선-음성-tts-옵트인)
@@ -108,7 +110,8 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 | 펫 창 단⁠축⁠키 | 캐릭터를 바깥 펫 창으로 내보내고 다시 불러오는 단축키 (기본값 `Ctrl+Shift+P`, 비우면 사용 안 함) |
 | 캔⁠버⁠스⁠만 숨⁠김⁠/⁠표⁠시 | 왼쪽 스위치를 켠 사람만 쓰는 단축키 (기본값 꺼짐, `Ctrl+Shift+H`). 캐릭터 설정을 끄는 것이 아니라 캔버스만 잠시 숨기고 표시합니다(그리기만 멈춤). 숨긴 동안 화면 오른쪽 아래의 **‘캐릭터 숨김 · 다시 표시’** 칩으로 되돌릴 수 있습니다 |
 | 말⁠풍⁠선 음⁠성 | 말풍선 대사를 TTS로 읽기 (기본값 꺼짐) — [말풍선 음성](#말풍선-음성-tts-옵트인) 참고 |
-| 대⁠사 ex | 실험적 기능 (기본값 꺼짐) |
+| 3⁠D 모⁠델 (실⁠험) | 모델 폴더, 외곽선 법선, 눈썹 움직임 세기·부드러움, 앰비언트 오클루전과 세기. 폴더를 비우면 기본 Live2D 캐릭터 (기본값 비어 있음) — [3D 모델](#3d-모델-beta) 참고 |
+| 대⁠사 ex | 켜면 `assets/dsc-lines-ex.json`에 적은 상황의 대사로 기본 대사를 바꿈 (기본값 꺼짐) — [대사 ex](#대사-ex-실험적) 참고 |
 
 캐릭터·테마·한국어는 기본값이 활성화이며, 변경 사항은 즉시 적용되고 현재 프로필에 저장됩니다. 한국어 표시 언어는 **설정 → 일반 설정 → 언어**(Settings → General → Language)에서 선택합니다.
 
@@ -138,12 +141,62 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 
 라우트 설명은 [`plugins/dsh-tts/README.md`](plugins/dsh-tts/README.md)를 참고하세요. 예전처럼 `dsh-tts`를 단독 row로 따로 넣었다면, kr 플러그인과 같은 라우트를 쓰므로 그 row를 지우고 설정 창으로 옮겨 주세요.
 
+## 3D 모델 (beta)
+
+0.9.0부터 기본 Live2D 캐릭터 대신 직접 가진 3D 모델로 캐릭터를 그릴 수 있습니다([#27](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/27)). 같은 동작 코드가 모델을 움직이므로 작업 상태 반응·시선·말풍선 입 모양·바깥 펫 창은 그대로 이어집니다.
+
+- 지원 형식은 **FBX**와 **VRM(0.x·1.0)** 입니다. 다른 확장자는 지원 형식을 알려 주는 경고를 냅니다.
+- 모델 파일은 저장소·배포물에 들어 있지 않습니다. 설정에 지정한 로컬 폴더에서만 읽고, 폴더 밖 파일은 읽지 않습니다. 모델의 이용 약관은 직접 확인해 주세요.
+- 3D 모델에는 기본 반응만 적용되고, 냄비·세숫대야·삐짐 같은 DeepSeek짱 고유 행동은 `avatar.json`의 `behaviors`로 켜야 동작합니다 — [캐릭터 고유 행동](#캐릭터-고유-행동)
+- 모델 폴더를 비워 두면(기본값) 3D 렌더러를 불러오지 않으며, Live2D 캐릭터는 이전과 똑같이 동작합니다.
+
+### 설정 방법
+
+1. 모델 폴더를 하나 만들고 모델 파일(`.vrm` 또는 `.fbx`)과 `avatar.json`을 넣습니다.
+2. 플러그인 설정의 **3D 모델 (실험)** 구역에서 **모델 폴더**에 그 폴더의 절대 경로를 넣고 화면을 새로 불러옵니다. 비우면 기본 Live2D 캐릭터로 돌아갑니다.
+3. 같은 구역에서 외곽선 법선, 눈썹 움직임 세기·부드러움, 앰비언트 오클루전(모델에 AO 맵이 없으면 자동으로 구워 캐시)과 세기를 조절할 수 있습니다.
+
+**VRM**은 사람형 뼈·표정·흔들림 뼈를 파일에서 읽으므로 한 줄이면 됩니다.
+
+```json
+{ "model": "MyAvatar.vrm" }
+```
+
+**FBX**는 모델마다 뼈·모프 이름이 달라 대응표를 적어야 합니다. 주요 항목:
+
+| 항목 | 내용 |
+|---|---|
+| `model` | 모델 파일 이름 |
+| `bones` | 사람형 뼈(hips, spine, chest, neck, head, 팔·눈 등) → 모델 뼈 이름 |
+| `channels` | 동작 채널(눈 깜빡임, 입 모양, 눈썹 등) → 모프 이름·세기 |
+| `expressions` | 표정 이름 → 모프 세기 |
+| `materials` | 재질별 텍스처(바탕·그늘·AO 맵 등)·그리는 순서 |
+| `springs` | 흔들림 뼈 시작점·강도·충돌체 |
+| `animations` | 대기·몸짓 애니메이션 클립 |
+| `outline`, `light`, `rim`, `faceSdf` | 외곽선·조명·림·얼굴 그림자 |
+| `orientation` | 모델 방향(기본은 사람형 뼈로 자동 정규화) |
+| `render` | 안티에일리어싱(`"msaa"` 기본, `"taa"`)·렌더 배율 |
+| `behaviors` | 켤 DeepSeek짱 고유 행동 목록(기본은 없음) |
+| `gaze` | 시선 반응성 — [시선 반응성](#시선-반응성) |
+
+VRM에서도 위 항목을 적으면 기본값을 덮어씁니다(예: `gaze`, `channelSmooth`, `ao`). 더 자세한 예시와 스크린샷은 [PR #27](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/27)을 참고하세요.
+
+## 대사 ex (실험적)
+
+설정의 **대사 ex** 스위치(기본값 꺼짐)를 켜면 `assets/dsc-lines-ex.json`에 적은 대사가 기본 대사를 대신합니다.
+
+- 파일의 `lines`에 적은 상황 키만 통째로 바뀌고, 적지 않은 상황은 기본 대사(`assets/dsc-lines.json`)를 그대로 씁니다. 끄면 기본 대사로 돌아갑니다.
+- 파일이 깨진 JSON이면 무시하고 기본 대사로 동작합니다. ex 파일에는 길이 제한(26자)과 중복 검사를 적용하지 않습니다.
+- 파일 형식과 텍스트 대사 묶음을 변환하는 방법은 [`docs/ex-lines-guide.md`](docs/ex-lines-guide.md)에 있습니다(`tools/convert-part-lines.mjs`).
+- 플러그인을 업데이트하면 `assets/` 폴더가 교체되어 **직접 고친 ex 파일이 덮어써질 수 있습니다.** 따로 보관해 두세요.
+
 ## 호환성
 
 - 지원하는 DSH 버전은 0.2.1-rc.5 이상 0.3 미만입니다. 0.8.0 구조 개편은 Windows DSH 0.2.2와 macOS DSH 0.2.2-rc.1의 격리 프로필에서 실제 동작을 확인했습니다([#26](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/26)).
 - 작업 상태와 추론 문구는 화면의 DOM 구조로 감지합니다. DSH 업데이트가 DOM 구조나 플러그인 API를 바꾸면 호환성 수정이 필요할 수 있습니다.
 - Electron 네이티브 메뉴·업데이트/복구 창, 패키지 메타데이터 설명과 일부 하드코딩 문구는 언어팩의 번역 대상이 아닙니다.
 - 펫 창의 크기 자동 조절과 복귀 연출은 Windows에서 검증했습니다. macOS에서는 화면 배치에 따라 창 위치가 어긋날 수 있습니다.
+- 3D 렌더링 시스템은 beta입니다. 펫 창에서 창 안으로 끌어 붙일 때 몇 프레임 튈 수 있습니다(Live2D 때부터 있던 구조, 후속 수정 예정).
 
 ## 개발
 
@@ -152,8 +205,10 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 | 폴더 | 내용 |
 |---|---|
 | `plugin/` · `package.json` | DSH 플러그인: 호스트·설정 화면(`plugin/client.ts`)·한국어 번역(`plugin/locales.ko.json`)·빌드와 테스트 |
-| `character/` | 인앱 캐릭터 TypeScript 소스. 빌드하면 `assets/dsc.js`와 `lib/client.js`가 만들어집니다 |
-| `assets/` | 빌드된 캐릭터 코드(`dsc.js`)와 Live2D 모델·테마·배경 |
+| `character/` | 인앱 캐릭터 TypeScript 소스(고유 행동은 `character/behaviors/`). 빌드하면 `assets/dsc.js`와 `lib/client.js`가 만들어집니다 |
+| `assets/` | 빌드된 캐릭터 코드(`dsc.js`)·3D 렌더러 번들(`vendor/rig-three.js`), 대사(`dsc-lines.json`·`dsc-lines-ex.json`)와 Live2D 모델·테마·배경 |
+| `docs/` | 대사 추가 가이드(`dialogue-guide.md`)·대사 ex 변환 가이드(`ex-lines-guide.md`)·소개 이미지 |
+| `tools/` | 대사 파일 검사기(`check-lines.mjs`)·대사 ex 변환기(`convert-part-lines.mjs`) |
 | `lib/` | 빌드된 플러그인 클라이언트(`client.js`) |
 | `pet/` | 바깥 펫 창(Electron) 코드 |
 | `shared/` | 캐릭터·설정 화면·펫 메뉴가 함께 쓰는 소품·체형 정의 |
@@ -176,10 +231,20 @@ npm test
 사용자에게 나가는 변경이면 `package.json`의 `version`도 올려 주세요. 플러그인(Plugins) 화면의 버전 표시로 새 버전인지 구분할 수 있습니다.
 동작을 바꾸지 않는 리팩터링이면 `npm run trace:diff -- <기준 커밋 체크아웃> [--pet]`으로 캐릭터 동작이 프레임마다 같은지 비교할 수 있습니다(기본 테스트에는 들어 있지 않음).
 
+### 대사 수정
+
+대사는 `assets/dsc-lines.json` 한 파일에 있고 런타임에 읽어 오므로 **대사만 고칠 때는 빌드가 필요 없습니다.** 상황 키·태그·길이 규칙은 [`docs/dialogue-guide.md`](docs/dialogue-guide.md)를 따르고, 고친 뒤에는 검사기를 통과시켜 주세요.
+
+```powershell
+node tools/check-lines.mjs
+```
+
+검사기는 `assets/dsc-lines.json` 전용이며 대사 ex 파일은 검사하지 않습니다 — [대사 ex](#대사-ex-실험적)
+
 ### Live2D 모델과 렌더러
 
-이 Live2D 모델 전용 값(파일 경로·파라미터·파츠·표정·치수)은 `character/model-profile.ts`에 모여 있습니다(소품·체형 파라미터는 `shared/settings.js`). 애니메이션이 모델에 값을 쓰는 지점은 `character/index.ts`의 `setParam`·`addParam`·`multiplyParam`입니다.
-VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(PIXI Live2D), 매 프레임 파라미터 쓰기(위 함수), 메시 정점·알파로 하는 터치 판정과 상반신·전신 기준 좌표 계산, 정점 변형을 맡는 Core Worker(`assets/dsc-core-worker.js`), 표정 파일 섞기, 동물귀 파트 불투명도 조절을 새 렌더러에 맞게 바꿔야 합니다. 렌더러 추상화 계층은 아직 없습니다.
+이 Live2D 모델 전용 값(파일 경로·파라미터·파츠·표정·치수)은 `character/model-profile.ts`에 모여 있습니다(소품·체형 파라미터는 `shared/settings.js`).
+동작 코드(`character/index.ts`)는 `character/rig.ts`의 `AvatarRig` 인터페이스로만 모델에 값을 씁니다(`set`·`add`·`multiply`, 표정, 터치 판정, 프레임 진행 등). Live2D 구현은 `character/rig-live2d.ts`, 3D 구현은 `character/rig-three.ts`(FBX)·`character/rig-vrm.ts`(VRM)이고, 3D는 Live2D 파라미터 이름을 의미 채널로 받아 `avatar.json` 대응표에 따라 뼈·모프에 적용합니다. 3D 렌더러 번들(`assets/vendor/rig-three.js`)은 3D 모델을 쓸 때만 불러옵니다. 셰이더는 MToon 대신 자체 툰 셰이더(`character/toon-material.ts`)를 씁니다.
 
 ### 캐릭터 고유 행동
 
@@ -204,8 +269,8 @@ VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(P
 - [Claude](https://claude.ai) (Anthropic, Claude Code) — 한국어화·인앱 캐릭터 코드, 패치·빌드 도구, 소개 영상 제작, PR 검증·릴리즈
 - [Codex](https://openai.com/codex) (OpenAI) — 이슈·PR 작업 계획, 코드 검수, 문서 정리
 - [DeepSeek](https://www.deepseek.com) (DeepSeek V4.1 Flash 1017) — 버그 수정, PR 통합·기능 구현, 자동 테스트
-- [Opus](https://claude.ai) (Anthropic, Claude Opus) — 0.9.0 기능 통합·릴리즈 작업
-- Gemma 4 26B A4B heretic — 0.9.0 작업 참여
+- [Opus](https://claude.ai) (Anthropic, Claude Opus) — 기능 통합·릴리즈 작업
+- Gemma 4 26B A4B heretic — 대사 ex 작성
 - Live2D 모델 원작: Kamiya_Ryoko (VGen @KAMIYA) — `NOTICE.md` 참고
 
 ### 기여해 주신 분
