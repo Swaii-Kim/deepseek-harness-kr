@@ -31,6 +31,8 @@ interface PluginSettings {
   dragKey?: string
   avatarModelDir?: string
   avatarOutline?: string
+  avatarBrowScale?: number | string
+  avatarBrowSmooth?: number | string
   tts?: TtsSettings
 }
 /** 말풍선 음성 설정 (plugins/dsh-tts 설정과 같은 모양) */
@@ -70,6 +72,18 @@ const sleepMinutes = (value: number | string | undefined) => {
   const n = Number(value ?? 1)
   return Number.isFinite(n) ? Math.min(60, Math.max(0.5, n)) : 1
 }
+/**
+ * 숫자 설정값을 범위 안으로 정리. 숫자가 아니면 기본값
+ * @param value 설정값 @param min·max 범위 @param fallback 기본값
+ */
+const inRange = (value: number | string | undefined, min: number, max: number, fallback: number) => {
+  const n = Number(value ?? fallback)
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback
+}
+/** 3D 눈썹 움직임 세기(배율 0~2, 기본 1) @param value 설정값 */
+const browScale = (value: number | string | undefined) => inRange(value, 0, 2, 1)
+/** 3D 눈썹 부드럽게 따라가는 시간(ms 0~300, 기본 80) @param value 설정값 */
+const browSmoothMs = (value: number | string | undefined) => inRange(value, 0, 300, 80)
 // ---------- 단축키 ----------
 // 설정 칸을 눌러 원하는 키 조합을 그대로 눌러 등록하고, 실제 입력도 같은 규칙으로 해석한다.
 const SHORTCUT_HINT_ID = 'deepseek-harness-kr-shortcut-hint'
@@ -279,8 +293,9 @@ function characterPrefs(value: PluginSettings) {
     intro: { enabled: value.intro !== false },
     // 모바일(터치 전용) 화면에서 캐릭터를 숨길지: 캐릭터가 매 프레임 읽는다 (기본 표시)
     mobile: { enabled: value.mobileCharacter !== false },
-    // 실험: 3D 모델 폴더가 있으면 창 안 캐릭터를 3D 렌더러로 (캐릭터가 처음 뜰 때만 읽음)
-    avatar: { enabled: typeof value.avatarModelDir === 'string' && value.avatarModelDir.trim() !== '', outline: value.avatarOutline === 'model' ? 'model' as const : 'smooth' as const },
+    // 실험: 3D 모델 폴더가 있으면 창 안 캐릭터를 3D 렌더러로 (캐릭터가 처음 뜰 때만 읽음). 눈썹 세기·부드러움은 매 프레임 읽음
+    avatar: { enabled: typeof value.avatarModelDir === 'string' && value.avatarModelDir.trim() !== '', outline: value.avatarOutline === 'model' ? 'model' as const : 'smooth' as const,
+      browScale: browScale(value.avatarBrowScale), browSmooth: browSmoothMs(value.avatarBrowSmooth) / 1000 },
     // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
     drag: { key: value.dragKey ?? 'Alt' },
   }
@@ -987,7 +1002,17 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
             /** 고른 외곽선 법선 저장 */
             onChange: (event: React.ChangeEvent<HTMLSelectElement>) => change('avatarOutline', event.target.value) },
             React.createElement('option', { value: 'smooth' }, ko ? '매끄러운 법선 (기본)' : 'Smoothed normals (default)'),
-            React.createElement('option', { value: 'model' }, ko ? '모델 제공 외곽선' : 'Model-provided outline')))),
+            React.createElement('option', { value: 'model' }, ko ? '모델 제공 외곽선' : 'Model-provided outline'))),
+        React.createElement('label', { style: row },
+          React.createElement('span', null, ko ? '눈썹 움직임 세기 (배, 0~2)' : 'Eyebrow motion strength (x, 0-2)'),
+          React.createElement('input', { type: 'number', min: 0, max: 2, step: 0.05, style: { width: 90 }, value: browScale(state.value?.avatarBrowScale), disabled: off,
+            /** 눈썹 세기를 범위 안으로 정리해 저장 */
+            onChange: (event) => change('avatarBrowScale', browScale(event.target.value)) })),
+        React.createElement('label', { style: row },
+          React.createElement('span', null, ko ? '눈썹 움직임 부드럽게 (ms, 0~300)' : 'Eyebrow motion smoothing (ms, 0-300)'),
+          React.createElement('input', { type: 'number', min: 0, max: 300, step: 10, style: { width: 90 }, value: browSmoothMs(state.value?.avatarBrowSmooth), disabled: off,
+            /** 눈썹 부드러움 시간을 범위 안으로 정리해 저장 */
+            onChange: (event) => change('avatarBrowSmooth', browSmoothMs(event.target.value)) }))),
       React.createElement('section', { 'aria-label': ko ? '단축키 - 캐릭터와 말풍선' : 'Shortcuts - Character and speech bubbles', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
         React.createElement('strong', null, ko ? '단축키 - 캐릭터와 말풍선' : 'Shortcuts - Character and speech bubbles'),
         React.createElement('p', { id: SHORTCUT_HINT_ID, style: { margin: 0, opacity: 0.7 } },

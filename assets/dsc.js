@@ -1275,7 +1275,7 @@
         let chestFrom = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
         let chestLongTimer = 0;
         const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };
-        const rig = AVATAR ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline }).catch((error) => {
+        const rig = AVATAR ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline, tuning: () => prefs.avatar }).catch((error) => {
           log.warnOnce("rig-three-load", "3D 모델을 불러오지 못했습니다 (avatarModelDir·avatar.json 확인):", error);
           return null;
         }) ?? null) : await createLive2DRig({ base: BASE, life, pet, prefs, canvas, W, H, chestDrag: { lift: dragLift, shift: dragShift } });

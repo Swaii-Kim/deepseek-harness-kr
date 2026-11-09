@@ -105,6 +105,10 @@ export const Config = z.object({
   avatarModelDir: z.string().default('').volatile(),
   // 실험: 3D 외곽선 법선. smooth = 같은 위치 법선 평균(기본), model = 모델에 든 외곽선 메시(다듬은 법선·두께)
   avatarOutline: z.union([z.const('smooth'), z.const('model')]).default('smooth').volatile(),
+  // 실험: 3D 눈썹 움직임 세기(배율, 0~2). 동작 코드의 눈썹 값은 Live2D 기준이라 3D 모델에서는 클 수 있음
+  avatarBrowScale: z.number().min(0).max(2).default(1).volatile(),
+  // 실험: 3D 눈썹이 목표로 부드럽게 따라가는 시간(ms, 0~300). 말할 때 눈썹이 툭 튀지 않게
+  avatarBrowSmooth: z.number().min(0).max(300).default(80).volatile(),
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
 /** 호스트 쪽 진단 상태 조회 경로 (설정 화면이 시작 후 한 번 읽어 콘솔에 남김) */

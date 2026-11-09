@@ -73,6 +73,8 @@ export type AvatarProfile = {
   springs?: Array<{ roots: string[]; stiffness?: number; drag?: number; gravity?: number; radius?: number; colliders?: ColliderGroup[] }>;
   /** 흔들림 충돌체: 사람형 뼈로 자동 생성. scale = 반지름 배율 (기본 1) */
   colliders?: { scale?: number };
+  /** 채널별 부드럽게 따라가는 시간(초, 지수 평활 시간 상수). 동작 코드가 값을 순간적으로 바꾸는 채널(눈썹 등)이 튀지 않게 */
+  channelSmooth?: Record<string, number>;
   /**
    * 모델 방향 보정 (파일마다 다른 위·정면·좌우 손잡이를 화면 기준으로 맞춤). 기본은 사람형 뼈 위치로 자동 판정
    * auto = false면 자동 판정 끔, mirror = 좌우 반전을 직접 지정, yaw = 세로축으로 더 돌릴 각도(도)
@@ -440,16 +442,47 @@ export function dedupeFbxBones(model: THREE.Object3D) {
   return { removed, merged };
 }
 
+/** 눈썹 채널 (설정의 눈썹 세기·부드러움이 걸림). 동작 코드는 Live2D 기준 값을 써서 3D 모프에는 클 수 있음 */
+export const BROW_CHANNELS: ReadonlySet<string> = new Set(["browRaiseLeft", "browRaiseRight", "browInnerRaise"]);
+/** 사용자 표정 조정 (설정 화면, 매 프레임 읽음): browScale = 눈썹 값 배율, browSmooth = 눈썹이 따라가는 시간(초) */
+export type RigTuning = { browScale?: number; browSmooth?: number };
+/**
+ * 지금 값에서 목표로 시간 상수 tau(초)만큼 부드럽게 다가감 (지수 평활, 프레임 간격과 무관)
+ * tau가 0 이하면 바로 목표, 간격이 0이면 그대로
+ */
+export const smoothToward = (current: number, target: number, dt: number, tau: number) =>
+  tau <= 0 ? target : dt <= 0 ? current : current + (target - current) * (1 - Math.exp(-dt / tau));
+/**
+ * 이번 프레임 채널 값: 동작 코드 값 × (눈썹이면 설정 배율) → 채널별 시간 상수로 부드럽게
+ * 시간 상수: 눈썹은 설정값이 있으면 그것, 없으면 avatar.json channelSmooth, 둘 다 없으면 0(바로)
+ * @param raw 동작 코드가 쓴 채널 값 @param smoothed 채널별 지난 값 (갱신됨, 처음 보는 채널은 지금 값에서 시작)
+ */
+export function tunedChannels(channels: Iterable<string>, raw: ReadonlyMap<string, number>, smoothed: Map<string, number>, dt: number,
+  tuning: RigTuning = {}, channelSmooth: Record<string, number> = {}) {
+  const out = new Map<string, number>();
+  for (const channel of channels) {
+    const brow = BROW_CHANNELS.has(channel);
+    const target = (raw.get(channel) || 0) * (brow ? tuning.browScale ?? 1 : 1);
+    const tau = (brow ? tuning.browSmooth : undefined) ?? channelSmooth[channel] ?? 0;
+    const value = smoothToward(smoothed.get(channel) ?? target, target, dt, tau);
+    smoothed.set(channel, value);
+    out.set(channel, value);
+  }
+  return out;
+}
+
 /**
  * 3D rig 생성: avatar.json과 모델을 불러와 캔버스에 그릴 준비
  * @param base 모델 폴더 주소 (끝에 /)
  * @param pet 펫 창(전신)이면 true, 창 안(상반신)이면 false
  * @returns rig, 불러오는 사이 꺼졌으면 null
  */
-export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNormals }: {
+export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNormals, tuning }: {
   base: string; life: Lifetime; canvas: HTMLCanvasElement; W: number; H: number; pet: boolean;
   /** 외곽선 법선 출처 (설정 드롭다운, 없으면 avatar.json 값) */
   outlineNormals?: OutlineNormals;
+  /** 사용자 표정 조정 (설정 화면 값, 매 프레임 읽음) */
+  tuning?: () => RigTuning | undefined;
 }): Promise<AvatarRig | null> {
   const json = await (await fetch(base + "avatar.json")).json() as AvatarProfile;
   if (json.outline && outlineNormals) json.outline.normals = outlineNormals;
@@ -804,13 +837,15 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     turn("rightEye", -eyeY, eyeX, 0);
   };
   const vrmNames: ReadonlySet<string> = vrmRuntime?.expressionNames ?? new Set();
-  /** 이번 프레임 채널·표정·소품으로 모프·VRM 표정 세기 계산·적용 */
-  const applyMorphs = () => {
+  /** 이번 프레임 채널·표정·소품으로 모프·VRM 표정 세기 계산·적용 @param dt 지난 프레임부터 흐른 시간(초, 채널 평활용) */
+  const smoothedChannels = new Map<string, number>();
+  const applyMorphs = (dt: number) => {
     const weights = new Map<string, number>(Object.entries(profile.baseMorphs || {}));
     const sink: WeightSink = { morphs: weights, expressions: new Map(), vrmNames };
     const add = (morph: string, w: number) => weights.set(morph, (weights.get(morph) || 0) + w);
+    const channelValues = tunedChannels(Object.keys(profile.channels || {}), values, smoothedChannels, dt, tuning?.() ?? {}, profile.channelSmooth);
     for (const [channel, bindings] of Object.entries(profile.channels || {})) {
-      const value = values.get(channel) || 0;
+      const value = channelValues.get(channel) || 0;
       for (const binding of bindings) { const w = bindingWeight(binding, value); if (w) addBindingWeight(sink, binding, w); }
     }
     for (const [name, w] of expressionWeights) for (const [target, amount] of Object.entries(profile.expressions?.[name] || {})) addTargetWeight(sink, target, amount * w);
@@ -894,7 +929,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       mixer.update(dt);
       for (const [node, pose] of basePose) pose.copy(node.quaternion);   // 믹서가 바꾼 값(안 바꿨으면 그대로)을 바탕 자세로 기억
       applyBones(dt);
-      applyMorphs();
+      applyMorphs(dt);
       root.updateMatrixWorld(true);   // 프레임당 장면 갱신 (scene.matrixWorldAutoUpdate = false)
       if (dt > 0) springs.step(dt);   // 흔들림 마디는 자기 월드 행렬을 직접 계산
       if (vrmRuntime) { vrmRuntime.update(dt); root.updateMatrixWorld(true); }   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈가 바꾼 노드 반영 (VRM은 복제 뼈가 없어 노드가 적음)
