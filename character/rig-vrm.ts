@@ -6,7 +6,6 @@ import { VRMLoaderPlugin, VRMUtils, type MToonMaterial, type VRM } from "@pixiv/
 import { createOutlineMaterial, createToonMaterial, updateUvTransforms, type OutlineMaterialOptions, type ToonMaterialOptions } from "./toon-material.ts";
 import type { AvatarProfile, HumanBone, MorphBinding } from "./rig-three.ts";
 import type { Lifetime } from "./lifetime.ts";
-import type { RigFeature } from "./rig.ts";
 
 /** 동작 코드가 쓰는 사람형 뼈 (VRM 사람형 뼈 이름과 같음) */
 const HUMAN_BONES: HumanBone[] = ["hips", "spine", "chest", "neck", "head", "leftEye", "rightEye",
@@ -26,8 +25,6 @@ const VRM_CHANNELS: Record<string, MorphBinding[]> = {
 const OUR_EXPRESSIONS = ["loading", "heart", "blush", "sweat", "dizzy", "tears", "squint", "smug", "dark"];
 /** VRM에 같은 이름의 표정이 없을 때 쓰는 프리셋 표정 */
 const EXPRESSION_PRESETS: Record<string, string> = { heart: "happy", tears: "sad", dark: "angry", smug: "relaxed", dizzy: "surprised" };
-/** 성적 표현을 금지한 모델에서 빼는 기능 */
-const SEXUAL_FEATURES: RigFeature[] = ["chestTouch", "coverChest"];
 
 /** VRM에서 뽑은 평범한 값 (프로필 합성 입력, 테스트는 가짜 값을 씀) */
 export type VrmInfo = {
@@ -77,13 +74,6 @@ export function defaultVrmExpressions(names: string[]): Record<string, Record<st
 }
 
 /**
- * 성적 표현이 금지된 모델이면 가슴 관련 기능을 뺌 (avatar.json에 있어도)
- * @param features avatar.json features
- */
-export const allowedFeatures = (features: RigFeature[] | undefined, sexualAllowed: boolean) =>
-  sexualAllowed ? features : features?.filter((feature) => !SEXUAL_FEATURES.includes(feature));
-
-/**
  * VRM 값으로 프로필 합성: 뼈·채널·표정은 VRM 기본값에 avatar.json 값을 키마다 덮어쓰고, 나머지는 avatar.json 그대로
  * @param overrides avatar.json (model만 있어도 됨)
  */
@@ -94,7 +84,7 @@ export function profileFromVrm(info: VrmInfo, overrides: VrmOverrides): AvatarPr
     channels: { ...defaultVrmChannels(info.expressions), ...overrides.channels },
     expressions: { ...defaultVrmExpressions(info.expressions), ...overrides.expressions },
     armDown: overrides.armDown ?? VRM_ARM_DOWN,
-    features: allowedFeatures(overrides.features, info.sexualAllowed),
+    adultAllowed: info.sexualAllowed && overrides.adultAllowed !== false,   // 성적 표현 금지 모델이면 가슴·아랫배 같은 adult 행동을 끔 (character/behavior.ts)
   };
 }
 

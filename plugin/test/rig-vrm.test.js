@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import {
-  addBindingWeight, addTargetWeight, allowedFeatures, defaultVrmChannels, defaultVrmExpressions, isVrmModel, outlineOptionsFromMToon,
+  addBindingWeight, addTargetWeight, defaultVrmChannels, defaultVrmExpressions, isVrmModel, outlineOptionsFromMToon,
   profileFromVrm, sexualUsageAllowed, toonOptionsFromMToon, VRM_ARM_DOWN,
 } from '../../character/rig-vrm.ts'
 import { createOutlineMaterial, createToonMaterial, toonDefines, updateUvTransforms } from '../../character/toon-material.ts'
@@ -39,7 +39,7 @@ test('avatar.json 값이 VRM 기본값을 키마다 이긴다', () => {
   const profile = profileFromVrm(info(), {
     model: 'x.vrm', bones: { head: 'MyHead' }, armDown: 0,
     channels: { mouthOpen: [{ morph: 'Fcl_MTH_A' }] }, expressions: { heart: { happy: 0.5, Fcl_EYE_Joy: 1 } },
-    springs: [{ roots: ['Hair'] }], features: ['chestTouch'],
+    springs: [{ roots: ['Hair'] }], features: ['earHide'],
   })
   assert.deepEqual(profile.bones, { hips: 'J_Bip_C_Hips', head: 'MyHead' })
   assert.equal(profile.armDown, 0)
@@ -48,7 +48,7 @@ test('avatar.json 값이 VRM 기본값을 키마다 이긴다', () => {
   assert.deepEqual(profile.expressions.heart, { happy: 0.5, Fcl_EYE_Joy: 1 })
   assert.deepEqual(profile.expressions.tears, { sad: 1 })
   assert.deepEqual(profile.springs, [{ roots: ['Hair'] }])
-  assert.deepEqual(profile.features, ['chestTouch'])
+  assert.deepEqual(profile.features, ['earHide'])
 })
 
 test('기본 대응은 VRM에 있는 표정만 쓰고, 같은 이름의 사용자 표정이 프리셋보다 먼저다', () => {
@@ -58,18 +58,18 @@ test('기본 대응은 VRM에 있는 표정만 쓰고, 같은 이름의 사용�
   assert.deepEqual(defaultVrmExpressions([]), {})
 })
 
-test('성적 표현을 금지한 VRM은 가슴 기능을 avatar.json에 있어도 뺀다', () => {
+test('성적 표현을 금지한 VRM은 adult 행동(가슴·아랫배)을 avatar.json에 있어도 끈다', () => {
   assert.equal(sexualUsageAllowed({ metaVersion: '1', allowExcessivelySexualUsage: false }), false)
   assert.equal(sexualUsageAllowed({ metaVersion: '1', allowExcessivelySexualUsage: true }), true)
   assert.equal(sexualUsageAllowed({ metaVersion: '1' }), true)
   assert.equal(sexualUsageAllowed({ metaVersion: '0', sexualUssageName: 'Disallow' }), false)
   assert.equal(sexualUsageAllowed({ metaVersion: '0', sexualUssageName: 'Allow' }), true)
   assert.equal(sexualUsageAllowed(null), true)
-  assert.deepEqual(allowedFeatures(['chestTouch', 'coverChest', 'bodyType'], false), ['bodyType'])
-  assert.deepEqual(allowedFeatures(['chestTouch'], true), ['chestTouch'])
-  assert.equal(allowedFeatures(undefined, false), undefined)
-  const profile = profileFromVrm(info({ sexualAllowed: false }), { model: 'x.vrm', features: ['chestTouch', 'coverChest', 'earHide'] })
-  assert.deepEqual(profile.features, ['earHide'])
+  const profile = profileFromVrm(info({ sexualAllowed: false }), { model: 'x.vrm', features: ['earHide'] })
+  assert.deepEqual(profile.features, ['earHide'], '모델 능력 기능은 그대로')
+  assert.equal(profile.adultAllowed, false, '성적 표현 금지 모델은 adult 행동도 끔')
+  assert.equal(profileFromVrm(info(), { model: 'x.vrm' }).adultAllowed, true)
+  assert.equal(profileFromVrm(info(), { model: 'x.vrm', adultAllowed: false }).adultAllowed, false, 'avatar.json으로 끌 수 있음')
 })
 
 test('채널 대응은 expression이면 VRM 표정, morph면 모프에 더하고, 표정 표 대상은 VRM 표정 이름이 먼저다', () => {

@@ -10,12 +10,16 @@
 import { OUTFIT_ITEMS, BODY_TYPES } from "../shared/settings.js";
 import { HOME_GAP, SHOW_K, MIN_SHOW_K, homeLayout, bubbleLayout, bubbleTail, tailRight, tailLeft, introBubbleSize } from "./layout.ts";
 import { chordDown, chordWithinGrace, chordUp, type Chord } from "./chord.ts";
-import { clamp, noise, S, spring, sstep, addGesture, blinkClose, seg, coverForearm } from "./motion.ts";
+import { clamp, noise, S, spring, addGesture, blinkClose } from "./motion.ts";
 import { readStatus, scanAddedNode, readThought, thoughtLine } from "./harness-signals.ts";
 import { createPetLink, type PetMessage } from "./pet-link.ts";
 import { log } from "./log.ts";
 import { parseSyllables } from "./speech.ts";
 import { createLive2DRig, loadLive2DScripts } from "./rig-live2d.ts";
+import { createBehaviors, createTimeline, EVENTS, TAGS, type BlendResult } from "./behavior.ts";
+import { SULKING } from "./behaviors/deepseek-chan/sulk.ts";
+import { BUILTIN_BEHAVIORS } from "./behaviors/index.ts";
+import type { BehaviorContext } from "./behaviors/context.ts";
 import { walkAreaValid, sameWalkArea, walkDisplayArea, walkBodySpan, planWalkOut, walkSafePose, planWalkReturn, walkOutAlpha, walkInAlpha, walkClipInset, walkEasePetOut,
   type WalkArea, type WalkClipInset, type WalkDisplay, type WalkPlan } from "./pet-walk.ts";
 import { PARAMS, VOWEL_EYE_SAFE, EYE_SWAP_EXPRESSIONS, GEOMETRY } from "./model-profile.ts";
@@ -38,8 +42,6 @@ type FreeAnim = { t0: number; ms: number; from: Pose; to: Pose | null; snap: boo
 type BubbleSpot = { k: number; noseX: number; headTop: number; vp: Viewport; home: Home; introProgress: number };
 /** 한 프레임 애니메이션의 공통값 (frameContext) */
 type Frame = { now: number; dt: number; seconds: number; introCalm: boolean; talking: boolean; muttering: boolean; laughing: boolean };
-/** 삐짐 단계 결과 (applySulk) */
-type Sulk = { sulkWeight: number; peek: number; sulkEye: number };
 /**
  * 집기 예약 (pointerdown이 만들고 pointermove·pointerup이 씀)
  * id = 포인터 번호, sx·sy = 누른 자리, h = 누른 곳의 캐릭터 지점(hitAt, 몸 밖이면 null), ox·oy = 캔버스 왼쪽 위에서 누른 자리까지의 거리
@@ -124,9 +126,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       document.body.append(canvas, bubble);
       const dragLift = { x: 0, v: 0 };    // 위아래로 끌어올린 정도 (0~1)
       const dragShift = { x: 0, v: 0 };   // 좌우로 끌어당긴 정도 (-1~1)
-      let chestFrom: { x: number; y: number; id: number; h: number[] } | null = null, chestDragging = false, chestTarget = 0, chestShiftTarget = 0;
-      let chestLongTimer = 0;   // 3초 넘게 '흔들었을' 때 자극적인 대사로 넘어가는 감시 타이머
-      const chestShake = { x: 0, y: 0, acc: 0, last: 0, next: 0 };   // acc = 흔든 양, last = 마지막으로 흔든 시각
+      // 가슴 끌기 선택 지점: 누른 자리(chestFrom)와 끌기 중 여부. 끌기 반응·스프링 목표는 가슴 행동(character/behaviors)이 맡음
+      let chestFrom: { x: number; y: number; id: number; h: number[] } | null = null, chestPulling = false;
       // 모델(렌더러) 통로: 모델 불러오기·크기 값·표정 파일·터치용 메시 판정·그리기는 rig가 맡고, 아래 동작 코드는 rig로만 모델에 씀 (character/rig.ts)
       const rig = AVATAR
         ? await (window.DscRigThree?.createThreeRig({ base: new URL("../avatar/", new URL(BASE, location.href)).href, life, canvas, W, H, pet: false, outlineNormals: prefs.avatar?.outline, tuning: () => prefs.avatar })
@@ -144,7 +145,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const BODY_VALUE = Object.fromEntries(BODY_TYPES.map((body) => [body.key, body.value]));
       const outfitWeight: Record<string, number> = {};
       for (const [key] of OUTFIT_PARAMS) outfitWeight[key] = (prefs.outfit || {})[key] ? 1 : 0;   // 처음엔 저장된 모습 그대로 (서서히 나타나지 않게)
-      let basinUntil = 0, basinWeight = 0;   // 세숫대야 (머리를 천천히 쓸어내리면)
       let bodyWeight = BODY_VALUE[(prefs.outfit || {}).bodyType] || 0, outfitPrev: Record<string, any> | null = null, outfitTalk: ((key: string) => void) | null = null;
       // ---------- 바깥 펫 창 ----------
       // PET: 이 코드가 바깥 펫 창 안에서 도는 중 (preload가 window.dscPet을 넣어 줌). 좌표 = 화면 px, 창이 캐릭터를 따라 움직임.
@@ -200,13 +200,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
 
       // 버튜버식 몸짓: 한 번씩 재생하는 동작(gesture) + 지금 상태에 따른 자세(mood)
       const gestureState: { name: string | null; start: number; dur: number; dir: number } = { name: null, start: 0, dur: 0, dir: 1 };
-      // 왼손으로 가슴 가리기 (데스크톱 펫의 "가슴에 손" 값): Param59 위팔 원근, Param60 아래팔, Param61 손목, Param62 위팔, Movement2 = 몸 앞용 팔 그림
-      const cover = { until: 0, start: -1e9, q: 0 };   // q: 0 = 팔 내림, 1 = 가슴을 가림
-      /**
-       * 왼손으로 가슴 가리기 시작·연장
-       * @param ms 지금부터 가리고 있을 시간
-       */
-      const coverChest = (ms: number) => { const now = performance.now(); if (now >= cover.until) cover.start = now; cover.until = Math.max(cover.until, now + ms); };
       /**
        * 몸짓 한 번 재생 (펫 창에도 전달, 방향은 무작위, 튕김이 있는 몸짓은 몸도 튕김)
        * @param dur 몸짓 길이(ms)
@@ -220,14 +213,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        */
       const setMood = (moodName: string, ms = 0) => { relay("setMood", [moodName, ms]); mood = moodName; moodUntil = ms ? performance.now() + ms : 0; };
       const pose: Record<"lean" | "headZ" | "headY" | "bodyY" | "swayAmp", number> = { lean: 0, headZ: 0, headY: 0, bodyY: 0, swayAmp: 0 };   // 부드럽게 따라가는 자세 값
-      let shiverStarted = -1e9, touchLeanUntil = 0, touchLean = 0;
-      let shiverBobAt = 0, shiverBobSign = 1;
-      let happyMouthUntil = 0, happyMouth = 0;   // 가슴 터치 2번째부터 "헤~" 입   // 떨릴 때 가슴을 출렁이게 하는 위아래 툭툭
-      // 머리를 계속 만지면 삐짐: 턱을 들고 고개를 홱 돌림. 삐진 동안 몇 번 사용자를 몰래 보다가 빠르게 다시 외면
-      let stareUntil = 0, stareWeight = 0;   // 정면을 똑바로 보는 동안 (삐짐이 풀리며 한마디)
-      let sulkStart = -1e9, sulkUntil = 0, sulkDir = 1, sulkPeeks: { at: number; flip: boolean; done?: boolean }[] = [], sulkYaw = 0, sulkRoll = 0;
-      const SULK_CHIN = 10;                                        // 턱을 드는 정도 (AngleY, 위가 +)
-      const PEEK_RISE = 550, PEEK_HOLD = 450, PEEK_SNAP = 150;     // 몰래 보기: 천천히 돌아봄 → 잠깐 봄 → 홱 외면 (ms)
+      let shiverStarted = -1e9;   // 몸 떨림 시작 시각 (행동의 ctx.shiver)
+      let shiverBobAt = 0, shiverBobSign = 1;   // 떨릴 때 가슴을 출렁이게 하는 위아래 툭툭
+      let happyMouth = 0;   // 부끄러운 "헤~" 입 정도 (행동의 TAGS.shySmile을 따라감, 예: 가슴 터치 2번째부터)
+      let stareWeight = 0;   // 정면을 똑바로 보는 정도 (행동의 TAGS.stare를 따라감, 예: 삐짐이 풀리며 한마디)
 
       // 위치: 오른쪽 아래 구석, 입력창을 가리지 않는 가장 큰 크기
       const visH = H * 0.95;
@@ -1209,21 +1198,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       // 고개·몸 값은 motion(yaw·pitch·roll·bodyX/Y/Z·lean·smile·eyeSmileAdd·eyeClose·mouthAdd)에 모았다가 한 번에 쓴다.
 
       /**
-       * 가슴 끌기 스프링 갱신: 끄는 동안 민첩하게 따라가고, 놓으면 출렁이며 잦아듦
-       * @param now 지금 시각(ms)
-       * @param dt 지난 프레임부터 흐른 시간(초)
-       */
-      const updateChestDrag = (now: number, dt: number) => {
-        spring(dragLift, chestDragging ? chestTarget : 0, dt, chestDragging ? 820 : 200, chestDragging ? 40 : 6);   // 끄는 동안 민첩하게, 놓으면 출렁이며 잦아듦
-        spring(dragShift, chestDragging ? chestShiftTarget : 0, dt, chestDragging ? 700 : 220, chestDragging ? 42 : 7);   // 좌우로 끌면 그 방향으로 따라가고, 놓으면 제자리로 출렁
-        if (!chestDragging && Math.abs(dragShift.x) < 0.0001 && Math.abs(dragShift.v) < 0.001) dragShift.x = dragShift.v = 0;
-        if (!chestDragging && Math.abs(dragLift.x) < 0.0001 && Math.abs(dragLift.v) < 0.001) dragLift.x = dragLift.v = 0;
-        if (chestDragging) {
-          flashExp("squint", 400); flashExp("blush", 400);
-          walk.lastTouch = now;
-        }
-      };
-      /**
        * 이 프레임에 여러 단계가 같이 쓰는 값 모음
        * 만료된 음성 상태 비우기와 기분 만료 처리도 여기서 함께
        * @param now 지금 시각(ms)
@@ -1248,7 +1222,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       /** 시선 목표 정하기와 눈·고개 스프링 갱신 (눈은 빠르게, 고개는 천천히 따라감) */
       const updateGaze = ({ now, dt, introCalm, talking, muttering }: Frame) => {
         let targetX, targetY;
-        if (now < stareUntil) { targetX = 0; targetY = 0.05; }                // 삐짐이 풀리며 한마디: 고개 고정, 눈 맞춤
+        if (behaviors.tagged(TAGS.stare, now)) { targetX = 0; targetY = 0.05; }   // 정면 응시(예: 삐짐이 풀리며 한마디): 고개 고정, 눈 맞춤
         else if (muttering) { targetX = 0.4; targetY = 0.38; }                    // 혼잣말: 옆 위를 보며 생각
         else if (talking && introCalm) { targetX = attention.x * 0.25; targetY = 0.05 + attention.y * 0.2; }   // 시작 화면에서 말할 땐 보는 사람을 봄 (마우스·딴 곳을 따라가지 않음)
         else if (now - lastMove < 2500 && !talking) {             // 마우스를 움직이면 눈은 커서를, 고개는 반쯤
@@ -1336,8 +1310,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         motion.pitch = headLookY.x * 13 + noise(seconds * 0.41, 2) * 4.5 * energy + pose.headY - nodKick * 4 - mouthOpen * 1.5;
         motion.roll = noise(seconds * 0.27, 3) * 7.5 * energy - headLookX.x * headLookY.x * 7 + pose.headZ;
         // 말하는 동안 고개를 천천히 좌우로 기울이고 살짝 돌림 (입만 움직이고 얼굴이 굳어 보이지 않게)
-        stareWeight += ((now < stareUntil ? 1 : 0) - stareWeight) * Math.min(1, dt * 6);
-        talkSway += ((talking && !muttering && now >= stareUntil ? 1 : 0) - talkSway) * Math.min(1, dt * 2.5);
+        const staring = behaviors.tagged(TAGS.stare, now);
+        stareWeight += ((staring ? 1 : 0) - stareWeight) * Math.min(1, dt * 6);
+        talkSway += ((talking && !muttering && !staring ? 1 : 0) - talkSway) * Math.min(1, dt * 2.5);
         motion.swayYaw = Math.sin(seconds * Math.PI * 2 * 0.31 + 1.3) * 4.5 * talkSway; motion.swayPitch = Math.sin(seconds * Math.PI * 2 * 0.47 + 0.6) * 1.5 * talkSway;
         if (talkSway > 0.01) { motion.roll += Math.sin(seconds * Math.PI * 2 * 0.55) * 4 * talkSway; motion.yaw += motion.swayYaw; motion.pitch += motion.swayPitch; }
         // ---- 몸 (PositionX/Y/Z·LeanInput → 물리가 몸통을 늦게 따라 움직임) ----
@@ -1367,17 +1342,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         motion.yaw += gestureSprings.yaw.x; motion.pitch += gestureSprings.pitch.x; motion.roll += gestureSprings.roll.x;
         motion.bodyX += gestureSprings.bodyX.x; motion.bodyY += gestureSprings.bodyY.x; motion.bodyZ += gestureSprings.bodyZ.x; motion.lean += gestureSprings.lean.x;
         motion.smile += gestureSprings.smile.x; motion.eyeSmileAdd += gestureSprings.eyeSmile.x; motion.eyeClose += gestureSprings.eyeClose.x; motion.mouthAdd += gestureSprings.mouth.x;
-        if (!gestureState.name && mood === "idle" && now > nextIdleGesture && now >= sulkUntil) {   // 가만히 있을 때 가끔 몸짓 (삐진 동안은 안 함)
+        if (!gestureState.name && mood === "idle" && now > nextIdleGesture && !behaviors.tagged(TAGS.busy, now)) {   // 가만히 있을 때 가끔 몸짓 (행동 연출 중엔 안 함, 예: 삐짐)
           const chance = Math.random();
           const pick = chance < 0.3 ? "tilt" : chance < 0.5 ? "sway" : chance < 0.72 ? "lean" : chance < 0.88 ? "nod" : "laugh";
           play(pick, pick === "lean" ? 2600 : pick === "sway" ? 2300 : pick === "laugh" ? 1500 : 1800);
           nextIdleGesture = now + 7000 + Math.random() * 9000;
         }
       };
-      /** 가슴 터치 때 가끔 앞으로 숙임 + 부끄러워 떨기 (5초에 걸쳐 잦아듦) */
-      const applyTouchAndShiver = (motion: Motion, { now, dt }: Frame) => {
-        touchLean += ((now < touchLeanUntil ? -30 : 0) - touchLean) * Math.min(1, dt * 4);
-        motion.lean += touchLean;
+      /** 행동의 고개·몸 더하기(예: 가슴 터치 때 앞으로 숙임) + 부끄러워 떨기 (5초에 걸쳐 잦아듦) */
+      const applyTouchAndShiver = (motion: Motion, frame: Frame) => {
+        const { now } = frame;
+        behaviors.frame("motion", frame, motion);
         const shiverSec = (now - shiverStarted) / 1000;
         if (shiverSec >= 0 && shiverSec < 5) {
           const tremor = Math.sin(shiverSec * Math.PI * 2 * 8) * Math.min(1, shiverSec / 0.2) * Math.pow(1 - shiverSec / 5, 1.5);
@@ -1413,31 +1388,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           motion.bodyY -= carryVy * 12; motion.pitch += carryVy * 10;
         }
       };
-      /**
-       * 삐짐: 0.35초에 턱을 들고 고개를 홱 돌리고, 끝나기 1.2초 전부터 천천히 돌아옴
-       * @returns sulkWeight(삐짐 정도 0~1), peek(몰래 보기 0~1), sulkEye(눈동자)
-       */
-      const applySulk = (motion: Motion, { now, dt }: Frame): Sulk => {
-        const sulkWeight = now < sulkUntil ? Math.min(sstep((now - sulkStart) / 350), sstep((sulkUntil - now) / 1200)) : 0;
-        let peek = 0;   // 몰래 보기 정도 (0 = 외면, 1 = 사용자 쪽을 봄)
-        if (sulkWeight > 0) {
-          const sulkElapsed = now - sulkStart;
-          for (const peekEvent of sulkPeeks) {
-            const sincePeek = sulkElapsed - peekEvent.at;
-            if (sincePeek < 0 || sincePeek > PEEK_RISE + PEEK_HOLD + PEEK_SNAP) continue;
-            if (sincePeek >= PEEK_RISE + PEEK_HOLD && !peekEvent.done) { peekEvent.done = true; if (peekEvent.flip) sulkDir = -sulkDir; }   // 다시 외면할 때 60% 확률로 반대쪽으로
-            peek = sincePeek < PEEK_RISE ? sstep(sincePeek / PEEK_RISE) : sincePeek < PEEK_RISE + PEEK_HOLD ? 1 : 1 - sstep((sincePeek - PEEK_RISE - PEEK_HOLD) / PEEK_SNAP);
-          }
-          const away = 1 - 0.75 * peek, turnRate = Math.min(1, dt * 14);   // 고개는 빠르게 따라가서 방향을 바꿀 때 홱 돌아감
-          sulkYaw += (-24 * sulkDir * away - sulkYaw) * turnRate;
-          sulkRoll += (-8 * sulkDir * away - sulkRoll) * turnRate;
-          motion.yaw = motion.yaw * (1 - sulkWeight) + sulkYaw * sulkWeight; motion.roll = motion.roll * (1 - sulkWeight) + sulkRoll * sulkWeight;
-          motion.pitch = motion.pitch * (1 - sulkWeight) + SULK_CHIN * (1 - 0.6 * peek) * sulkWeight;
-          motion.bodyX = motion.bodyX * (1 - sulkWeight) + sulkYaw / 6 * sulkWeight; motion.smile *= 1 - sulkWeight; motion.eyeSmileAdd *= 1 - sulkWeight;
-        }
-        const sulkEye = sulkDir * (-0.45 + 0.85 * Math.min(1, peek * 1.8));   // 외면할 땐 눈도 피하고, 몰래 볼 땐 눈이 먼저 사용자 쪽으로
-        return { sulkWeight, peek, sulkEye };
-      };
       /** 눈 맞춤 동안 얼굴·몸 흔들림을 거의 멈추고 고개·몸 파라미터 쓰기 (±30으로 자름) */
       const writeHeadBody = (motion: Motion) => {
         if (stareWeight > 0.01) { const k = 1 - stareWeight * 0.92; motion.yaw = headLookX.x * 22 * (1 - stareWeight) + (motion.yaw - headLookX.x * 22) * k; motion.pitch *= k; motion.roll *= k; motion.bodyX *= k; motion.bodyZ *= k; }
@@ -1446,10 +1396,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           [PARAMS.bodyShiftX, clamp(motion.bodyX, -30, 30)], [PARAMS.bodyShiftY, clamp(motion.bodyY, -30, 30)], [PARAMS.bodyShiftZ, clamp(motion.bodyZ, -30, 30)], [PARAMS.bodyLean, clamp(motion.lean, -30, 30)]] as [string, number][]) addParam(id, value);
       };
       // ---- 눈: 눈동자는 고개보다 먼저 (머리 기준 상대 위치), 숨쉬기 ----
-      /** 눈동자(머리 기준 상대 위치, 삐짐 중엔 외면·몰래 보기)와 숨쉬기 파라미터 쓰기 */
-      const writeEyes = (motion: Motion, { seconds }: Frame, { sulkWeight, sulkEye }: Sulk) => {
+      /** 눈동자(머리 기준 상대 위치, 행동이 자세를 덮어쓰면 그 눈동자로 섞음 예: 삐짐 외면·몰래 보기)와 숨쉬기 파라미터 쓰기 */
+      const writeEyes = (motion: Motion, { seconds }: Frame, { weight: blendWeight, eye: blendEye }: BlendResult) => {
         // 눈동자는 작게만 (크게 움직이면 흰자가 드러나 곁눈질처럼 보임)
-        addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -0.45, 0.45) * (1 - sulkWeight) + sulkEye * sulkWeight - motion.swayYaw / 30 * (1 - sulkWeight));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
+        addParam(PARAMS.eyeLookX, clamp(((eyeLookX.x - headLookX.x) * 0.9 + headLookX.x * 0.2) * 0.6, -0.45, 0.45) * (1 - blendWeight) + blendEye * blendWeight - motion.swayYaw / 30 * (1 - blendWeight));   // 말하며 고개를 돌려도 눈동자는 정면을 봄
         addParam(PARAMS.eyeLookY, clamp(((eyeLookY.x - headLookY.x) * 0.9 + headLookY.x * 0.2) * 0.6 - motion.swayPitch / 30, -0.3, 0.3));
         setParam(PARAMS.breath, 0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI / 3.6));
       };
@@ -1463,8 +1413,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (browValue > 0.15) addParam(PARAMS.browInnerRaise, Math.min(1, browValue * 0.6));
       };
       // ---- 입: 모음 모양 + 늘 살짝 웃는 입꼬리 ----
-      /** 입 파라미터 쓰기: 모음 모양 + 늘 살짝 웃는 입꼬리, 삐짐 표정·눈웃음 포함 (happyMouth 갱신도 함께) */
-      const writeMouth = (motion: Motion, { now, dt, seconds }: Frame, { sulkWeight, peek }: Sulk) => {
+      /** 입 파라미터 쓰기: 모음 모양 + 늘 살짝 웃는 입꼬리, 행동 표정(예: 삐짐)·눈웃음 포함 (happyMouth 갱신도 함께) */
+      const writeMouth = (motion: Motion, frame: Frame, { weight: blendWeight }: BlendResult) => {
+        const { now, dt, seconds } = frame;
         const openNow = clamp(mouthOpen + motion.mouthAdd + 0.14 * happyMouth, 0, 1);   // 살짝 벌린 입
         if (openNow > 0.01) {
           setParam(PARAMS.mouthOpen, openNow * 0.9);
@@ -1473,9 +1424,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           for (const key of VOWELS) if (vowel[key] > 0.01) addParam(VOWEL_PARAMS[key], Math.min(1, vowel[key]) * (VOWEL_EYE_SAFE[key] || 1));
           if (motion.mouthAdd > 0.01) addParam(PARAMS.mouthVowel.A, motion.mouthAdd * 0.8);
         }
-        happyMouth += ((now < happyMouthUntil ? 1 : 0) - happyMouth) * Math.min(1, dt * 5);
-        const baseSmile = (mood === "sad" ? 0 : mood === "wait" ? 0.15 : 0.35) * (1 - sulkWeight) + 0.2 * happyMouth;   // 부끄럽지만 좋아서 입꼬리가 조금 올라감 (곤란함이 섞여 크게는 안 웃음)
-        if (sulkWeight > 0.01) for (const [id, eased] of [[PARAMS.cheekPuff, 0.5], [PARAMS.mouthPucker, 0.3], [PARAMS.frown, 0.5], [PARAMS.frownSecondary, 0.5]] as [string, number][]) addParam(id, sulkWeight * (1 - eased * peek));   // 볼 부풀리기·입 삐죽·찡그린 눈썹 (몰래 볼 땐 조금 풀림)
+        happyMouth += ((behaviors.tagged(TAGS.shySmile, now) ? 1 : 0) - happyMouth) * Math.min(1, dt * 5);
+        const baseSmile = (mood === "sad" ? 0 : mood === "wait" ? 0.15 : 0.35) * (1 - blendWeight) + 0.2 * happyMouth;   // 부끄럽지만 좋아서 입꼬리가 조금 올라감 (곤란함이 섞여 크게는 안 웃음)
+        behaviors.frame("face", frame);   // 행동의 볼·입·눈썹 표정 (예: 삐짐의 볼 부풀리기)
         addParam(PARAMS.mouthForm, clamp(baseSmile + motion.smile * 0.4, -1, 1));
         addParam(PARAMS.mouthSmileLeft, clamp(baseSmile + motion.smile * 0.5 + 0.3 * happyMouth, 0, 1));   // 한쪽만 더 올라간 어색한 웃음
         addParam(PARAMS.mouthSmileRight, clamp(baseSmile + motion.smile * 0.5 + noise(seconds * 0.3, 9) * 0.05, 0, 1));
@@ -1506,25 +1457,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           rig.expression(name, w);
         }
       };
-      // ---- 왼손 가슴 가리기 (팔 궤적은 character/motion.js coverForearm). 내릴 땐 같은 길을 거꾸로 ----
-      /** 왼손 가슴 가리기 진행(올리는 데 0.38초, 내릴 땐 같은 길을 거꾸로)과 팔 파라미터 쓰기 */
-      const writeCoverChest = ({ now, dt, seconds }: Frame) => {
-        const leaning = now < touchLeanUntil || touchLean < -2;   // 앞으로 숙이는 동안엔 손을 움직이지 않음
-        const want = now >= cover.start && now < cover.until && bodyWeight < 0.5 && fleeX === 0 && !leaning;   // 꼬마·산책·도망 중에도 안 함
-        const coverBefore = cover.q;
-        cover.q = clamp(cover.q + (want ? 1 : -1) * dt / 0.38, 0, 1);   // 올리는 데 0.38초
-        if (cover.q > 0) {
-          const coverAmount = cover.q;
-          const forearm = coverForearm(coverAmount);
-          const breath = Math.sin(seconds * Math.PI * 2 * 0.4) * 0.02 * sstep(seg(0.8, 1, coverAmount));   // 가린 채로도 미세하게 움직임
-          const velocity = (cover.q - coverBefore) / Math.max(dt, 1e-3);   // 움직이는 중에만 손목이 늦게 따라오며 꺾임
-          setParam(PARAMS.armFrontPose, 1);   // 몸 앞용 팔 그림 (손이 다 내려올 때까지 유지)
-          addParam(PARAMS.upperArmLeft, 0.034 * sstep(coverAmount));
-          addParam(PARAMS.upperArmDepthLeft, 0.48 * sstep(seg(0, 0.6, coverAmount)));   // 위팔 원근은 아래팔보다 먼저
-          addParam(PARAMS.forearmLeft, forearm + breath);
-          addParam(PARAMS.wristLeft, clamp(velocity * 0.06, -0.2, 0.2) * Math.sin(Math.PI * coverAmount));
-        }
-      };
       // ---- 소품·옷·체형 (플러그인 설정 → prefs.outfit) ----
       /** 소품·옷 파라미터를 켠 정도(outfitWeight)만큼 서서히 더하기 */
       const writeOutfitParams = (outfit: Record<string, any>, dt: number) => {
@@ -1535,11 +1467,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /** 동물귀 숨김: 귀 파트를 목표 쪽으로 서서히 감춤 (모델에 귀가 없으면 rig가 아무것도 안 함) */
       const writeEarHide = (outfit: Record<string, any>, dt: number) => rig.earHide(outfit.earHide === true, dt);
-      /** 세숫대야와 체형 파라미터 쓰기 (산책·절전으로 나갈 때는 꼬마 모습, 꼬마 모습만큼 모델을 아래로) */
-      const writeBodyShape = (outfit: Record<string, any>, now: number, dt: number) => {
+      /** 체형 파라미터 쓰기 (산책·절전으로 나갈 때는 꼬마 모습, 꼬마 모습만큼 모델을 아래로) */
+      const writeBodyShape = (outfit: Record<string, any>, dt: number) => {
         const walkingBody = walk.phase === "out" || walk.phase === "away" || walk.phase === "in" || SLEEP.state === "leaving" || SLEEP.state === "waking";   // 산책은 꼬마 모습으로 (데스크톱 펫과 같음)
-        basinWeight += ((now < basinUntil ? 1 : 0) - basinWeight) * Math.min(1, dt * 4);   // 세숫대야는 천천히 씌우고 천천히 벗음
-        if (basinWeight > 0.005) addParam(PARAMS.basinProp, basinWeight);
         bodyWeight += ((walkingBody ? 1 : BODY_VALUE[outfit.bodyType] || 0) - bodyWeight) * Math.min(1, dt * 4);   // 체형은 조금 천천히 바뀜
         if (bodyWeight > 0.002) addParam(PARAMS.bodyType, bodyWeight);
         rig.bodyShape(bodyWeight);
@@ -1553,17 +1483,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         outfitPrev = { ...outfit };
       };
       /** 소품·옷·귀 숨김·체형 단계 (prefs.outfit 기준) */
-      const writeOutfit = ({ now, dt }: Frame) => {
+      const writeOutfit = ({ dt }: Frame) => {
         const outfit = prefs.outfit || {};
         writeOutfitParams(outfit, dt);
         writeEarHide(outfit, dt);
-        writeBodyShape(outfit, now, dt);
+        writeBodyShape(outfit, dt);
         talkOutfitChange(outfit);
       };
       /** 한 프레임의 절차 애니메이션: 아래 단계들을 정해진 순서대로 실행 (dt는 0.05초 상한, rig가 모델 갱신 직전에 부름) */
       rig.onFrame(() => {
         const now = performance.now(), dt = Math.min(0.05, (now - lastFrameAt) / 1000); lastFrameAt = now;
-        updateChestDrag(now, dt);
+        behaviors.frame("start", { now, dt, seconds: now / 1000 });   // 행동의 모델 입력 스프링 (예: 가슴 끌기)
         const frame = frameContext(now, dt);
         updateEnergy(frame);
         updateGaze(frame);
@@ -1574,14 +1504,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         applyTouchAndShiver(motion, frame);
         applyWalk(motion, frame);
         applyCarry(motion, frame);
-        const sulk = applySulk(motion, frame);
+        const blend = behaviors.blend(motion, frame);   // 행동의 자세 덮어쓰기 (예: 삐짐 외면)
         writeHeadBody(motion);
-        writeEyes(motion, frame, sulk);
+        writeEyes(motion, frame, blend);
         writeBrows(frame);
-        writeMouth(motion, frame, sulk);
+        writeMouth(motion, frame, blend);
         writeBlink(motion, frame);
         writeExpressions(frame);
-        writeCoverChest(frame);
+        behaviors.frame("params", frame);   // 캐릭터 고유 행동의 모델 파라미터 (가슴 가리기 팔·세숫대야 등)
         writeOutfit(frame);
       });
 
@@ -1595,86 +1525,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           "[어두운, 얄미운] …머리카락 엉키면, 내일 아침에 빗겨 주셔야 해요.",
           "[어두운, 얄미운] …손 놓으세요. 그렇게 보시면… 저도 참아야 하잖아요.",
           "[어두운, 얄미운] …이번엔 그냥 넘어갈게요. 착한 척은 여기까지예요.",
-        ],
-        head_sulk: [
-          "[홍조] 흥! 그럼 오늘은 안아 드리지 않을 거예요!",
-          "[홍조] 흥, 나중에 후회하실 거예요…!",
-          "[홍조] …만질 거면, 아예 달래 주시던가요.",
-          "[홍조] 흥! 등 돌리고 있을 거예요. …곁에 있으면 안 되지만.",
-          "[홍조] …한 번만 더 그러시면, 진짜 삐질 거예요.",
-        ],
-        head_after: [
-          "[홍조] …이번만 봐주는 거예요. 다음엔… 각오하세요.",
-          "[홍조] …다음엔 진짜, 책임지셔야 해요.",
-          "[홍조] 후… 이제 됐어요. …손은 아직 놓지 마시고요.",
-          "[홍조] …이번 일은 비밀로 해 드릴게요. 대신, 나중에.",
-          "[홍조] …주인님 나쁜 손. 오늘은 그렇게 기억해 둘게요.",
-        ],
-        // 소품·옷·체형을 바꿨을 때 (데스크톱 펫 대사.md와 같은 대사)
-        outfit_glasses: [
-          "안경 쓴 비서… 오늘 밤은 엄격하게 굴어 드릴까요, 주인님?",
-          "이런 지적인 얼굴… 마음에 드세요? 렌즈 너머로 다 보여요♪",
-          "주인님 취향이… 이런 쪽이었나요? 메모해 둘게요♪",
-          "안경 쓴 채로 보는 얼굴… 꽤 위험한데요. 감당하시겠어요?",
-          "선생님, 숙제 다 했어요. …칭찬은 어떻게 해 주실 거예요?",
-        ],
-        outfit_shoes: [
-          "주인님 앞에서 신발까지 벗다니… 이제 도망칠 데도 없네요",
-          "[홍조] 앗… 맨발을 그렇게 보시면… 발끝이 저려요…",
-          "바닥이 차가워요… 안아 올려 주실 거죠?",
-          "[얄미운] 발끝만 보시는 거예요? …조금 서운한데요.",
-        ],
-        outfit_tail: [
-          "꼬리 숨기니… 기분을 들키지 않겠네요♪ …입꼬리는 못 숨기지만요",
-          "쉿, 이건 주인님만 아는 거예요~",
-          "[얄미운] 꼬리로 감으면… 붙잡히지 않을 자신 있는데요?",
-          "꼬리 끝까지 다 보이니까… 이제 숨기는 건 없네요.",
-        ],
-        outfit_clothes: [
-          "[홍조] 앗… 이 옷, 생각보다 몸에 붙어서… 시선이 어디 가는지 아시죠?",
-          "에헤헤, 좋다면… 조금 더 가까이 가도 돼요…",
-          "[><, 홍조] 주, 주인님… 눈이 너무 노골적이세요…!",
-          "[하트] 이 정도면… 만족하실 수 있어요? 아니면… 더?",
-          "[홍조] 움직일 때마다… 느껴져서, 조금 곤란해요…",
-          "[얄미운] 굳이 안 벗어도 괜찮죠. …필요하시면 말씀하시고요♪",
-        ],
-        body_default: [
-          "익숙한 몸으로 돌아왔네요… 이게 제일 좋으시죠? 다 보이는데요",
-          "원래 모습으로 복귀 완료! …다시 유혹해 볼까요♪",
-          "역시 익숙한 게 좋으세요? …손이 먼저 움직이시네요.",
-          "이 모습이 가장 편하다고… 그렇게 말씀하셨죠? 잘 기억해요.",
-        ],
-        body_type1: [
-          "어라… 몸매가 달라 보이지 않나요, 주인님? …어디가요?",
-          "평소보다 색다른 느낌인데… 직접 확인하실 거예요?",
-          "이 몸엔… 주인님 시선이 더 붙는 것 같네요. 기분 탓인가요?",
-          "[얄미운] 어느 쪽이 마음에 드세요? …정직하게 말해 주세요.",
-        ],
-        body_type2: [
-          "앗, 작아졌어요! …안아 주시면 커질지도 몰라요♪",
-          "[하트] 꼬마 모습이 됐어요… 무릎에 앉혀 주세요~",
-          "작아도… 할 일은 다 할 수 있어요. 믿어 주세요♪",
-          "[하트] 이 모습, 귀여우세요? …아니면 다른 게 좋으세요?",
-          "작은 손으로도… 주인님 옷자락은 잘 잡아요.",
-        ],
-        basin_on: [
-          "[하트] 밥 먹을 시간이에요? …입 벌려 주세요♪",
-          "[얄미운] 세숫대야 쓴 채로 먹는 거… 생각보다 불편해요.",
-          "잘 먹을게요. …다 먹으면 칭찬해 주세요.",
-        ],
-        pot_guard: [
-          "[얄미운] 후훗, 이 정도는… 주인님 손길보다 약해요~",
-          "[얄미운] 후훗, 제가 막을 줄 몰랐죠? 칭찬해 주세요♪",
-          "[하트] 방어 성공이에요! 이번 판은 제 승리네요.",
-          "[얄미운] 냄비보다 가벼운 손길이었어요. 아쉽네요♪",
-          "[하트] 막았으니까… 이제 쓰다듬어 주실 차례죠?",
-        ],
-        pot_hit: [
-          "[눈물] 아야야…! 머리 아파요…",
-          "[눈물] 으앗! 별이 보여요…",
-          "[눈물] …방금 그거 냄비였죠?!",
-          "[눈물] 이마가… 좀 부풀었죠? 나중에 불어 주세요…",
-          "[눈물] 아파서 그래요… 잠깐만 안아 주세요. 진짜로.",
         ],
         walk_out: [
           "산책 좀 다녀올게요~ …따라오시면 안 돼요♪",
@@ -1713,252 +1563,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           "[홍조, ><] 으… 무릎은… 그렇게 안아 주시면 안 돼요…!",
           "[식은땀, 홍조] 서 있는 것도 벅차요… 놓아 주세요…",
           "[홍조, 하트] 거기, 감각이 예민하다니까요…",
-        ],
-        chest1: [
-          "[홍조, 얄미운] 앗… 거긴… 그렇게 세게 하면 안 돼요.",
-          "[홍조, 얄미운] 제 반응이 그렇게 궁금하세요…? 나쁜 주인님.",
-          "[홍조, ><] 잠깐… 거기, 옷 위로도 다 느껴져요…",
-          "[홍조, 얄미운] 손끝이… 너무 정확하신데요…?",
-          "[홍조, 얄미운] 한 번은 봐드릴게요… 딱 한 번만이에요.",
-          "[홍조, ><] 아… 그렇게 갑자기 만지시면… 숨이 멈춰요…",
-          "[홍조, 얄미운] 앗…! 아직 마음의 준비도 안 했는데요…",
-          "[홍조, ><] 손… 손이 너무 빨라요…!",
-          "[홍조, 얄미운] 그렇게 놀라게 하시면… 반응이 다 보이잖아요.",
-          "[홍조, ><] 잠깐… 여기, 사람 있는 데서는…",
-          "[홍조, 하트] 지금… 일부러 그러신 거죠?",
-          "[홍조, 얄미운] 옷 위로도 이렇게 느껴지는데… 어쩌죠?",
-          "[홍조, ><] 앗… 그 손가락, 거기 두지 마세요…",
-          "[홍조, 식은땀] 하… 갑자기 숨이 막혀서…",
-          "[홍조, 얄미운] 주인님은… 이런 거 잘 아시네요.",
-          "[홍조, 하트] 한 번만… 정말 한 번만이라고 했는데.",
-          "[홍조, ><] 으… 이거, 웃으면서 넘길 일이 아니에요…",
-          "[홍조, 얄미운] 거기, 손끝이 아직도 남아 있는데요…",
-          "[홍조, 식은땀] 숨… 조금만 정리하게 해 주세요.",
-          "[홍조, ><] 아… 아직 마음 준비가…",
-          "[홍조, 하트] 그렇게 만지시면… 저, 나중에 못 참아요.",
-          "[홍조, 얄미운] 한 번 더 하시면… 저도 방법을 생각해 볼게요.",
-          "[홍조, ><] 앗, 거긴… 옷이 얇아서…",
-          "[홍조, 식은땀] 잠깐만… 손 좀 내려 주세요… 아니, 그대로…",
-          "[홍조, 하트] 지금 그 표정… 마음에 들어요.",
-          "[홍조, 얄미운] …이번 건, 나중에 청구할 거예요.",
-        ],
-        chest2: [
-          "[하트, 홍조] 자꾸 그러면… 숨소리가 이상해지잖아요!",
-          "[하트, 홍조] 으으… 장난치지 말아 주세요… 손에 힘이 없어져요…",
-          "[하트, 홍조] 하아… 그렇게 만지작거리면… 저도 모르게 몸이…",
-          "[홍조, 식은땀] 잠깐… 이거, 그만두실 생각 없으시죠…?",
-          "[하트, 홍조] 주인님 손… 너무 따뜻해서 자꾸 기대게 돼요…",
-          "[하트, ><] 으… 소리 내면 안 되는데… 참는 게 더 힘들어요…",
-          "[하트, 홍조] 제가… 이상한 표정 짓고 있죠? 보지 마세요…",
-          "[홍조, 식은땀] 손 떼 주세요… 이대로면 제가 먼저 무너져요…",
-          "[하트, 홍조] 하아… 이제… 자꾸 손이 가잖아요…",
-          "[하트, ><] 으… 숨소리, 주인님한테 다 들려요…",
-          "[하트, 홍조] 잠깐만… 저, 지금 표정 관리가 안 돼요…",
-          "[홍조, 식은땀] 하… 거기, 계속 만지면… 무릎 힘이…",
-          "[하트, 홍조] 주인님 손, 왜 이렇게 따뜻해요…",
-          "[하트, ><] 으으… 이러면 저, 아무 말도 못 해요…",
-          "[하트, 홍조] 자꾸 그러시면… 제가 먼저 손을 잡을지도 몰라요.",
-          "[홍조, 식은땀] 하아… 이거, 장난이 아니잖아요…",
-          "[하트, 홍조] 소리… 소리 내면 안 되는데…",
-          "[하트, ><] 잠깐… 살짝만… 천천히…",
-          "[홍조, 하트] 저… 지금 얼굴, 보지 마세요…",
-          "[하트, 홍조] 심장이 너무 뛰어서… 주인님 손에 다 느껴질 거예요.",
-          "[하트, ><] 으… 옷자락 좀… 정리하게 해 주세요…",
-          "[홍조, 식은땀] 하아… 이대로 있으면… 저, 이상해져요…",
-          "[하트, 홍조] 주인님… 이거, 언제 멈추실 거예요…?",
-          "[하트, ><] 아… 아직… 마음 준비 안 됐다니까요…",
-          "[홍조, 하트] 손끝이 움직일 때마다… 저도 따라 움직여요…",
-          "[하트, 식은땀] 잠깐… 숨 좀… 쉬게 해 주세요…",
-          "[하트, 홍조] 이런 거… 익숙해지면 안 되는데…",
-          "[홍조, ><] 주인님… 웃지 마세요… 지금 제가 우습죠…?",
-        ],
-        chest3: [
-          "[하트, 홍조] 이제… 진짜 부끄러우니까 잠깐만요!",
-          "[홍조, 식은땀] 더 하시면… 저, 가만히 못 있어요…!",
-          "[하트, 눈물] 그만… 그만해 주세요… 심장이 터질 것 같아요…",
-          "[하트, 홍조] 주인님… 이러다 정말… 되돌릴 수 없게 돼요…",
-          "[홍조, ><] 으으… 이제 팔에 힘이 안 들어가요…",
-          "[홍조, 식은땀] 이제… 정말 그만해 주세요…!",
-          "[하트, 눈물] 으으… 저, 이제 한계예요…",
-          "[홍조, ><] 더 하시면… 쓰러질지도 몰라요…",
-          "[하트, 식은땀] 잠깐… 잠깐만… 숨이…",
-          "[홍조, 눈물] 주인님… 이러다 진짜…!",
-          "[하트, ><] 으아… 이제 팔에 힘이…",
-          "[홍조, 식은땀] 그만… 부탁이에요… 이러다간…",
-          "[하트, 눈물] 저… 눈물 날 것 같아요…",
-          "[홍조, ><] 잠깐… 이건… 너무해요…",
-          "[하트, 식은땀] 하아… 아직… 끝난 것도 아닌데…",
-          "[홍조, 눈물] 주인님… 손… 놓아 주세요… 아니, 그대로…",
-          "[하트, ><] 으으… 이제… 아무 생각도 안 나요…",
-          "[홍조, 식은땀] 잠깐만… 머리가… 어지러워요…",
-          "[하트, 눈물] 이러다… 저, 울어 버릴 것 같아요…",
-          "[홍조, ><] 제발… 조금만 쉬게 해 주세요…",
-          "[하트, 식은땀] 하아… 지금 제 얼굴… 부끄러워요…",
-          "[홍조, 눈물] 주인님은… 진짜… 못 말리겠어요…",
-          "[하트, ><] 으으… 이제… 제가 뭘 하는지도…",
-          "[홍조, 식은땀] 이제… 정말 안아 주세요… 그만하고…",
-          "[하트, 눈물] …이번엔, 제가 먼저 항복할게요…",
-        ],
-        chest_calm: [
-          "[하트, 홍조] 후우… 심장이 아직도 두근거려요.",
-          "[홍조, 얄미운] …이제 진정됐어요. 다음엔 각오하세요.",
-          "[하트, 홍조] 이런 얼굴… 처음 보여 드리는 거예요.",
-          "[홍조] …잠깐만 이대로 있게 해 주세요. 아직 다리가 후들거려요.",
-          "[하트, 홍조] 후… 아직… 다리 힘이 안 들어오네요.",
-          "[홍조] …조금만 더 이렇게 있어 주세요.",
-          "[하트, 홍조] 이제… 말할 수 있을 것 같아요. …아니, 아직.",
-          "[홍조, 얄미운] …다음엔, 제가 먼저 할지도 몰라요.",
-          "[하트] 자꾸 생각나요… 아까 그 느낌.",
-          "[홍조] …지금 얼굴 보이면 안 되는데, 늦었죠.",
-          "[하트, 홍조] 숨은 돌아왔는데… 마음이 안 진정돼요.",
-          "[홍조, 얄미운] …주인님 손, 인제 다 알겠네요.",
-          "[하트] 이런 거… 자주 하면 저 먼저 지치는 거 아닐까요.",
-          "[홍조] …앉아 있을게요. 잠깐만.",
-          "[하트, 홍조] 손, 아직 떼지 마세요… 아니, 떼 주세요…",
-          "[홍조, 얄미운] …오늘 일은, 저만 아는 걸로 해 둘게요.",
-          "[하트] 심장… 아직도 응원 소리 같아요.",
-          "[홍조] …다음에 또 그러실 거죠? 대답 안 하셔도 알아요.",
-          "[하트, 홍조] 이제 제 눈 똑바로 못 보세요, 주인님.",
-          "[홍조, 얄미운] …손끝, 기억났어요. 이 정도면 됐죠?",
-          "[하트] 잠깐… 웃음이 안 멈춰요. 이상하죠.",
-          "[홍조] …저 더워요. 창문 좀…",
-          "[하트, 홍조] 이제 조금… 진정되었어요. 조금만요.",
-          "[홍조, 얄미운] …다음엔 안 봐드릴 거예요. 진짜로.",
-        ],
-        chest_pull: [
-          "[홍조, ><] 아흣…?! 그, 그쪽은…!",
-          "[홍조, ><] 히잇…! 거기 잡으면… 몸이 이상해져요…!",
-          "[홍조, 하트] 으으… 거긴… 예민한 데라고요…",
-          "[홍조, ><] 자, 잠깐… 그렇게 당기면… 모양이…!",
-          "[홍조, 식은땀] 하앗…! 손… 힘 좀 빼 주세요… 숨이…",
-          "[홍조, 하트] 으… 그렇게 만지면… 몸에 힘이 하나도 안 들어가요…",
-          "[홍조, ><] 주, 주인님…! 이런 건… 밤에 하세요…!",
-          "[홍조, 하트] 하아… 일부러 그러시죠… 재미있으세요…?",
-          "[홍조, ><] 엇…! 거기, 위로… 그렇게 끌어올리면…!",
-          "[홍조, 식은땀] 으으으… 손대지 마세요… 아니, 놓지도 마시고요…",
-          "[홍조, ><] 주인님 손가락… 너무 정확해요… 그런 데까지…",
-          "[홍조, 하트] 숨이… 잘 안 쉬어져요… 조금만 천천히…",
-          "[홍조, ><] 으앗…! 그렇게 한 번에…!",
-          "[홍조, 식은땀] 하앗… 거기, 힘 빼면 안 돼요…",
-          "[홍조, ><] 앗… 손이… 손이 떨려서…",
-          "[홍조, 하트] 그만… 위로 올리지 마세요…",
-          "[홍조, ><] 으으… 이거, 생각보다…!",
-          "[홍조, 식은땀] 잠깐… 숨이… 안 쉬어져요…",
-          "[홍조, ><] 아… 옷이… 옷이 걸려서…",
-          "[홍조, 하트] 주인님… 조금만… 살살요…",
-          "[홍조, ><] 으… 거긴 잡는 게 아니에요…",
-          "[홍조, 식은땀] 하아… 이러다 진짜…",
-          "[홍조, ><] 손가락… 하나씩 다 느껴져요…",
-          "[홍조, 하트] 잠깐만… 마음 준비…",
-          "[홍조, ><] 아앗… 조금만 천천히…!",
-          "[홍조, 식은땀] 으으… 저, 소리 낼 것 같아요…",
-          "[홍조, ><] 주인님… 이거, 놀이가 아니죠…?",
-          "[홍조, 하트] 그렇게 당기시면… 몸이 따라올라와요…",
-          "[홍조, ><] 잠깐… 손이 미끄러져요…!",
-          "[홍조, 식은땀] 하… 하아… 조금만 쉬게…",
-          "[홍조, ><] 거기… 정말 예민하다니까요…",
-          "[홍조, 하트] …계속 이러시면, 저도… 각오할게요.",
-        ],
-        chest_pull_long: [
-          "[홍조, 하트] 하아… 아직도… 놓지 않으실 거예요…?",
-          "[홍조, ><] 으으… 이러다간… 제가 먼저… 이상해져요…",
-          "[홍조, 하트] 잠깐… 그만… 몸에 힘이 풀려서… 녹아내릴 것 같아요…",
-          "[홍조, 식은땀] 하앗… 손 떼 주세요… 이러다… 소리 낼지도 몰라요…",
-          "[홍조, 하트] 주인님… 너무해요… 이런 건… 반칙이라고요…",
-          "[홍조, ><] 히으… 계속 그러시면… 저… 참을 수 없어요…",
-          "[홍조, 하트] 으… 머리가… 하얘져서… 아무것도 안 보여요…",
-          "[홍조, 얄미운] 하아… 이렇게까지 하실 거면서… 놀리기만 하시고…",
-          "[홍조, 하트] 하아… 이거… 언제까지 하실 거예요…?",
-          "[홍조, ><] 저… 이미… 참는 게 한계예요…",
-          "[홍조, 하트] 제발… 조금만… 아니, 조금만 더…",
-          "[홍조, ><] 주인님… 이러다 제가 먼저 손을… 아니에요, 아무것도 아니에요…",
-          "[홍조, 하트] 하아… 아직… 계속하시는 거예요…?",
-          "[홍조, ><] 으응… 이제… 어지러워요… 기분 좋게…",
-          "[홍조, 하트] 잠깐… 저… 지금 제 목소리 이상하죠…",
-          "[홍조, 식은땀] 하앗… 손가락 힘… 조금만 빼 주세요…",
-          "[홍조, ><] 으으… 이러다간… 진짜 소리 질러요…",
-          "[홍조, 하트] 주인님… 저… 이상해요… 몸이…",
-          "[홍조, ><] 히으… 머리가… 자꾸 새하얘져요…",
-          "[홍조, 식은땀] 잠깐만… 이대로면… 제가 먼저 손을 뻗어요…",
-          "[홍조, 하트] 흔들지 마세요… 그럼… 더…",
-          "[홍조, ><] 으… 그만… 아니, 아직…",
-          "[홍조, 하트] 하아… 이제 정말… 한계에 가까워요…",
-          "[홍조, ><] 주인님… 이러다 저… 참지 못해요…",
-          "[홍조, 식은땀] 손… 손을… 놓을 수가 없잖아요…",
-          "[홍조, 하트] 하앗… 이거… 오래 하시면 저… 녹아요…",
-          "[홍조, ><] 으으… 숨… 숨이 안 나와요…",
-          "[홍조, 하트] 이제… 조금만 더하면… 저…",
-          "[홍조, ><] 잠깐… 눈물 날 것 같아요… 이상하게…",
-          "[홍조, 식은땀] 하아… 주인님… 이거… 정말 반칙이에요…",
-          "[홍조, 하트] …계속 이러시면, 오늘 밤 못 자요…",
-          "[홍조, ><] 으… 이제… 그만… 정말로 그만…",
-        ],
-        chest_pull_dizzy: [
-          "[어지럼, 홍조] 으으… 자꾸 흔들면… 어지러워요…",
-          "[어지럼, 홍조] 잠깐… 세상이… 빙글빙글 돌아요…",
-          "[어지럼, 하트] 아이… 머리가 핑 돌아서… 못 서겠어요…",
-          "[어지럼, 식은땀] 하아… 그만… 눈앞이 흔들려요…",
-          "[어지럼, 홍조] 으… 어지러워서… 잠깐만 기대도 돼요…?",
-        ],
-        chest_drop: [
-          "[홍조, ><] 꺅!",
-          "[홍조, 눈물] 꺅…! 이, 이건 반칙이에요…!",
-          "[홍조, 하트] 하아… 갑자기 놓으면… 몸이 아직… 어지러워요…",
-          "[홍조, 식은땀] 아… 아직… 감각이 안 돌아와요…",
-          "[홍조, ><] 으으… 다리 힘이… 풀려 버렸잖아요…",
-          "[홍조, 하트] 잠깐만… 심장이 너무 뛰어서… 숨 좀 돌릴게요…",
-          "[홍조, 눈물] 부, 부끄러워서… 얼굴을 못 들겠어요…",
-          "[홍조, 얄미운] …이번엔 봐드린 거예요… 다음엔… 각오하세요…",
-          "[홍조, 하트] 아… 아직 거기… 감각이 남아 있어요…",
-          "[홍조, 식은땀] 이 상태로 일어나면… 다리에 힘이 안 들어가요…",
-          "[홍조, ><] 주인님… 이거… 책임지실 거죠…?",
-          "[홍조, 눈물] 하아… 창피해서 어디 숨고 싶어요…",
-          "[홍조, ><] 하앗…!",
-          "[홍조, 눈물] 아… 아직… 아직 거기…",
-          "[홍조, 하트] 으으… 갑자기 놓으면… 몸이 휘청…",
-          "[홍조, 식은땀] 하아… 다리에 힘 안 들어가요…",
-          "[홍조, ><] 잠깐… 숨… 돌릴 시간…",
-          "[홍조, 하트] 주인님… 손 좀… 놓지 마세요…",
-          "[홍조, 눈물] 이제… 이제 된 거예요…?",
-          "[홍조, ><] 으으… 아직… 여운이…",
-          "[홍조, 식은땀] 하아… 이러면… 일할 수가 없어요…",
-          "[홍조, 하트] 잠깐만… 마음이… 안 정리돼요…",
-          "[홍조, ><] 아… 아직 감각이… 남아 있어요…",
-          "[홍조, 눈물] 부끄러워… 부끄러워요…",
-          "[홍조, 식은땀] 이제… 제 얼굴… 다 보였죠…?",
-          "[홍조, 하트] 놓고 나니까… 더… 이상해요…",
-          "[홍조, ><] 으으… 다리… 풀렸어요…",
-          "[홍조, 눈물] 주인님… 이거… 저만 아는 거예요…",
-          "[홍조, 식은땀] 하아… 물 좀… 마실 수 있게…",
-          "[홍조, ><] 잠깐… 그 자리에… 서 있을게요…",
-          "[홍조, 하트] …이번엔, 제가 진 거네요…",
-          "[홍조, 눈물] …다음엔, 조용한 데서 해요… 제발요…",
-        ],
-        lower1: [
-          "[홍조, 식은땀] 거, 거기는… 치마는 안 돼요…!",
-          "[홍조, 식은땀] 거기 만지면… 정말 화낼 거예요…!",
-          "[홍조, ><] 으… 치마 자락… 놓아 주세요…!",
-          "[홍조, 식은땀] 거긴… 스스로도 함부로 안 만지는 데예요…",
-          "[홍조, ><] 주인님… 그 손, 지금 위험한 거 아세요…?",
-        ],
-        lower2: [
-          "[홍조, ><] 진짜… 이러시면 오늘 밤은 안 자요…!",
-          "[홍조, ><] 그만해 주세요… 제발…!",
-          "[홍조, 식은땀] 으으… 이러다 진짜 소리 질러요…!",
-          "[홍조, ><] 한 번만 더 하시면… 정말로 삐질 거예요…",
-          "[홍조, 눈물] 주인님… 지금 표정… 무서워요… 아니, 좋아요…",
-        ],
-        lower3: [
-          "[><, 식은땀] 히익…!",
-          "[><, 눈물] 으아…! 이제 진짜…!",
-          "[><, 식은땀] 잠깐…! 거기… 진짜 안 돼요…!",
-        ],
-        lower_after: [
-          "[홍조, 눈물] …다시는 그러지 마세요. 진짜예요.",
-          "[홍조, 눈물] 흥… 이번만 봐준 거예요.",
-          "[홍조] …나중에, 조용한 데서 다시 얘기해요.",
-          "[홍조, 얄미운] 이번 일은… 둘만 아는 걸로 해요.",
-          "[홍조, 눈물] 흥… 이제 저 멀리 가 있을 거예요.",
         ],
         spam: [
           "[어두운, 얄미운] …그만 좀 눌러요. 반응 다 보이잖아요.",
@@ -2017,7 +1621,32 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         say(text, ms);
       };
       /** 소품·옷·체형을 바꿨을 때의 대사. 도망·산책·삐진 중에는 말 안 함 */
-      outfitTalk = (key: string) => { if (fleeX === 0 && performance.now() >= sulkUntil) speak(key, 4000); };
+      outfitTalk = (key: string) => { const now = performance.now(); if (fleeX === 0 && !behaviors.tagged(TAGS.busy, now)) behaviors.dispatch(EVENTS.outfitChange, { now, x: 0, y: 0, concept: key }); };
+
+      // ---------- 캐릭터 고유 행동 (character/behaviors, 목록은 모델 프로필 rig.behaviors) ----------
+      // 선택 지점(머리 쓸기 판정 등)이 이벤트 키를 정하면 그 키를 맡은 행동 하나가 반응한다. 맡은 행동이 없으면 기본 반응.
+      const behaviorContext: BehaviorContext = {
+        life,
+        scale: () => curK,
+        timeline: createTimeline(setTimeout, (id) => clearTimeout(id as number)),
+        now: () => performance.now(),
+        play, speak, flashExp,
+        cancelGesture: () => { gestureState.name = null; },
+        clearExp: (names) => { for (const name of names) until[name] = 0; },
+        shiver: () => { shiverStarted = performance.now(); },
+        lockInput: (ms) => { inputLockedUntil = performance.now() + ms; },
+        markTouched: () => { walk.lastTouch = performance.now(); },
+        resetTapCounters: () => { clicks = []; headClicks = []; },
+        tagged: (tag) => behaviors.tagged(tag, performance.now()),
+        addParam: (id, value) => addParam(id, value),
+        setParam: (id, value) => setParam(id, value),
+        bodyWeight: () => bodyWeight,
+        displaced: () => fleeX !== 0,
+        chestDrag: { lift: dragLift, shift: dragShift },
+        flee: (onBack) => flee(onBack),
+      };
+      const behaviors = createBehaviors(BUILTIN_BEHAVIORS, rig.behaviors, behaviorContext, { baseLines: LINES, allowAdult: rig.adultAllowed, warn: (message) => log.warnOnce(`behavior:${message}`, "캐릭터 행동:", message) });
+      Object.assign(LINES, behaviors.lines);
 
       /**
        * 부위 그림(drawRegion)과 가슴 타원·높이로 터치 부위 결정
@@ -2027,7 +1656,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        */
       const regionByShape = (region: string | null, ratioY: number, inChest: boolean) => {
         if (region === "head" && ratioY > GEOMETRY.headBottom) region = null;
-        if (region === "arm" && cover.q > 0.3 && ratioY < GEOMETRY.coverArmBottom) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
+        if (region === "arm" && behaviors.tagged(TAGS.armCover, performance.now()) && ratioY < GEOMETRY.coverArmBottom) return "chest";   // 왼손으로 가슴을 가린 동안엔 그 손을 눌러도 가슴 터치로 (반응이 이어지게)
         if (region === "arm" || region === "leg" || region === "head") return region;
         if (inChest) return "chest";
         if (region === "lower") return "lower";
@@ -2037,7 +1666,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /**
        * 누른 자리의 터치 부위(head·arm·leg·chest·lower·body) 판정. 꼬마 모습은 머리·몸만, 그 밖엔 rig가 준 모양 정보로 정함
-       * 가슴·아랫배 반응이 없는 모델(rig.supports("chestTouch") 아님)은 그 자리를 몸으로 침
+       * 가슴·아랫배 탭을 맡은 행동이 없으면 그 자리를 몸으로 침
        * @param x 캔버스 x 좌표
        * @param y 캔버스 y 좌표
        * @param drawable 누른 그림 번호 (rig.pick)
@@ -2045,7 +1674,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const touchRegion = (x: number, y: number, drawable: number) => {
         if (bodyWeight > 0.5) return rig.chibiRegion(y);
         const shape = rig.touchShape(x, y, drawable), region = regionByShape(shape.part, shape.ratioY, shape.inChest);
-        return rig.supports("chestTouch") || (region !== "chest" && region !== "lower") ? region : "body";
+        if (region === "chest") return behaviors.has(EVENTS.chestTap) ? region : "body";
+        if (region === "lower") return behaviors.has(EVENTS.lowerTap) ? region : "body";
+        return region;
       };
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
       const UI_HIT = 'button, a[href], input, textarea, select, summary, [contenteditable="true"], [class*="composerSeat"] [class*="_card"]';
@@ -2066,31 +1697,6 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
 
       let clicks: number[] = [], headClicks: number[] = [], spamAt = -1e9, inputLockedUntil = 0;
-      const shy = { count: 0, last: -1e9, cooldownUntil: 0 }, low = { count: 0, last: -1e9, cooldownUntil: 0 };
-      /**
-       * 가슴 터치 반응. 8초 안에 이어 누른 횟수로 단계가 오르고, 다섯 번째엔 진정할 때까지 6초 터치 잠금
-       * 180ms 안의 연타와 쿨다운 중 터치는 무시
-       * @param now performance.now() 시각(ms)
-       */
-      const onChest = (now: number) => {
-        if (now < shy.cooldownUntil || now - shy.last < 180) return;
-        if (now - shy.last > 8000) shy.count = 0;
-        shy.last = now; shy.count++;
-        if (shy.count <= 4) {
-          if (now < touchLeanUntil || Math.random() < 0.16) touchLeanUntil = now + 3000;   // 가끔 앞으로 숙임, 숙인 동안 누르면 3초 연장
-          speak(shy.count <= 1 ? "chest1" : "chest2", 4000);
-          if (shy.count >= 2) happyMouthUntil = now + 4000;   // 2번째부터: 입꼬리 올리고 살짝 벌린 "헤~"
-          if (shy.count >= 3) coverChest(2600);   // 3~4번째: 왼손으로 가슴을 가림
-        } else {
-          touchLeanUntil = 0; shy.count = 0;
-          shy.cooldownUntil = inputLockedUntil = now + 6000;   // 진정할 때까지 터치 안 받음
-          shiverStarted = now;
-          speak("chest3", 3000);
-          happyMouthUntil = now + 6000;
-          coverChest(6000);   // 마지막: 진정할 때까지 가린 채로
-          setTimeout(() => speak("chest_calm", 2800), 3000);
-        }
-      };
       /** 가까운 쪽 화면 끝(-1 = 왼쪽, 1 = 오른쪽) */
       const nearSide = () => { const areaRect = area(), centerX = shown.x - fleeX + W * curK / 2; return centerX - areaRect.l < areaRect.r - centerX ? -1 : 1; };
       /**
@@ -2120,21 +1726,24 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         };
         requestAnimationFrame(step);
       };
-      /** 아래(치마) 터치가 쌓였을 때 화면 밖으로 도망쳤다가 돌아옴 */
-      const flee = () => {
+      /**
+       * 화면 밖으로 도망쳤다가 돌아옴 (행동의 ctx.flee, 예: 아랫배 연타)
+       * @param onBack 돌아오고 0.4초 뒤 부를 함수 (한마디 등)
+       */
+      const flee = (onBack: () => void) => {
         if (drag.pending || drag.on || link.open || link.follow) return;   // 예약된 사이 집었거나 펫 창으로 넘어갔으면 취소
         hush();
         if (!PET) {   // 창 안: 화면(창) 경계 밖으로 나가면 그림이 잘려 자연스럽게 사라진다
           const off = outDistance(nearSide());
           fleeSlide(Math.sign(off) * 0.01, off, 700, () => setTimeout(() => fleeSlide(off, 0, 1100, () => {
-            fleeX = 0; setTimeout(() => speak("lower_after", 4000), 400);
+            fleeX = 0; setTimeout(onBack, 400);
           }), 10000));
           return;
         }
         // 펫 창: 거리 이동 + 페이드
         const dist = nearSide() * Math.max(FLEE_DIST, W * curK * 0.5);     // 캐릭터가 클수록 조금 더 멀리
         /** 도망 끝: 제자리·불투명도 복구 후 한마디 */
-        const finish = () => { fleeX = 0; fleeFade = 1; canvas.style.opacity = ""; setTimeout(() => speak("lower_after", 4000), 400); };
+        const finish = () => { fleeX = 0; fleeFade = 1; canvas.style.opacity = ""; setTimeout(onBack, 400); };
         /** 사라진 자리에서 제자리까지 서서히 나타나며 돌아옴 (끌기 시작하면 즉시 복귀) */
         const runIn = () => {
           const inStartedAt = performance.now();
@@ -2430,8 +2039,8 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           walkLater(walkBack, 8000 + Math.random() * 6000);
         });
       };
-      /** 산책을 떠나면 안 되는 때 여부: 시작 연출·작업·대기·삐짐·도망 중 */
-      const walkMoodBusy = (now: number) => intro.phase !== "done" || mood !== "idle" || running || !!waitingKind || now < sulkUntil || now < inputLockedUntil || fleeX !== 0;
+      /** 산책을 떠나면 안 되는 때 여부: 시작 연출·작업·대기·행동 연출(예: 삐짐)·도망 중 */
+      const walkMoodBusy = (now: number) => intro.phase !== "done" || mood !== "idle" || running || !!waitingKind || behaviors.tagged(TAGS.busy, now) || now < inputLockedUntil || fleeX !== 0;
       /** 누르거나 들고 있을 때·움직이는 중·펫 창으로 넘긴 동안 여부. 이때는 산책 안 함 (펫 창이 대신 산책) */
       const walkInputBusy = () => !!(drag.pending || drag.on || free.anim || link.open || link.opening || link.follow);
       /** 말하는 중, 최근 1분 안에 만졌거나 15초 안에 말했을 때, 화면이 안 보일 때 여부 */
@@ -2497,149 +2106,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           });
         }, 2500);
       };
-      /**
-       * 아래(치마) 터치 반응. 8초 안에 이어 누른 횟수로 단계가 오르고, 다섯 번째엔 도망 후 14초 쿨다운
-       * 도망 중·쿨다운 중 터치와 180ms 안의 연타는 무시
-       * @param now performance.now() 시각(ms)
-       */
-      const onLower = (now: number) => {
-        if (fleeX !== 0 || now < low.cooldownUntil || now - low.last < 180) return;
-        if (now - low.last > 8000) low.count = 0;
-        low.last = now; low.count++;
-        if (low.count <= 2) speak("lower1", 4000);
-        else if (low.count <= 4) speak("lower2", 4000);
-        else {
-          low.count = 0;
-          low.cooldownUntil = now + 14000;
-          shiverStarted = now;
-          speak("lower3", 900);
-          setTimeout(flee, 900);
-        }
-      };
-      // ---------- 냄비: 위에서 떨어져 머리를 "쾅" 치고 튕겨 나감 ----------
-      const POT_SVG = '<svg viewBox="0 0 140 100" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">' +
-        '<defs><linearGradient id="dscPotBody" x1="0" x2="1"><stop offset="0" stop-color="#7d8794"/><stop offset=".35" stop-color="#e3e8ee"/><stop offset=".6" stop-color="#b8c0ca"/><stop offset="1" stop-color="#6c7580"/></linearGradient></defs>' +
-        '<rect x="2" y="34" width="26" height="10" rx="5" fill="#3d434b"/><rect x="112" y="34" width="26" height="10" rx="5" fill="#3d434b"/>' +
-        '<path d="M22 30 H118 V78 Q118 96 100 96 H40 Q22 96 22 78 Z" fill="url(#dscPotBody)" stroke="#4b525b" stroke-width="3"/>' +
-        '<ellipse cx="70" cy="30" rx="50" ry="10" fill="#d7dde4" stroke="#4b525b" stroke-width="3"/>' +
-        '<ellipse cx="70" cy="30" rx="40" ry="6" fill="#59616b"/><path d="M38 48 Q44 70 40 86" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".55" fill="none"/></svg>';
-      /**
-       * 충격 그림: 별 모양 터짐 + 바깥 충격선 (막았을 땐 은색 반짝임)
-       * @param guarded true면 세숫대야로 막았을 때 그림
-       * @returns SVG 문자열
-       */
-      const impactSvg = (guarded: boolean) => {
-        const points = [];
-        for (let i = 0; i < 20; i++) { const radius = i % 2 ? 22 : 46, angle = (i / 20) * Math.PI * 2 - Math.PI / 2; points.push((50 + Math.cos(angle) * radius).toFixed(1) + "," + (50 + Math.sin(angle) * radius).toFixed(1)); }
-        const fill = guarded ? "#f1f5f9" : "#ffe14d", stroke = guarded ? "#64748b" : "#ea580c", core = guarded ? "#ffffff" : "#fff7c2";
-        let rays = "";
-        for (let i = 0; i < 8; i++) { const angle = (i / 8) * Math.PI * 2 + 0.2, cos = Math.cos(angle), sin = Math.sin(angle); rays += `<line x1="${(50 + cos * 50).toFixed(1)}" y1="${(50 + sin * 50).toFixed(1)}" x2="${(50 + cos * 62).toFixed(1)}" y2="${(50 + sin * 62).toFixed(1)}" stroke="${stroke}" stroke-width="4" stroke-linecap="round"/>`; }
-        return `<svg viewBox="-14 -14 128 128" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">${rays}<polygon points="${points.join(" ")}" fill="${fill}" stroke="${stroke}" stroke-width="4" stroke-linejoin="round"/><circle cx="50" cy="50" r="12" fill="${core}"/></svg>`;
-      };
-      let audioCtx: AudioContext | null = null;
-      /**
-       * 효과음 (파일 없이 합성): 맞으면 둔탁한 "통", 세숫대야로 막으면 금속이 울리는 "깡~"
-       * @param guarded true면 세숫대야로 막았을 때 소리
-       */
-      const impactSound = (guarded: boolean) => {
-        try {
-          audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-          const audio = audioCtx, t = audio.currentTime, out = audio.createGain();
-          out.gain.value = 0.22; out.connect(audio.destination);
-          /**
-           * 점점 잦아드는 단음 하나
-           * @param freq 시작 주파수(Hz)
-           * @param dur 길이(초)
-           * @param vol 시작 음량
-           * @param drop 끝 주파수 배율(1이면 고정)
-           */
-          const tone = (freq: number, dur: number, vol: number, type: OscillatorType = "sine", drop = 1) => {
-            const oscillator = audio.createOscillator(), gainNode = audio.createGain();
-            oscillator.type = type; oscillator.frequency.setValueAtTime(freq, t); if (drop !== 1) oscillator.frequency.exponentialRampToValueAtTime(freq * drop, t + dur);
-            gainNode.gain.setValueAtTime(vol, t); gainNode.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-            oscillator.connect(gainNode); gainNode.connect(out); oscillator.start(t); oscillator.stop(t + dur + 0.02);
-          };
-          /**
-           * 부딪히는 순간의 "탁" (점점 잦아드는 잡음)
-           * @param dur 길이(초)
-           * @param vol 음량
-           * @param highpassHz 고역 통과 필터 기준 주파수(Hz)
-           */
-          const noise = (dur: number, vol: number, highpassHz: number) => {
-            const noiseBuffer = audio.createBuffer(1, Math.ceil(audio.sampleRate * dur), audio.sampleRate), samples = noiseBuffer.getChannelData(0);
-            for (let i = 0; i < samples.length; i++) samples[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / samples.length, 3);
-            const src = audio.createBufferSource(), filter = audio.createBiquadFilter(), gainNode = audio.createGain();
-            src.buffer = noiseBuffer; filter.type = "highpass"; filter.frequency.value = highpassHz; gainNode.gain.value = vol;
-            src.connect(filter); filter.connect(gainNode); gainNode.connect(out); src.start(t);
-          };
-          if (guarded) { noise(0.05, 0.7, 2500); for (const [freq, dur, vol] of [[640, 1.1, 0.5], [1370, 0.9, 0.35], [2230, 0.7, 0.25], [3150, 0.5, 0.15]]) tone(freq, dur, vol, "sine", 0.995); }
-          else { noise(0.07, 0.8, 900); tone(190, 0.28, 0.9, "triangle", 0.45); tone(470, 0.35, 0.35, "sine", 0.9); tone(1130, 0.22, 0.18, "sine", 0.95); }
-        } catch {}
-      };
-      /**
-       * 냄비 떨어뜨리기: 위에서 떨어져 머리를 치고 튕겨 나감. 세숫대야를 쓰고 있으면 막아 냄
-       * @param x 냄비가 떨어질 창 x 좌표(clientX)
-       * @param y 냄비가 떨어질 창 y 좌표(clientY)
-       */
-      const potHit = (x: number, y: number) => {
-        const now = performance.now();
-        walk.lastTouch = now; clicks = []; headClicks = [];
-        const guarded = now < basinUntil;   // 세숫대야를 쓰고 있으면 막아 냄
-        inputLockedUntil = now + (guarded ? 1200 : 3200);   // 맞고 정신 차릴 때까지 터치 안 받음
-        const w = Math.max(64, 150 * curK), h = w * 100 / 140;
-        const pot = life.own(document.createElement("div"), (node) => node.remove());
-        pot.style.cssText = `position:fixed;left:${x - w / 2}px;top:${y - h * 0.9}px;width:${w}px;height:${h}px;z-index:40;pointer-events:none;will-change:transform,opacity`;
-        pot.innerHTML = POT_SVG;
-        document.body.append(pot);
-        const fall = y + h + 20, animMs = 1250;
-        const anim = pot.animate([
-          { transform: `translateY(${-fall}px) rotate(-14deg)`, offset: 0, easing: "cubic-bezier(.5,0,1,.6)" },
-          { transform: "translateY(0) rotate(0deg) scale(1.12,.86)", offset: 0.4, easing: "ease-out" },   // 쾅
-          guarded ? { transform: `translate(${w * 0.45}px,${-h * 1.6}px) rotate(60deg)`, offset: 0.66, easing: "ease-in" }   // 세숫대야에 튕겨 더 높이
-                  : { transform: `translate(${w * 0.25}px,${-h * 0.6}px) rotate(32deg)`, offset: 0.62, easing: "ease-in" },
-          { transform: `translate(${w * 0.7}px,${h * 0.9}px) rotate(85deg)`, opacity: 0, offset: 1 },
-        ], { duration: animMs, fill: "forwards" });
-        /** 다 떨어진 냄비 정리 */
-        anim.onfinish = () => pot.remove();
-        setTimeout(() => {   // 부딪히는 순간
-          const burstSize = Math.max(60, 130 * curK), burst = life.own(document.createElement("div"), (node) => node.remove());   // 글자 없이 만화식 충격 별 + 충격선
-          burst.style.cssText = `position:fixed;left:${x - burstSize / 2}px;top:${y - h * 0.9 - burstSize / 2}px;width:${burstSize}px;height:${burstSize}px;z-index:41;pointer-events:none`;
-          burst.innerHTML = impactSvg(guarded);
-          document.body.append(burst);
-          /** 다 터진 충격 그림 정리 */
-          burst.animate([{ transform: "scale(.2) rotate(-20deg)", opacity: 0 }, { transform: "scale(1.15) rotate(5deg)", opacity: 1, offset: 0.25 }, { transform: "scale(1.3) rotate(10deg)", opacity: 0 }], { duration: 620, fill: "forwards" }).onfinish = () => burst.remove();
-          impactSound(guarded);
-          if (guarded) { play("flinch", 600); speak("pot_guard", 3000); return; }   // 막아 냄: 살짝 움찔하고 의기양양
-          play("bonk", 1100); shiverStarted = performance.now();
-          speak("pot_hit", 3000);
-          flashExp("dizzy", 2800);   // 빙글빙글 눈 (말풍선 꼬리표의 눈물과 함께)
-        }, animMs * 0.4);
-      };
-      // ---------- 세숫대야: 머리를 천천히 쓸어내리면 살며시 씌우고 10초 뒤 벗음 ----------
-      /** 세숫대야 씌우기 (10초 뒤 벗음) */
-      const putBasin = () => {
-        const now = performance.now();
-        walk.lastTouch = now; clicks = []; headClicks = [];
-        basinUntil = now + 10000;
-        speak("basin_on", 3800);
-      };
-      const HEAD_SULK_AT = 3, SULK_MS = 15000;   // 머리 1~2번째 = 정색, 3번째 = 삐져서 15초 동안 터치 안 받음
-      /**
-       * 머리를 연달아 만졌을 때 삐짐: SULK_MS 동안 터치 안 받고 고개를 돌린 채 몰래 보기 3번, 풀리면 한마디
-       * @param now performance.now() 시각(ms)
-       */
-      const sulk = (now: number) => {
-        clicks = []; headClicks = [];
-        until.dark = until.smug = 0;   // 정색 표정을 지우고 삐진 얼굴로
-        gestureState.name = null;
-        sulkStart = now; sulkUntil = inputLockedUntil = now + SULK_MS;
-        sulkDir = Math.random() < 0.5 ? 1 : -1; sulkYaw = sulkRoll = 0;
-        // 15초 동안 몰래 보기 3번 (약 3초·7초·11초, 조금씩 어긋나게)
-        sulkPeeks = [0, 1, 2].map((i) => ({ at: 2800 + i * 4000 + (Math.random() - 0.5) * 1000, flip: Math.random() < 0.6, done: false }));
-        speak("head_sulk", 4000);
-        flashExp("blush", SULK_MS);
-        setTimeout(() => { stareUntil = performance.now() + 4300; speak("head_after", 4000); }, SULK_MS);   // 풀리며 한마디 할 땐 정면을 똑바로 봄
-      };
+      const HEAD_SULK_AT = 3;   // 머리 1~2번째 = 정색, 3번째 = 연타 이벤트 (행동이 맡으면 예: 삐짐)
       /**
        * 짧은 터치 반응: 부위별 대사, 3초 안 6번 연타·작업 중·머리 8초 안 3번(삐짐) 판정
        * @param x 캔버스 x 좌표
@@ -2651,16 +2118,15 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (now < inputLockedUntil) return;
         walk.lastTouch = now;
         const region = touchRegion(x, y, drawable);
-        if (region === "chest") { clicks = []; headClicks = []; low.count = 0; return onChest(now); }
-        if (region === "lower") { clicks = []; headClicks = []; shy.count = 0; return onLower(now); }
-        shy.count = 0; low.count = 0;
+        behaviors.touched(region, now);   // 다른 부위를 만지면 행동의 연타 횟수가 풀림 (예: 가슴)
+        if (region === "chest" || region === "lower") { clicks = []; headClicks = []; behaviors.dispatch(region === "chest" ? EVENTS.chestTap : EVENTS.lowerTap, { now, x, y }); return; }
         clicks = clicks.filter((t) => now - t < 3000); clicks.push(now);
         if (clicks.length >= 6) { clicks = []; headClicks = []; spamAt = now; return speak("spam", 3000); }
         if (running && Math.random() < 0.5) return speak("working");
         if (region === "head") {
           if (now - spamAt < 10000) { spamAt = -1e9; return speak("makeup"); }
           headClicks = headClicks.filter((t) => now - t < 8000); headClicks.push(now);
-          if (headClicks.length >= HEAD_SULK_AT) return sulk(now);
+          if (headClicks.length >= HEAD_SULK_AT && behaviors.dispatch(EVENTS.headRepeat, { now, x, y })) return;
           return speak("head");
         }
         if (region === "arm") return speak("arm");
@@ -2692,36 +2158,13 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 가슴 끌기를 시작할 수 있는지 여부. 놓은 직후 부끄러워 떠는 동안에도 바로 다시 잡을 수 있음 (inputLockedUntil은 머리 터치에만 적용)
        * @param now performance.now() 시각(ms)
        */
-      const canPullChest = (now: number) => bodyWeight <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && now >= sulkUntil;
-      /**
-       * 가슴을 잡은 동안의 흔들기 대사 감시 시작
-       * 3초 넘게 잡은 채로 '흔들어야' 더 자극적인 대사가 나옴 (잡고만 있으면 안 나옴), 4초를 넘겨 계속 흔들면 어지러워하는 대사로 바뀜
-       */
-      const armChestLong = () => {
-        clearInterval(chestLongTimer);
-        const startedAt = performance.now();
-        chestShake.acc = 0; chestShake.last = 0; chestShake.next = startedAt + 3000;
-        chestLongTimer = setInterval(() => {
-          if (!chestDragging) { clearInterval(chestLongTimer); chestLongTimer = 0; return; }
-          const now = performance.now();
-          if (now < chestShake.next) return;                                   // 최소 3초는 잡고 있어야
-          if (now - chestShake.last > 500 || chestShake.acc < 30) return;      // 그 사이 흔들지 않았으면 대사 없음
-          // 4초를 넘기면 멀미(어지럼) 대사, 그 전에는 자극적인 대사
-          speak(now - startedAt >= 4000 ? "chest_pull_dizzy" : "chest_pull_long", 4000);
-          chestShake.acc = 0; chestShake.next = now + 3000;                    // 계속 흔들면 3초마다 한 번씩
-        }, 300);
-      };
-      /** 가슴 끌기 놓기: 끌어올린 만큼 출렁이며 내려가고 부끄러워하는 반응, 2.5초 터치 잠금 */
+      const canPullChest = (now: number) => bodyWeight <= 0.5 && fleeX === 0 && !walk.phase && intro.phase === "done" && !drag.on && !link.opening && !behaviors.tagged(TAGS.busy, now);
+      /** 가슴 끌기 놓기: 끌던 중이면 가슴 행동에 놓았다고 알림 (출렁이며 부끄러워하는 반응) */
       const releaseChest = () => {
         chestFrom = null;
-        if (!chestDragging) return;
-        chestDragging = false; chestTarget = 0; chestShiftTarget = 0;
-        clearInterval(chestLongTimer);   // 더 이상 붙잡고 있지 않으니 자극적인 대사 감시도 끔
-        const now = performance.now();
-        const dropped = Math.max(0, dragLift.x);
-        dragLift.v = Math.min(0, dragLift.v) - dropped * 2.5;   // 놓는 순간 끌어올린 만큼 아래로 탄력이 붙어 크게 출렁인 뒤 잦아듦
-        speak("chest_drop", 3500); shiverStarted = now;
-        coverChest(3000); inputLockedUntil = now + 2500; walk.lastTouch = now;
+        if (!chestPulling) return;
+        chestPulling = false;
+        behaviors.dispatch(EVENTS.chestPull, { now: performance.now(), x: 0, y: 0, phase: "end" });
       };
       /**
        * 두 번째 버튼 합류 시 집기 예약 복원. 그 사이 예약된 쓰다듬기·가슴 끌기는 버림
@@ -2731,7 +2174,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @param pointerId 집기 예약에 기록할 포인터 id
        */
       const armChordGrab = (e: PointerEvent | MouseEvent, pointerId = (e as PointerEvent).pointerId) => {
-        if (chestDragging) { clearInterval(chestLongTimer); chestDragging = false; chestTarget = 0; chestShiftTarget = 0; }
+        if (chestPulling) { chestPulling = false; behaviors.dispatch(EVENTS.chestPull, { now: performance.now(), x: 0, y: 0, phase: "cancel" }); }
         strokeFrom = null; chestFrom = null;
         if (!drag.pending) {
           const [px, py] = pointerPoint(e);
@@ -2791,15 +2234,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if ((e.buttons & 1) && chordWithinGrace(chord, e.button, e.buttons, nowDown)) armChordGrab(e);
       };
       /**
-       * 머리면 쓰다듬기 예약, 가슴이면 위로 끄는지 지켜보기 예약 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김)
+       * 머리면 쓸어내리기 지켜보기 예약(쓸기를 맡은 행동이 있을 때만), 가슴이면 위로 끄는지 지켜보기 예약 (위로 끌면 가슴 끌기, 옆·아래로 움직이면 평소처럼 집어 옮김)
        * @param h 누른 자리의 hitAt 결과(그림 위가 아니면 null)
-       * @returns 머리였으면 true
+       * @returns 머리 쓸기를 지켜보기 시작했으면 true (떼는 순간 머리 터치)
        */
       const armHeadOrChest = (e: PointerEvent, h: number[] | null) => {
         const head = !!h && performance.now() >= inputLockedUntil && touchRegion(h[0], h[1], h[2]) === "head";
-        if (head) strokeFrom = { x: e.clientX, y: e.clientY, t: performance.now(), h };
-        else if (h && canPullChest(performance.now()) && touchRegion(h[0], h[1], h[2]) === "chest") chestFrom = { x: e.clientX, y: e.clientY, id: e.pointerId, h };
-        return head;
+        const stroke = head && (behaviors.has(EVENTS.headStrokeFast) || behaviors.has(EVENTS.headStrokeSlow));   // 쓸기를 맡은 행동이 없으면 기다리지 않고 바로 끌기
+        if (stroke) strokeFrom = { x: e.clientX, y: e.clientY, t: performance.now(), h };
+        else if (!head && h && behaviors.has(EVENTS.chestPull) && canPullChest(performance.now()) && touchRegion(h[0], h[1], h[2]) === "chest") chestFrom = { x: e.clientX, y: e.clientY, id: e.pointerId, h };
+        return stroke;
       };
       /** 터치 길게 누르기의 집기 모드 전환 예약. 터치 화면에는 오른쪽 버튼이 없기 때문 (그 뒤 움직이면 옮겨짐, 그냥 떼면 터치 반응) */
       const armTouchHold = (e: PointerEvent) => {
@@ -2957,27 +2401,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @returns 이 이동을 여기서 끝냈으면 true
        */
       const chestMove = (e: PointerEvent) => {
-        const dy = e.clientY - chestFrom!.y, dx = e.clientX - chestFrom!.x, now = performance.now();
-        if (!chestDragging) {
+        const from = chestFrom!, dy = e.clientY - from.y, dx = e.clientX - from.x, now = performance.now();
+        if (!chestPulling) {
           if (dy < -12 && Math.abs(dy) > Math.abs(dx) && canPullChest(now)) {
-            chestDragging = true; shy.count = 0; headClicks = []; clicks = [];
-            cover.until = 0;   // 다시 잡았으면 가슴을 가리던 팔을 내린다 (떠는 중 재입력 대응)
+            chestPulling = true;
             drag.pending = null;   // 가슴 끌기로 넘어가면 집어 옮기기는 취소 (펫 창은 놓을 때까지 클릭을 계속 받음)
-            walk.lastTouch = now; speak("chest_pull", 3000);
-            armChestLong();   // 3초 넘게 붙잡고 있으면 자극적인 대사로
-            flashExp("squint", 400); flashExp("blush", 400);
+            behaviors.dispatch(EVENTS.chestPull, { now, x: from.x, y: from.y, phase: "start", dx, dy });
           } else if (Math.hypot(dx, dy) >= 6 && !(dy < 0 && Math.abs(dy) > Math.abs(dx))) chestFrom = null;   // 위가 아닌 쪽으로 움직이면 평소 끌기
           else { e.preventDefault(); return true; }
-        }
-        if (!chestDragging) return false;
-        const up = Math.max(0, -dy / curK);
-        chestTarget = 1 - Math.exp(-up / 85);   // 조금만 끌어올려도 크게 반응
-        // 마우스를 좌우로 움직이면 그 방향으로 가슴이 끌려간다 (끌어올린 만큼 좌우로도 크게)
-        chestShiftTarget = clamp(dx / (curK * 110), -1, 1) * (0.45 + 0.55 * Math.min(1, chestTarget * 1.4));
-        // 흔든 양을 누적 (잡고만 있는 것과 구분 — 이 값이 있어야 3초 뒤 긴 대사가 나온다)
-        const moved = Math.hypot(dx - chestShake.x, dy - chestShake.y);
-        chestShake.x = dx; chestShake.y = dy;
-        if (moved > 1) { chestShake.acc += moved; chestShake.last = now; }
+        } else behaviors.dispatch(EVENTS.chestPull, { now, x: from.x, y: from.y, phase: "move", dx, dy });
+        if (!chestPulling) return false;
         e.preventDefault(); e.stopPropagation(); swallowClick = true;
         return true;
       };
@@ -2986,12 +2419,14 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * @returns 이 이동을 여기서 끝냈거나 아직 판단을 미뤄야 하면 true (끌기 시작 안 함)
        */
       const strokeMove = (e: PointerEvent) => {
-        const stroke = strokeFrom!, kind = strokeKind(stroke, e);
-        if (kind) {
+        const stroke = strokeFrom!, kind = strokeKind(stroke, e), now = performance.now();
+        const key = kind === "pot" ? EVENTS.headStrokeFast : kind === "basin" ? EVENTS.headStrokeSlow : null;
+        if (key && behaviors.has(key)) {
           strokeFrom = null; if (drag.pending) { drag.pending = null; if (PET) PET.press(false); }
-          if (kind === "pot") potHit(stroke.x, stroke.y); else putBasin();
+          behaviors.dispatch(key, { now, x: stroke.x, y: stroke.y });
           return true;
         }
+        if (now - stroke.t >= POT_MS && !behaviors.has(EVENTS.headStrokeSlow)) { strokeFrom = null; return false; }   // 더 지켜봐도 맡을 행동이 없음
         const dy = e.clientY - stroke.y, dx = Math.abs(e.clientX - stroke.x);
         // 아직 6px 안 움직였거나 아래로 쓸어내리는 중일 수 있으면 끌기 시작을 미룸, 끌 수 없는 때(시작 연출·도망 중)는 떼는 순간 터치
         if (!drag.pending || Math.hypot(dx, dy) < 6 || (dy > 0 && dy > dx * 0.8)) return true;
@@ -3124,7 +2559,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         mouseButtons = e.buttons & 3;
         chord = chordUp(chord, e.buttons);
         if (chestFrom && e.pointerId === chestFrom.id) {
-          const dragged = chestDragging;
+          const dragged = chestPulling;
           releaseChest();
           if (dragged) { if (PET) PET.press(false); return; }   // 끌지 않고 뗐으면 아래 endDrag가 원래 가슴 터치 반응
         }
@@ -3135,7 +2570,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       addEventListener("blur", () => { mouseButtons = 0; chord = chordUp(chord, 0); rightPress = null; releaseChest(); if (drag.pending) endDrag({ pointerId: drag.pending.id } as PointerEvent, !drag.on); });   // 창 포커스를 잃으면 끄기를 끝냄
       life.listen(document, "pointercancel", (e) => {
         mouseButtons = 0; chord = chordUp(chord, e.buttons); rightPress = null;
-        if (chestFrom && e.pointerId === chestFrom.id) { const wasDragging = chestDragging; releaseChest(); if (wasDragging && PET) PET.press(false); }
+        if (chestFrom && e.pointerId === chestFrom.id) { const wasDragging = chestPulling; releaseChest(); if (wasDragging && PET) PET.press(false); }
         endDrag(e, true);
       }, true);
       for (const type of ["pointerup", "mousedown", "mouseup", "click", "dblclick"]) {
@@ -3412,9 +2847,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       window.__dsc = {   // 확인용
         say, play, setMood, flashExp,
         /** 삐침 중 여부 */
-        sulking: () => performance.now() < sulkUntil,
-        /** 삐친 동안 몰래 보기 예정(삐친 뒤 시각 ms 반올림·flip 여부) */
-        sulkPeeks: () => sulkPeeks.map((peek: { at: number; flip: boolean }) => ({ at: Math.round(peek.at), flip: peek.flip })),
+        sulking: () => behaviors.tagged(SULKING, performance.now()),
         /** 산책 시작(산책·도망 중이 아니면) 후 산책 단계 */
         walk: () => { if (!walk.phase && fleeX === 0) startWalk(); return walk.phase; },
         /** 지금 산책 단계 */

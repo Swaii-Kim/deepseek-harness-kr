@@ -51,6 +51,10 @@ export type AvatarProfile = {
   armDown?: number;
   /** 지원하는 기능 (기본은 없음) */
   features?: RigFeature[];
+  /** 쓸 캐릭터 고유 행동 ID (character/behaviors, 기본은 없음 = 모든 입력이 기본 반응) */
+  behaviors?: string[];
+  /** 성적 표현이 든 행동을 켜도 되는지 (기본 true, VRM은 메타의 성적 표현 허용 여부) */
+  adultAllowed?: boolean;
   /** 함께 켜면 모양이 겹쳐 깨지는 모프 묶음 (예: 눈웃음 + 눈 감기). 앞쪽 모프가 우선이고, 합이 1을 넘으면 뒤쪽을 줄임 */
   exclusiveMorphs?: string[][];
   /**
@@ -897,6 +901,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
 
   return {
     metrics,
+    behaviors: profile.behaviors || [],
+    adultAllowed: profile.adultAllowed !== false,
     supports: (feature) => (profile.features || []).includes(feature),
     set(id, value, weight = 1) { const key = keyOf(id); if (!key) return; const current = values.get(key) || 0; values.set(key, weight === 1 ? value : current + (value - current) * weight); },
     add(id, value, weight = 1) { const key = keyOf(id); if (key) values.set(key, (values.get(key) || 0) + value * weight); },

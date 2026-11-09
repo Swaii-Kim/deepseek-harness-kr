@@ -64,7 +64,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
     })
     vm.runInContext('let fleeX = 0, hidden = false, running = false, waitingKind = null, lastSayAt = 0, lastError = 0;', context)
     vm.runInContext(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')), context)
-    vm.runInContext(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')), context)
+    vm.runInContext(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const HEAD_SULK_AT')), context)
     // 작업 상태 확인 주기와 그 단계 함수(절전 설정 읽기·대기·작업 반응·절전 판정)를 함께 실행한다
     const pollStart = code.indexOf('      const readSleepPrefs = () => {')
     vm.runInContext(code.slice(pollStart, code.indexOf('      }, 400);', pollStart) + '      }, 400);'.length), context)
@@ -123,7 +123,7 @@ test('sleep preserves free placement, blocks dragging and never sleeps while the
     const run = (s) => vm.runInContext(s, context)
     run('let fleeX = 0, hidden = false, running = false, waitingKind = null, snapP = 0;')
     run(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')))
-    run(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')))
+    run(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const HEAD_SULK_AT')))
     // 자유 위치 계산 단계(애니메이션 끝·미끄러짐·창 비율 자리)와 dockPose를 함께 실행한다
     run(code.slice(code.indexOf('      const finishFreeAnim ='), code.indexOf('      const GLIDE =')))
     assert.equal(listeners, petPage ? 0 : 6)

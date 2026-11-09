@@ -36,14 +36,16 @@ export type TouchShape = {
 
 /** rig마다 있거나 없는 기능 */
 export type RigFeature =
-  | "chestTouch"     // 가슴·아랫배 터치 반응과 가슴 끌기
-  | "coverChest"     // 손으로 가슴 가리기
   | "bodyType"       // 꼬마 체형
   | "earHide";       // 동물귀 숨기기
 
 /** 렌더러 통로. 동작 코드는 매 프레임 onFrame 콜백 안에서 채널·표정을 쓰고, tick이 갱신·그리기를 함 */
 export interface AvatarRig {
   readonly metrics: RigMetrics;
+  /** 이 모델이 쓰는 캐릭터 고유 행동 ID 목록 (character/behaviors). 비면 모든 입력이 기본 반응 */
+  readonly behaviors: readonly string[];
+  /** 성적 표현이 든 행동을 켜도 되는 모델인지 (VRM 메타가 금지하면 false) */
+  readonly adultAllowed: boolean;
   /** 기능 지원 여부 */
   supports(feature: RigFeature): boolean;
   /** 채널 값 덮어쓰기 (weight는 지금 값과 섞는 비율) */

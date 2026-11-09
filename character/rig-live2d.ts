@@ -1,6 +1,6 @@
 // Live2D(Cubism 4, pixi-live2d-display) 렌더러. character/index.ts에 있던 모델 불러오기·크기 계산·Core Worker·
 // 표정 파일·동물귀·터치용 메시 판정·그리기를 옮겨 왔고, 동작 코드는 rig.ts의 AvatarRig 통로로만 씀.
-import { MODEL_FILES, PARAMS, CHEST_DRAG_SIGN, PARTS, PART_REGIONS, EXPRESSION_FILES, GEOMETRY } from "./model-profile.ts";
+import { MODEL_FILES, PARAMS, CHEST_DRAG_SIGN, PARTS, PART_REGIONS, EXPRESSION_FILES, GEOMETRY, BEHAVIORS } from "./model-profile.ts";
 import { meshBounds, meshHit } from "./hit.ts";
 import { clamp } from "./motion.ts";
 import { log } from "./log.ts";
@@ -10,7 +10,7 @@ import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
 import "./globals.d.ts";
 
 /** 이 rig가 지원하는 기능 (Live2D 모델은 전부) */
-const FEATURES: ReadonlySet<RigFeature> = new Set<RigFeature>(["chestTouch", "coverChest", "bodyType", "earHide"]);
+const FEATURES: ReadonlySet<RigFeature> = new Set<RigFeature>(["bodyType", "earHide"]);
 
 /**
  * Live2D 런타임 스크립트(Cubism Core·PixiJS·pixi-live2d-display) 불러오기
@@ -317,6 +317,8 @@ export async function createLive2DRig({ base, life, pet, prefs, canvas, W, H, ch
   };
   return {
     metrics,
+    behaviors: BEHAVIORS,
+    adultAllowed: true,
     supports: (feature) => FEATURES.has(feature),
     set: setParam,
     add: addParam,

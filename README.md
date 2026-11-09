@@ -179,6 +179,10 @@ npm test
 이 Live2D 모델 전용 값(파일 경로·파라미터·파츠·표정·치수)은 `character/model-profile.ts`에 모여 있습니다(소품·체형 파라미터는 `shared/settings.js`). 애니메이션이 모델에 값을 쓰는 지점은 `character/index.ts`의 `setParam`·`addParam`·`multiplyParam`입니다.
 VRM 같은 다른 렌더러를 붙이려면 이 값 외에 모델 불러오기(PIXI Live2D), 매 프레임 파라미터 쓰기(위 함수), 메시 정점·알파로 하는 터치 판정과 상반신·전신 기준 좌표 계산, 정점 변형을 맡는 Core Worker(`assets/dsc-core-worker.js`), 표정 파일 섞기, 동물귀 파트 불투명도 조절을 새 렌더러에 맞게 바꿔야 합니다. 렌더러 추상화 계층은 아직 없습니다.
 
+### 캐릭터 고유 행동
+
+냄비·세숫대야·삐짐·가슴·아랫배 반응·소품 대사 같은 DeepSeek짱 고유 행동은 `character/behaviors/`에 있고, 모델 프로필의 행동 목록이 켤 행동을 고릅니다(Live2D는 `character/model-profile.ts`의 `BEHAVIORS`, 3D는 `avatar.json`의 `behaviors`이며 기본은 비어 있음). 목록에 없는 행동의 입력은 평소 탭·끌기 같은 기본 반응으로 처리합니다. 성적 표현이 든 행동(가슴·아랫배)은 VRM 메타가 금지하거나 `avatar.json`에 `"adultAllowed": false`가 있으면 꺼집니다.
+
 ### ASAR 패치·포터블 (지원 종료)
 
 예전 방식에 쓰던 ASAR 패치 파일과 포터블 빌드 스크립트(`harness/`)는 저장소에서 삭제했습니다. 필요하면 git 기록에서 찾을 수 있습니다.
