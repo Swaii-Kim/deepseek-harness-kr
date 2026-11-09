@@ -22,6 +22,7 @@ interface PluginSettings {
   theme?: boolean
   translation?: boolean
   bodyType?: string
+  extraLines?: boolean
   idleSleep?: boolean
   idleSleepMinutes?: number | string
   characterToggleKey?: string
@@ -304,6 +305,8 @@ function characterPrefs(value: PluginSettings) {
       ao: value.avatarAo === true, aoStrength: aoStrength(value.avatarAoStrength) },
     // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
     drag: { key: value.dragKey ?? 'Alt' },
+    // '대사 ex': 켜면 assets/dsc-lines-ex.json의 대사를 덮어쓴다 (기본 꺼짐)
+    extra: { enabled: value.extraLines === true },
   }
 }
 
@@ -971,6 +974,11 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
         React.createElement('input', { type: 'checkbox', role: 'switch', checked: state.value?.[field] !== false, disabled: off,
           /** 켜짐 여부 저장 */
           onChange: (event) => change(field, event.target.checked) }))),
+      React.createElement('label', { style: row },
+        React.createElement('span', null, ko ? '대사 ex' : 'Extra dialogue'),
+        React.createElement('input', { type: 'checkbox', role: 'switch', checked: state.value?.extraLines === true, disabled: off,
+          /** 켜짐 여부 저장 */
+          onChange: (event) => change('extraLines', event.target.checked) })),
       React.createElement('p', { style: { opacity: 0.7 } }, ko ? '변경 사항은 바로 적용되고 저장됩니다. 한국어는 설정 → 일반 설정 → 언어에서 선택할 수 있습니다.' : 'Changes apply and save immediately. Select Korean under Settings → General → Language.'),
       React.createElement('section', { 'aria-label': ko ? '소품·옷' : 'Accessories and outfit', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
         React.createElement('strong', null, ko ? '소품·옷' : 'Accessories and outfit'),

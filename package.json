@@ -1,9 +1,16 @@
 {
   "name": "deepseek-harness-kr",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "DeepSeek쟝 Plugin for DSH with KR — 한국어 UI, 파스텔 테마 및 Live2D 캐릭터",
   "type": "module",
   "license": "MIT",
+  "contributors": [
+    { "name": "Claude", "url": "https://claude.ai" },
+    { "name": "DeepSeek", "url": "https://www.deepseek.com" },
+    { "name": "TraceofLight", "url": "https://github.com/TraceofLight" },
+    { "name": "Opus", "url": "https://claude.ai" },
+    { "name": "Gemma 4 26B A4B heretic" }
+  ],
   "main": "./plugin/host.js",
   "exports": {
     ".": "./plugin/host.js",

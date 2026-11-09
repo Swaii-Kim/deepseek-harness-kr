@@ -2,6 +2,8 @@
 
 대사는 **`assets/dsc-lines.json` 한 파일**에 있습니다. 이 파일만 고치고 검사기를 통과시키면 끝이며, **빌드는 필요 없습니다.**
 
+성격·말투·수위 판단은 [`character-bible.md`](character-bible.md)를 함께 참고하세요.
+
 ```powershell
 node tools/check-lines.mjs
 ```

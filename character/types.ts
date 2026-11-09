@@ -55,6 +55,8 @@ export interface CharacterPrefs {
   pageHidden?: boolean
   /** 실험: 3D 모델 폴더를 쓸지 여부 (처음 뜰 때만 읽음), 눈썹 세기(배율)·부드럽게 따라가는 시간(초, 매 프레임 읽음), 구운 AO 켜기(처음 뜰 때만)·세기(0~1, 매 프레임) */
   avatar?: { enabled?: boolean; outline?: "smooth" | "model"; browScale?: number; browSmooth?: number; ao?: boolean; aoStrength?: number }
+  /** '대사 ex' 설정: 켜면 assets/dsc-lines-ex.json의 대사를 덮어쓴다 */
+  extra?: { enabled?: boolean }
 }
 
 /** 펫 창 preload가 넣어 주는 window.dscPet (메인 프로세스와의 통로) */

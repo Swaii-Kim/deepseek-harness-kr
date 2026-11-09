@@ -99,6 +99,40 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
   const MutationObserver = function (fn: MutationCallback) { return life.observe(fn); } as unknown as typeof window.MutationObserver;
   const TEXT: Record<string, string> = {};
   const LINES: Record<string, string[]> = {};   // 대사 묶음 (assets/dsc-lines.json에서 채움)
+  // '대사 ex': 켜면 assets/dsc-lines-ex.json의 대사로 덮어쓰고, 끄면 기본 대사 스냅샷으로 되돌린다
+  let baseLines: Record<string, string[]> | null = null;
+  let baseText: Record<string, string> | null = null;
+  let extraLoaded = false, extraLoading = false;
+  /** 기본 대사 로드가 끝난 뒤 원본 스냅샷 (한 번만) */
+  const snapshotBase = () => {
+    if (baseLines) return;
+    baseLines = { ...LINES };
+    baseText = { ...TEXT };
+  };
+  /** ex 대사 파일을 불러와 적용. 그사이 꺼졌거나 설정이 해제됐으면 적용하지 않음 */
+  const loadExtra = async () => {
+    if (life.stopped || extraLoaded || extraLoading) return;
+    extraLoading = true;
+    try {
+      await linesLoad;
+      snapshotBase();
+      const res = await fetch(BASE + "dsc-lines-ex.json");
+      const data = res.ok ? await res.json() : null;
+      if (life.stopped || !prefs.extra?.enabled) return;
+      mergeLines(data);   // 기본 대사와 같은 규칙으로 덮어씀 (빈 값·빈 묶음은 건너뛰어 기존 대사 유지)
+      extraLoaded = true;
+    } catch { /* 파일이 없거나 깨지면 기존 대사 유지 */ }
+    finally { extraLoading = false; }
+  };
+  /** 기본 대사로 되돌림 */
+  const restoreBase = () => {
+    if (!baseLines || !baseText) return;
+    for (const k of Object.keys(LINES)) delete LINES[k];
+    Object.assign(LINES, baseLines);
+    for (const k of Object.keys(TEXT)) delete TEXT[k];
+    Object.assign(TEXT, baseText);
+    extraLoaded = false;
+  };
   // DSH 화면에서 작업 상태를 읽는 부분(도구 이름·화면 문구·셀렉터)은 character/harness-signals.js
 
   /** 문서 본문(document.body)이 생긴 뒤 실행 */
@@ -154,6 +188,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const { visW, noseX: noseCanvasX, chibiHeadDrop, walkBodyWidth: WALK_BODY_WIDTH, waistPet: WAIST_PET, waistWin: WAIST_WIN, waistPct: WAIST_PCT,
         petHeadRatio: PET_HEAD_RATIO, headGain: HEAD_GAIN, petKMin: PET_K_MIN, petKMax: PET_K_MAX, petBubble: PET_BUBBLE, petBustOffset } = rig.metrics;
       await linesLoad;   // 첫 대사 전에 대사 파일 로드 완료
+      if (life.stopped) return;
+      snapshotBase();
+      if (prefs.extra?.enabled) await loadExtra();   // '대사 ex'가 켜져 있으면 첫 대사 전에 덮어씀
       if (life.stopped) return;
       const weight: Record<string, number> = {}, hold: Record<string, boolean> = {}, until: Record<string, number> = {};
       // 소품·옷: [설정 이름, 모델 파라미터, 켰을 때 값] (데스크톱 펫의 표정 파일과 같은 값)
@@ -3056,6 +3093,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const pageChanged = "pageHidden" in next && next.pageHidden !== prefs.pageHidden;
       Object.assign(prefs, next);
       if (pageChanged) hooks.syncPageHidden?.();
+      if ("extra" in next) {
+        if (next.extra?.enabled && !extraLoaded) void loadExtra();
+        else if (!next.extra?.enabled && extraLoaded) restoreBase();
+      }
     },
     /** 펫 창 토글 함수. 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않음) */
     get togglePet() { return hooks.togglePet || null; },

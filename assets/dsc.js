@@ -1771,6 +1771,38 @@
     };
     const TEXT = {};
     const LINES = {};
+    let baseLines = null;
+    let baseText = null;
+    let extraLoaded = false, extraLoading = false;
+    const snapshotBase = () => {
+      if (baseLines) return;
+      baseLines = { ...LINES };
+      baseText = { ...TEXT };
+    };
+    const loadExtra = async () => {
+      if (life.stopped || extraLoaded || extraLoading) return;
+      extraLoading = true;
+      try {
+        await linesLoad;
+        snapshotBase();
+        const res = await fetch(BASE + "dsc-lines-ex.json");
+        const data = res.ok ? await res.json() : null;
+        if (life.stopped || !prefs.extra?.enabled) return;
+        mergeLines(data);
+        extraLoaded = true;
+      } catch {
+      } finally {
+        extraLoading = false;
+      }
+    };
+    const restoreBase = () => {
+      if (!baseLines || !baseText) return;
+      for (const k of Object.keys(LINES)) delete LINES[k];
+      Object.assign(LINES, baseLines);
+      for (const k of Object.keys(TEXT)) delete TEXT[k];
+      Object.assign(TEXT, baseText);
+      extraLoaded = false;
+    };
     const ready = (fn) => document.body ? fn() : addEventListener("DOMContentLoaded", fn, { once: true });
     ready(() => {
       let running = false, lastError = -1e9, lastToolSay = 0, waitingKind = null;
@@ -1828,6 +1860,9 @@
           petBustOffset
         } = rig.metrics;
         await linesLoad;
+        if (life.stopped) return;
+        snapshotBase();
+        if (prefs.extra?.enabled) await loadExtra();
         if (life.stopped) return;
         const weight = {}, hold = {}, until = {};
         const OUTFIT_PARAMS = OUTFIT_ITEMS.filter((item) => item.param).map((item) => [item.key, item.param, item.on]);
@@ -4726,6 +4761,10 @@
         const pageChanged = "pageHidden" in next && next.pageHidden !== prefs.pageHidden;
         Object.assign(prefs, next);
         if (pageChanged) hooks.syncPageHidden?.();
+        if ("extra" in next) {
+          if (next.extra?.enabled && !extraLoaded) void loadExtra();
+          else if (!next.extra?.enabled && extraLoaded) restoreBase();
+        }
       },
       /** 펫 창 토글 함수. 모델이 준비되기 전에는 null (단축키는 이때 키 입력을 가로채지 않음) */
       get togglePet() {
