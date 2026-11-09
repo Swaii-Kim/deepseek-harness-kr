@@ -289,12 +289,14 @@ const colliderEnds = (collider: SpringCollider, a: THREE.Vector3, b: THREE.Vecto
 /**
  * 흔들림(스프링) 뼈 준비: 뼈마다 끝점(자식 뼈 위치)이 관성·복원력·중력으로 따라가고, 뼈를 끝점 쪽으로 돌림 (VRM 스프링 본과 같은 방식)
  * 힘은 뼈 길이에 비례해 모델 단위(cm·m)와 무관. 부르기 전에 뼈의 월드 행렬이 지금 자세로 갱신돼 있어야 함
+ * 마디마다 월드 행렬을 부모 월드 × 자기 지역 행렬로 바로 계산 (하위 트리·조상 재계산 없음), 마디가 아닌 자식 뼈(끝점)는 마지막에 한 번 갱신
  * @returns step(dt): 사슬 위쪽부터 한 프레임 진행
  */
 export function createSprings(specs: SpringSpec[]) {
   type Joint = { node: THREE.Object3D; restLocal: THREE.Quaternion; axis: THREE.Vector3; length: number; prev: THREE.Vector3; tail: THREE.Vector3; stiffness: number; drag: number; gravity: number; colliders: Array<{ collider: SpringCollider; distance: number }> };
   const joints: Joint[] = [];
   const head = new THREE.Vector3(), restDir = new THREE.Vector3(), next = new THREE.Vector3(), inertia = new THREE.Vector3(), turn = new THREE.Quaternion(), parentQ = new THREE.Quaternion();
+  const unusedPosition = new THREE.Vector3(), unusedScale = new THREE.Vector3();
   for (const spec of specs) for (const root of spec.roots) {
     root.updateWorldMatrix(true, true);
     root.traverse((node) => {
@@ -308,15 +310,18 @@ export function createSprings(specs: SpringSpec[]) {
         prev: tail.clone(), tail, stiffness: spec.stiffness ?? 1, drag: spec.drag ?? 0.4, gravity: spec.gravity ?? 0, colliders });
     });
   }
+  // 마디가 아닌 자식(끝점 뼈 등): 마디를 모두 돌린 뒤 그 아래만 한 번 갱신
+  const jointNodes = new Set(joints.map((joint) => joint.node));
+  const leaves = joints.flatMap((joint) => joint.node.children.filter((child) => !jointNodes.has(child)));
   return {
     count: joints.length,
     /** 한 프레임 진행 @param dt 초 */
     step(dt: number) {
       for (const joint of joints) {
-        const { node } = joint;
+        const { node } = joint, parentWorld = node.parent!.matrixWorld;
         node.quaternion.copy(joint.restLocal);
-        node.parent!.getWorldQuaternion(parentQ);
-        node.getWorldPosition(head);
+        parentWorld.decompose(unusedPosition, parentQ, unusedScale);   // = parent.getWorldQuaternion (부모 월드 행렬은 이미 최신)
+        head.copy(node.position).applyMatrix4(parentWorld);             // = node.getWorldPosition (뼈 시작점은 자기 회전과 무관)
         restDir.copy(joint.axis).applyQuaternion(turn.copy(parentQ).multiply(joint.restLocal));   // 기본 자세의 뼈 방향 (월드)
         // 다음 끝점 = 지금 끝점 + 관성(감쇠) + 제자리 방향으로 당기는 힘 + 중력
         inertia.copy(joint.tail).sub(joint.prev).multiplyScalar(1 - joint.drag);
@@ -333,8 +338,10 @@ export function createSprings(specs: SpringSpec[]) {
         joint.prev.copy(joint.tail); joint.tail.copy(next);
         turn.setFromUnitVectors(restDir, next.clone().sub(head).normalize());
         node.quaternion.copy(parentQ.clone().invert().multiply(turn).multiply(parentQ).multiply(joint.restLocal));
-        node.updateMatrixWorld(true);
+        node.matrix.compose(node.position, node.quaternion, node.scale);   // = node.updateMatrixWorld 의 자기 몫만
+        node.matrixWorld.multiplyMatrices(parentWorld, node.matrix);
       }
+      for (const leaf of leaves) leaf.updateMatrixWorld(true);
     },
   };
 }
@@ -394,6 +401,45 @@ export function applyOrientation(frame: THREE.Object3D, points: OrientationPoint
   return { auto: !!auto, mirror, matrix };
 }
 
+/** 지역 변환이 없는 노드 (위치 0·회전 없음·배율 1) */
+const isIdentityLocal = (node: THREE.Object3D) => node.position.lengthSq() === 0 && node.quaternion.x === 0 && node.quaternion.y === 0 && node.quaternion.z === 0
+  && node.quaternion.w === 1 && node.scale.x === 1 && node.scale.y === 1 && node.scale.z === 1;
+/** FBXLoader 복제 뼈 여부: 부모 뼈와 이름이 같고 지역 변환이 없음 (월드 행렬이 부모와 같음) */
+const isDuplicateBone = (node: THREE.Object3D) => (node as THREE.Bone).isBone && !!node.parent && (node.parent as THREE.Bone).isBone
+  && node.parent.name === node.name && isIdentityLocal(node);
+/** 뼈 역행렬이 모두 같은지 (같으면 스켈레톤을 하나로 합쳐도 스키닝 결과가 같음) */
+const sameInverses = (a: THREE.Skeleton, b: THREE.Skeleton) => a.bones.length === b.bones.length
+  && a.bones.every((bone, i) => bone === b.bones[i] && a.boneInverses[i].equals(b.boneInverses[i]));
+/**
+ * FBXLoader 복제 뼈 정리: 여러 메시가 같은 뼈를 쓰면 메시마다 지역 변환 없는 복제 뼈가 생겨 원래 뼈 밑에 겹겹이 붙음(뼈마다 메시 수만큼)
+ * 스켈레톤이 가리키는 복제 뼈를 원래 뼈(같은 이름 중 계층 맨 위)로 바꾸고 복제 뼈를 떼어 냄, 뼈·역행렬이 같은 스켈레톤은 하나로 합침
+ * 복제 뼈는 월드 행렬이 원래 뼈와 같아 스키닝 결과는 그대로. 행렬 갱신·뼈 행렬 계산이 메시 수 배에서 한 번으로 줄어듦
+ * @returns 떼어 낸 복제 뼈 수와 합친 스켈레톤 수 (진단용)
+ */
+export function dedupeFbxBones(model: THREE.Object3D) {
+  const original = (bone: THREE.Bone) => { let node: THREE.Object3D = bone; while (isDuplicateBone(node)) node = node.parent!; return node as THREE.Bone; };
+  const meshes: THREE.SkinnedMesh[] = [];
+  model.traverse((node) => { if ((node as THREE.SkinnedMesh).isSkinnedMesh) meshes.push(node as THREE.SkinnedMesh); });
+  for (const mesh of meshes) mesh.skeleton.bones = mesh.skeleton.bones.map(original);
+  const duplicates: THREE.Object3D[] = [];
+  model.traverse((node) => { if (isDuplicateBone(node) && !isDuplicateBone(node.parent!)) duplicates.push(node); });
+  let removed = 0;
+  for (const top of duplicates) {
+    let pure = true;   // 복제 뼈 아래에 복제 뼈가 아닌 것이 있으면(메시·다른 뼈) 그대로 둠
+    top.traverse((node) => { if (node !== top && !isDuplicateBone(node)) pure = false; });
+    if (!pure) continue;
+    top.traverse(() => { removed++; });
+    top.removeFromParent();
+  }
+  const shared: THREE.Skeleton[] = [];
+  let merged = 0;
+  for (const mesh of meshes) {
+    const same = shared.find((skeleton) => sameInverses(skeleton, mesh.skeleton));
+    if (same) { mesh.bind(same, mesh.bindMatrix); merged++; } else shared.push(mesh.skeleton);
+  }
+  return { removed, merged };
+}
+
 /**
  * 3D rig 생성: avatar.json과 모델을 불러와 캔버스에 그릴 준비
  * @param base 모델 폴더 주소 (끝에 /)
@@ -415,6 +461,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const vrmRuntime: VrmRuntime | null = vrm ? vrm.runtime : null;
   const model = vrm ? vrm.model : await loader.loadAsync(base + profile.model);
   if (life.stopped) return null;
+  if (!vrm) dedupeFbxBones(model);
   /** VRM 사람형 뼈 노드 (FBX·avatar.json으로 이름을 준 뼈는 없음 → 이름으로 찾음) */
   const vrmNode = (name: HumanBone) => vrmRuntime?.nodes.get(name);
   // 방향 보정 그룹: 파일 좌표계와 상관없이 위 +y·정면 +z·이름상 왼쪽 +x 로 (아래 코드는 이 화면 기준을 가정)
@@ -435,6 +482,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const light = new THREE.DirectionalLight(0xffffff, profile.light?.intensity ?? 2.2);
   light.position.set(...(profile.light?.direction ?? [0.6, 1.2, 1.6]));
   scene.add(light, new THREE.AmbientLight(0xffffff, profile.light?.ambient ?? 0.9));
+  // 행렬 갱신은 tick에서 프레임당 한 번만 (three.js가 render마다 장면 전체를 다시 갱신하지 않게). 조명은 움직이지 않아 지금 한 번
+  scene.matrixWorldAutoUpdate = false;
+  light.updateMatrixWorld();
   life.add(() => {
     root.traverse((node) => {
       const mesh = node as THREE.Mesh;
@@ -845,9 +895,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       for (const [node, pose] of basePose) pose.copy(node.quaternion);   // 믹서가 바꾼 값(안 바꿨으면 그대로)을 바탕 자세로 기억
       applyBones(dt);
       applyMorphs();
-      root.updateMatrixWorld(true);
-      if (dt > 0) springs.step(dt);
-      vrmRuntime?.update(dt);   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈
+      root.updateMatrixWorld(true);   // 프레임당 장면 갱신 (scene.matrixWorldAutoUpdate = false)
+      if (dt > 0) springs.step(dt);   // 흔들림 마디는 자기 월드 행렬을 직접 계산
+      if (vrmRuntime) { vrmRuntime.update(dt); root.updateMatrixWorld(true); }   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈가 바꾼 노드 반영 (VRM은 복제 뼈가 없어 노드가 적음)
       if (profile.faceSdf) updateFaceSdf();
       if (taa) taa.render(scene, camera, time); else renderer.render(scene, camera);
     },
