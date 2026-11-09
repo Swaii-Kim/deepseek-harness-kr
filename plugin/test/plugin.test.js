@@ -14,7 +14,8 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { JSDOM } from 'jsdom'
-import { apply as hostApply, createAssetHandler, ASSET_PATH, Config, readLive, STATUS_PATH } from '../host.js'
+import { apply as hostApply, createAssetHandler, ASSET_PATH, AVATAR_PATH, Config, readLive, STATUS_PATH } from '../host.js'
+import { AVATAR_CACHE_PATH } from '../avatar-cache.js'
 import { PET_PATH } from '../pet-host.js'
 
 const packageName = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).name
@@ -29,8 +30,10 @@ test('source build preserves sleep code and matches the committed bundle', async
   execFileSync(process.execPath, ['plugin/build.mjs'], { cwd: fileURLToPath(new URL('../../', import.meta.url)) })
   assert.equal(await readFile(new URL('../../lib/client.js', import.meta.url), 'utf8'), bundle)
   assert.equal(await readFile(new URL('../../assets/dsc.js', import.meta.url), 'utf8'), character, '커밋된 assets/dsc.js도 소스에서 다시 만든 결과와 같아야 한다')
-  assert.match(bundle, /sleep_out:/)
-  assert.match(bundle, /sleep_back:/)
+  assert.match(bundle, /speak\("sleep_out"/)
+  assert.match(bundle, /speak\("sleep_back"/)
+  const { lines } = JSON.parse(await readFile(new URL('../../assets/dsc-lines.json', import.meta.url), 'utf8'))
+  assert.ok(lines.sleep_out?.length && lines.sleep_back?.length, '절전 대사는 assets/dsc-lines.json에 있다')
   assert.match(bundle, /["']절전["'] : ["']Power saving["']/)
   assert.match(bundle, /sharedTicker: false/)
   assert.match(bundle, /autoUpdate: false/)
@@ -64,7 +67,7 @@ test('sleep cancels departures, protects intro and wakes for waiting cards', asy
     })
     vm.runInContext('let fleeX = 0, hidden = false, running = false, waitingKind = null, lastSayAt = 0, lastError = 0;', context)
     vm.runInContext(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')), context)
-    vm.runInContext(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')), context)
+    vm.runInContext(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const HEAD_SULK_AT')), context)
     // 작업 상태 확인 주기와 그 단계 함수(절전 설정 읽기·대기·작업 반응·절전 판정)를 함께 실행한다
     const pollStart = code.indexOf('      const readSleepPrefs = () => {')
     vm.runInContext(code.slice(pollStart, code.indexOf('      }, 400);', pollStart) + '      }, 400);'.length), context)
@@ -123,7 +126,7 @@ test('sleep preserves free placement, blocks dragging and never sleeps while the
     const run = (s) => vm.runInContext(s, context)
     run('let fleeX = 0, hidden = false, running = false, waitingKind = null, snapP = 0;')
     run(code.slice(code.indexOf('      const WALK_SPEED'), code.indexOf('      const walkBack')))
-    run(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const onLower')))
+    run(code.slice(code.indexOf('      const SLEEP ='), code.indexOf('      const HEAD_SULK_AT')))
     // 자유 위치 계산 단계(애니메이션 끝·미끄러짐·창 비율 자리)와 dockPose를 함께 실행한다
     run(code.slice(code.indexOf('      const finishFreeAnim ='), code.indexOf('      const GLIDE =')))
     assert.equal(listeners, petPage ? 0 : 6)
@@ -751,7 +754,7 @@ test('Host asset route serves only its files and unregisters with the plugin', a
     hostApply({ effect(fn) { disposers.push(fn()) }, webServer: { register(route) { registrations.set(route.path, route); return () => registrations.delete(route.path) } } }, undefined, { applyIcon })
     assert.deepEqual(icons, [true], 'app icon defaults to on, through the injected function only')
     assert.equal(registrations.get(ASSET_PATH).kind, 'prefix')
-    assert.deepEqual([...registrations.keys()].sort(), [ASSET_PATH, STATUS_PATH, PET_PATH, '/dsh-tts/speak', '/dsh-tts/state'].sort())
+    assert.deepEqual([...registrations.keys()].sort(), [ASSET_PATH, AVATAR_PATH, AVATAR_CACHE_PATH, STATUS_PATH, PET_PATH, '/dsh-tts/speak', '/dsh-tts/state'].sort())
     for (const dispose of disposers) dispose()
     assert.equal(registrations.size, 0)
   } finally {
@@ -881,7 +884,7 @@ test('settings page offers accessories, outfit and body type, and shares them wi
 })
 
 test('core worker is registered for termination when the plugin unloads', async () => {
-  const source = readSource(new URL('../../character/index.ts', import.meta.url))
+  const source = readSource(new URL('../../character/rig-live2d.ts', import.meta.url))   // Core Worker는 Live2D 렌더러가 띄움
   assert.match(source, /new Worker\(BASE \+ "dsc-core-worker\.js"\); \} catch \{ return; \}\s*life\.add\(\(\) => \{ try \{ w\.terminate\(\);? \} catch \{\} \}\)/)
   assert.match(bundle, /w\.terminate\(\)/)
 })
@@ -1055,10 +1058,13 @@ test('Host speech routes read live settings and stay 404 while disabled', async 
   } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); disposers.forEach((dispose) => dispose?.()) }
 })
 
+/** 음성(/dsh-tts/) 요청인지. 캐릭터가 받는 대사 파일(assets/dsc-lines.json) 요청은 음성과 상관없어 세지 않는다 */
+const voiceUrl = (url) => String(url).startsWith('/dsh-tts/')
+
 function voiceFetch(h) {
   const calls = []
   h.dom.window.fetch = async (url, init) => {
-    calls.push(init?.body ? [url, JSON.parse(init.body).text] : [url])
+    if (voiceUrl(url)) calls.push(init?.body ? [url, JSON.parse(init.body).text] : [url])
     if (url === '/dsh-tts/state') return { ok: true, status: 200, json: async () => ({ enabled: true, pcmSampleRate: 24000, voiceLines: { reactions: true, others: true } }) }
     return { ok: false, status: 503, body: null }
   }
@@ -1097,7 +1103,7 @@ test('voice disposed before its state arrives never starts listening', async () 
   try {
     let release
     const calls = []
-    h.dom.window.fetch = (url) => { calls.push(url); return url === '/dsh-tts/state' ? new Promise((resolve) => { release = resolve }) : Promise.resolve({ ok: false, status: 503, body: null }) }
+    h.dom.window.fetch = (url) => { if (voiceUrl(url)) calls.push(url); return url === '/dsh-tts/state' ? new Promise((resolve) => { release = resolve }) : Promise.resolve({ ok: false, status: 503, body: null }) }
     const ctx = h.ctx(); h.client.apply(ctx)
     ctx.dispose()
     release({ ok: true, status: 200, json: async () => ({ enabled: true, pcmSampleRate: 24000, voiceLines: { reactions: true } }) })
