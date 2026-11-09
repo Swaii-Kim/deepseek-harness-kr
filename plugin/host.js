@@ -9,6 +9,7 @@ import { normalize as normalizeTts } from '../plugins/dsh-tts/src/config.js'
 import { registerSpeechRoutes } from '../plugins/dsh-tts/src/index.js'
 import { createPetHandler, createPetManager, PET_PATH } from './pet-host.js'
 import { applyShortcutIcon } from './app-icon.js'
+import { AVATAR_CACHE_PATH, createAoCacheHandler } from './avatar-cache.js'
 import { OUTFIT_ITEMS, BODY_TYPES } from '../shared/settings.js'
 
 export const name = 'deepseek-harness-kr'
@@ -109,6 +110,10 @@ export const Config = z.object({
   avatarBrowScale: z.number().min(0).max(2).default(1).volatile(),
   // 실험: 3D 눈썹이 목표로 부드럽게 따라가는 시간(ms, 0~300). 말할 때 눈썹이 툭 튀지 않게
   avatarBrowSmooth: z.number().min(0).max(300).default(80).volatile(),
+  // 실험: 3D 앰비언트 오클루전(AO). 모델에 AO 맵이 없으면 정점 AO를 자동으로 굽고 캐시 파일로 남김 (avatar.json ao.enabled가 켜져 있어도 켜짐, 끄고 켜면 바로 반영)
+  avatarAo: z.boolean().default(false).volatile(),
+  // 실험: 3D AO 세기 (0~1). 간접광을 AO만큼 어둡게 하고 그림자 쪽으로 미는 정도, 매 프레임 반영
+  avatarAoStrength: z.number().min(0).max(1).default(0.6).volatile(),
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
 /** 호스트 쪽 진단 상태 조회 경로 (설정 화면이 시작 후 한 번 읽어 콘솔에 남김) */
@@ -188,9 +193,9 @@ export function createStatusHandler(read, rejection) {
 /**
  * 플러그인 시작: 자산·음성·펫 경로 등록, 앱 바로가기 아이콘 동기화
  * @param {HostContext} ctx @param {HostConfig | undefined} config 플러그인 설정 (volatile 참조가 섞임)
- * @param {{ applyIcon?: typeof applyShortcutIcon }} [options] 앱 아이콘 적용 함수 대체 (시험용, DSH는 넘기지 않음)
+ * @param {{ applyIcon?: typeof applyShortcutIcon, avatarCacheDir?: string }} [options] 앱 아이콘 적용 함수·AO 캐시 폴더 대체 (시험용, DSH는 넘기지 않음)
  */
-export function apply(ctx, config, { applyIcon = applyShortcutIcon } = {}) {
+export function apply(ctx, config, { applyIcon = applyShortcutIcon, avatarCacheDir } = {}) {
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ASSET_PATH, handler: createAssetHandler() }), 'deepseek-harness-kr: assets')
   // 말풍선 음성: 설정 화면에서 바꾼 값(volatile)을 요청마다 다시 읽는다. 꺼져 있으면 404.
   registerSpeechRoutes(ctx, () => normalizeTts(readLive(config?.tts)))
@@ -206,6 +211,9 @@ export function apply(ctx, config, { applyIcon = applyShortcutIcon } = {}) {
     if (typeof dir !== 'string' || !dir.trim()) { res.writeHead(404); res.end(); return }
     await createAssetHandler(dir.trim(), AVATAR_PATH)(req, res)
   } }), 'deepseek-harness-kr: avatar')
+  // 3D 모델 AO 굽기 캐시: 키는 모델 폴더 안 실제 파일·크기·수정 시각·굽기 설정으로 호스트가 정함 (avatar-cache.js)
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: AVATAR_CACHE_PATH,
+    handler: createAoCacheHandler({ modelDir: () => readLive(config?.avatarModelDir), rejection, ...(avatarCacheDir ? { cacheDir: avatarCacheDir } : {}) }) }), 'deepseek-harness-kr: avatar cache')
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: STATUS_PATH, handler: createStatusHandler(() => ({ appIcon: appIconProblem }), rejection) }), 'deepseek-harness-kr: status')
   ctx.effect(() => {
     const pet = createPetManager({ assets, avatarDir: () => readLive(config?.avatarModelDir) })

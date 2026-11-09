@@ -53,8 +53,8 @@ export interface CharacterPrefs {
   drag?: { key?: string }
   /** 플러그인·자동화 패널 때문에 창 안 캐릭터를 숨길지 여부 */
   pageHidden?: boolean
-  /** 실험: 3D 모델 폴더를 쓸지 여부 (처음 뜰 때만 읽음), 눈썹 세기(배율)·부드럽게 따라가는 시간(초, 매 프레임 읽음) */
-  avatar?: { enabled?: boolean; outline?: "smooth" | "model"; browScale?: number; browSmooth?: number }
+  /** 실험: 3D 모델 폴더를 쓸지 여부 (처음 뜰 때만 읽음), 눈썹 세기(배율)·부드럽게 따라가는 시간(초, 매 프레임 읽음), 구운 AO 켜기(처음 뜰 때만)·세기(0~1, 매 프레임) */
+  avatar?: { enabled?: boolean; outline?: "smooth" | "model"; browScale?: number; browSmooth?: number; ao?: boolean; aoStrength?: number }
 }
 
 /** 펫 창 preload가 넣어 주는 window.dscPet (메인 프로세스와의 통로) */

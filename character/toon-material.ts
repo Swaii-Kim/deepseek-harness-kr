@@ -157,6 +157,10 @@ varying vec3 vViewPosition;
 #else
   #define TOON_UV( transform, base ) ( base )
 #endif
+#ifdef TOON_BAKED_AO
+  attribute float bakedAo;
+  varying float vBakedAo;
+#endif
 #ifdef OUTLINE
   uniform float outlineWidthFactor;
   #ifdef OUTLINE_WIDTH_ATTRIBUTE
@@ -172,6 +176,9 @@ varying vec3 vViewPosition;
 
 void main() {
   vUv = uv;
+  #ifdef TOON_BAKED_AO
+    vBakedAo = bakedAo;
+  #endif
   #include <beginnormal_vertex>
   #include <morphnormal_vertex>
   #include <skinbase_vertex>
@@ -263,6 +270,15 @@ uniform float uvRotationPhase;
 #endif
 #ifdef TOON_RIM_MAP
   uniform sampler2D rimMap;
+#endif
+#ifdef TOON_BAKED_AO
+  uniform float aoStrength;
+  uniform float aoShade;
+  varying float vBakedAo;
+  // 구운 AO를 세기만큼 (1 = 막힘 없음)
+  float bakedAoAmount() {
+    return mix( 1.0, vBakedAo, aoStrength );
+  }
 #endif
 // 맵마다 텍스처 변환 (MToon의 <맵>UvTransform과 같음). 끄면 UV 그대로
 #ifdef TOON_UV_TRANSFORM
@@ -377,7 +393,11 @@ void RE_IndirectDiffuse_Toon( const in vec3 irradiance, const in vec3 geometryPo
   #if defined( USE_LIGHT_PROBES ) || ( NUM_HEMI_LIGHTS > 0 )
     gi = mix( irradiance, equalizedIrradiance(), giEqualization );
   #endif
-  reflectedLight.indirectDiffuse += gi * BRDF_Lambert( material.diffuseColor );   // 간접광은 그늘 색 없이 바탕색만
+  #ifdef TOON_BAKED_AO
+    reflectedLight.indirectDiffuse += gi * BRDF_Lambert( material.diffuseColor ) * bakedAoAmount();   // 막힌 만큼 간접광을 줄임
+  #else
+    reflectedLight.indirectDiffuse += gi * BRDF_Lambert( material.diffuseColor );   // 간접광은 그늘 색 없이 바탕색만
+  #endif
   reflectedLight.directSpecular += gi;
 }
 
@@ -430,6 +450,9 @@ void main() {
   #ifdef TOON_SHADING_SHIFT_MAP
     material.shadingShift += texture2D( shadingShiftMap, TOON_UV( shadingShiftMapUvTransform, uv ) ).r * shadingShiftMapScale;
   #endif
+  #ifdef TOON_BAKED_AO
+    material.shadingShift -= aoShade * ( 1.0 - bakedAoAmount() );   // 막힌 곳은 그림자 쪽으로 (AO 맵을 그림자 경계 맵으로 쓰는 것과 같은 효과)
+  #endif
 
   #include <lights_fragment_begin>
   #include <lights_fragment_maps>
@@ -464,6 +487,9 @@ void main() {
 
   #ifdef OUTLINE
     col = outlineColor * mix( vec3( 1.0 ), col, outlineLightingMix );
+  #endif
+  #ifdef TOON_BAKED_AO_DEBUG
+    col = vec3( vBakedAo * vBakedAo );   // 확인용: AO만 회색으로 (출력 sRGB 변환을 대략 되돌려 화면 밝기 ≈ AO 값)
   #endif
   #ifdef OPAQUE
     diffuseColor.a = 1.0;
@@ -502,6 +528,33 @@ export function createOutlineMaterial(options: OutlineMaterialOptions) {
     outlineLightingMix: { value: options.lightingMix ?? 1 },
   });
   return buildMaterial({ ...options, side: THREE.BackSide }, uniforms, toonDefines(options, options));
+}
+
+/** 구운 AO uniform (여러 재질이 같은 객체를 같이 쓰고 매 프레임 설정 화면 세기로 갱신): aoStrength = 세기(0~1), aoShade = 막힌 만큼 그림자 쪽으로 미는 정도 */
+export type BakedAoUniforms = { aoStrength: THREE.IUniform<number>; aoShade: THREE.IUniform<number> };
+/** 구운 AO uniform 만들기 */
+export const createBakedAoUniforms = (strength: number, shade: number): BakedAoUniforms => ({ aoStrength: { value: strength }, aoShade: { value: shade } });
+/**
+ * 표면 툰 재질에 구운 AO 켜기 (TOON_BAKED_AO: 정점 속성 bakedAo로 간접광을 줄이고 그림자 경계를 밈). 처음 그리기 전에 불러야 함
+ * 켜지 않은 재질은 define·uniform이 그대로라 예전과 같은 프로그램. 외곽선 재질은 켜지 않음
+ * @param uniforms 같이 쓰는 AO uniform @param debug true면 AO만 회색으로 그림 (TOON_BAKED_AO_DEBUG, 확인용)
+ */
+export function enableBakedAo(material: THREE.ShaderMaterial, uniforms: BakedAoUniforms, debug = false) {
+  if ("OUTLINE" in material.defines) return;
+  material.defines.TOON_BAKED_AO = "";
+  if (debug) material.defines.TOON_BAKED_AO_DEBUG = "";
+  Object.assign(material.uniforms, uniforms);
+  material.needsUpdate = true;
+}
+
+/**
+ * 구운 AO 끄기: enableBakedAo로 넣은 define을 빼 처음부터 AO를 끈 재질과 같은 프로그램으로 다시 컴파일 (uniform·정점 속성은 남겨 다시 켤 때 굽지 않음)
+ */
+export function disableBakedAo(material: THREE.ShaderMaterial) {
+  if (!("TOON_BAKED_AO" in material.defines)) return;
+  delete material.defines.TOON_BAKED_AO;
+  delete material.defines.TOON_BAKED_AO_DEBUG;
+  material.needsUpdate = true;
 }
 
 /** 재질의 바탕 맵 (툰 재질은 uniform, three.js 기본 재질은 map 속성) */

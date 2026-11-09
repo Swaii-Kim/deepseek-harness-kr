@@ -33,6 +33,8 @@ interface PluginSettings {
   avatarOutline?: string
   avatarBrowScale?: number | string
   avatarBrowSmooth?: number | string
+  avatarAo?: boolean
+  avatarAoStrength?: number | string
   tts?: TtsSettings
 }
 /** 말풍선 음성 설정 (plugins/dsh-tts 설정과 같은 모양) */
@@ -84,6 +86,8 @@ const inRange = (value: number | string | undefined, min: number, max: number, f
 const browScale = (value: number | string | undefined) => inRange(value, 0, 2, 1)
 /** 3D 눈썹 부드럽게 따라가는 시간(ms 0~300, 기본 80) @param value 설정값 */
 const browSmoothMs = (value: number | string | undefined) => inRange(value, 0, 300, 80)
+/** 3D 구운 AO 세기(0~1, 기본 0.6) @param value 설정값 */
+const aoStrength = (value: number | string | undefined) => inRange(value, 0, 1, 0.6)
 // ---------- 단축키 ----------
 // 설정 칸을 눌러 원하는 키 조합을 그대로 눌러 등록하고, 실제 입력도 같은 규칙으로 해석한다.
 const SHORTCUT_HINT_ID = 'deepseek-harness-kr-shortcut-hint'
@@ -295,7 +299,9 @@ function characterPrefs(value: PluginSettings) {
     mobile: { enabled: value.mobileCharacter !== false },
     // 실험: 3D 모델 폴더가 있으면 창 안 캐릭터를 3D 렌더러로 (캐릭터가 처음 뜰 때만 읽음). 눈썹 세기·부드러움은 매 프레임 읽음
     avatar: { enabled: typeof value.avatarModelDir === 'string' && value.avatarModelDir.trim() !== '', outline: value.avatarOutline === 'model' ? 'model' as const : 'smooth' as const,
-      browScale: browScale(value.avatarBrowScale), browSmooth: browSmoothMs(value.avatarBrowSmooth) / 1000 },
+      browScale: browScale(value.avatarBrowScale), browSmooth: browSmoothMs(value.avatarBrowSmooth) / 1000,
+      // 구운 AO: 켜기는 처음 뜰 때만, 세기는 매 프레임 읽음
+      ao: value.avatarAo === true, aoStrength: aoStrength(value.avatarAoStrength) },
     // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
     drag: { key: value.dragKey ?? 'Alt' },
   }
@@ -1012,7 +1018,17 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
           React.createElement('span', null, ko ? '눈썹 움직임 부드럽게 (ms, 0~300)' : 'Eyebrow motion smoothing (ms, 0-300)'),
           React.createElement('input', { type: 'number', min: 0, max: 300, step: 10, style: { width: 90 }, value: browSmoothMs(state.value?.avatarBrowSmooth), disabled: off,
             /** 눈썹 부드러움 시간을 범위 안으로 정리해 저장 */
-            onChange: (event) => change('avatarBrowSmooth', browSmoothMs(event.target.value)) }))),
+            onChange: (event) => change('avatarBrowSmooth', browSmoothMs(event.target.value)) })),
+        React.createElement('label', { style: row },
+          React.createElement('span', null, ko ? '앰비언트 오클루전 (없으면 자동으로 생성)' : 'Ambient occlusion (generated if the model has none)'),
+          React.createElement('input', { type: 'checkbox', checked: state.value?.avatarAo === true, disabled: off,
+            /** AO 굽기 켜짐 여부 저장 */
+            onChange: (event) => change('avatarAo', event.target.checked) })),
+        React.createElement('label', { style: row },
+          React.createElement('span', null, ko ? '앰비언트 오클루전 세기 (0~1)' : 'Ambient occlusion strength (0-1)'),
+          React.createElement('input', { type: 'number', min: 0, max: 1, step: 0.05, style: { width: 90 }, value: aoStrength(state.value?.avatarAoStrength), disabled: off,
+            /** AO 세기를 범위 안으로 정리해 저장 */
+            onChange: (event) => change('avatarAoStrength', aoStrength(event.target.value)) }))),
       React.createElement('section', { 'aria-label': ko ? '단축키 - 캐릭터와 말풍선' : 'Shortcuts - Character and speech bubbles', style: { display: 'grid', gap: 10, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 14 } },
         React.createElement('strong', null, ko ? '단축키 - 캐릭터와 말풍선' : 'Shortcuts - Character and speech bubbles'),
         React.createElement('p', { id: SHORTCUT_HINT_ID, style: { margin: 0, opacity: 0.7 } },

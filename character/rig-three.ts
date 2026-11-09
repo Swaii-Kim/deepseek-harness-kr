@@ -3,11 +3,13 @@
 // 이 파일은 따로 묶여(assets/vendor/rig-three.js) 3D 모델을 켰을 때만 불러옴 (window.DscRigThree).
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
-import { createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
+import { createBakedAoUniforms, createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, disableBakedAo, enableBakedAo, mapOf, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
 import { PARAMS } from "./model-profile.ts";
 import { addBindingWeight, addTargetWeight, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import { createTaa } from "./taa.ts";
+import { aoParamsHash, aoReceivers, aoSettingsOf, aoStrengthOf, applyBakedAo, bakeAo, loadAoCache, saveAoCache, type AoBakeParams, type AoOption } from "./ao-bake.ts";
+import { log } from "./log.ts";
 import { resolveGaze, type GazeOverrides } from "./gaze.ts";
 import type { Lifetime } from "./lifetime.ts";
 import type { AvatarRig, RigFeature, RigMetrics, TouchShape } from "./rig.ts";
@@ -92,6 +94,14 @@ export type AvatarProfile = {
    * scale = 렌더 배율에 더 곱할 값 (기본 1)
    */
   render?: { antialias?: "msaa" | "taa"; scale?: number };
+  /**
+   * 구운 앰비언트 오클루전 (실험, ao-bake.ts): 기본 T자 자세에서 정점 AO를 굽고 호스트 캐시 파일로 남김
+   * 재질에 AO 맵(materials.*.ao)이 하나라도 있는 모델은 모델 AO를 쓰고 굽지 않음 (hasModelAo)
+   * enabled = 켜기 (설정 화면 avatarAo와 둘 중 하나라도 켜면 켜짐), strength = 세기 0~1 (설정 화면 값이 있으면 그것이 먼저, 기본 0.6)
+   * shade = 막힌 만큼 그림자 경계를 미는 정도 (기본 0.3), radius = 막는 면으로 치는 거리(모델 키 대비, 기본 0.08)
+   * directions = 굽는 방향 수 (기본 96), resolution = 방향마다 깊이 맵 한 변 텍셀 (기본 1024), debug = AO만 회색으로 그림 (확인용)
+   */
+  ao?: AoOption;
 };
 
 /** 외곽선 법선 출처 */
@@ -452,7 +462,11 @@ export function dedupeFbxBones(model: THREE.Object3D) {
 /** 눈썹 채널 (설정의 눈썹 세기·부드러움이 걸림). 동작 코드는 Live2D 기준 값을 써서 3D 모프에는 클 수 있음 */
 export const BROW_CHANNELS: ReadonlySet<string> = new Set(["browRaiseLeft", "browRaiseRight", "browInnerRaise"]);
 /** 사용자 표정 조정 (설정 화면, 매 프레임 읽음): browScale = 눈썹 값 배율, browSmooth = 눈썹이 따라가는 시간(초) */
-export type RigTuning = { browScale?: number; browSmooth?: number };
+export type RigTuning = { browScale?: number; browSmooth?: number;
+  /** 구운 AO 켜기 (불러올 때만 읽음) */
+  ao?: boolean;
+  /** 구운 AO 세기 (0~1, 매 프레임 읽음) */
+  aoStrength?: number };
 /**
  * 지금 값에서 목표로 시간 상수 tau(초)만큼 부드럽게 다가감 (지수 평활, 프레임 간격과 무관)
  * tau가 0 이하면 바로 목표, 간격이 0이면 그대로
@@ -489,6 +503,108 @@ export function modelFormat(file: string | undefined) {
   const ext = match ? "." + match[1].toLowerCase() : "";
   if (!(SUPPORTED_MODEL_FORMATS as readonly string[]).includes(ext)) throw new Error(`지원하는 모델 형식은 ${SUPPORTED_MODEL_FORMATS.join("·")}입니다 (avatar.json model: ${file ?? "없음"})`);
   return ext.slice(1) as "vrm" | "fbx";
+}
+
+/**
+ * 굽는 자세의 모프 세기: avatar.json baseMorphs(늘 거는 기본 옷차림 등) + 소품·옷을 모두 끈 기본 상태(invert 모프 = 1, 예: 안경 숨김)
+ * 표정·채널 모프는 0. 실행 중 applyMorphs가 같은 방식으로 더하는 값과 같음
+ */
+export function restMorphWeights(profile: Pick<AvatarProfile, "baseMorphs" | "outfit">) {
+  const weights: Record<string, number> = { ...profile.baseMorphs };
+  for (const bindings of Object.values(profile.outfit || {})) for (const binding of bindings) if (binding.invert) weights[binding.morph] = (weights[binding.morph] || 0) + 1;
+  return weights;
+}
+/**
+ * 굽기 전 모프: 모두 0에 restMorphWeights만 걸어 표정·켠 소품이 AO에 섞이지 않게 함
+ * @param weights 모프 이름(마지막 부분) → 세기
+ */
+export function restMorphs(meshes: THREE.Mesh[], weights: Record<string, number> = {}) {
+  for (const mesh of meshes) {
+    if (!mesh.morphTargetInfluences || !mesh.morphTargetDictionary) continue;
+    mesh.morphTargetInfluences.fill(0);
+    for (const [name, index] of Object.entries(mesh.morphTargetDictionary)) mesh.morphTargetInfluences[index] = clamp(weights[morphKey(name)] ?? 0, 0, 1);
+  }
+}
+
+/**
+ * 구운 AO 준비: 캐시 파일을 찾고, 없거나 메시가 안 맞으면 굽는 자세(inRestPose: 기본 T자·기본 모프)로 잠깐 바꿔 GPU로 구운 뒤 캐시에 덮어씀 (저장 실패는 디버그 기록만)
+ * 걸린 시간은 performance 측정 "dsc-ao-bake"로 남김 (캐시 사용 여부·정점 수 포함)
+ * @param cacheUrl 호스트 AO 캐시 주소 (file·params 붙기 전) @param file avatar.json model
+ * @param texturesReady avatar.json 텍스처를 다 받으면 끝나는 약속 (알파 테스트 재질이 받기 전 빈 맵으로 구워지지 않게)
+ * @param inRestPose 굽는 동안만 굽는 자세로 바꿨다 되돌리는 감싸기 (불러올 때도·실행 중에 켤 때도 같은 자세라 캐시 키가 같음)
+ * @returns 같이 쓰는 AO uniform (세기는 매 프레임 갱신)과 AO를 켠 재질
+ */
+async function prepareBakedAo(renderer: THREE.WebGLRenderer, root: THREE.Object3D, profile: AvatarProfile, cacheUrl: string, file: string,
+  settings: { params: AoBakeParams; shade: number; debug: boolean }, strength: number, texturesReady: Promise<unknown>, inRestPose: <T>(fn: () => T) => T) {
+  const meshes = aoReceivers(root);
+  const morphs = restMorphWeights(profile);
+  const hash = aoParamsHash(settings.params, { hide: profile.hide ?? null, morphs, materials: profile.materials ?? null });
+  const url = `${cacheUrl}?file=${encodeURIComponent(file)}&params=${hash}`;
+  await texturesReady;
+  const start = performance.now();
+  const cached = await loadAoCache(url, hash, meshes).catch(() => null);
+  const data = cached ?? inRestPose(() => { restMorphs(meshes, morphs); root.updateMatrixWorld(true); return bakeAo(renderer, meshes, settings.params, smoothOutlineNormals); });
+  if (!cached) saveAoCache(url, hash, meshes, data).then((ok) => { if (!ok) log.debug("AO 캐시 경로가 없어 저장하지 않았습니다", url); }, (error) => log.debug("AO 캐시를 저장하지 못했습니다:", error));
+  const vertices = data.reduce((sum, each) => sum + each.length, 0);
+  performance.measure("dsc-ao-bake", { start, detail: { cached: !!cached, vertices, meshes: meshes.length } });
+  log.debug("AO", cached ? "캐시 사용" : "굽기", `${Math.round(performance.now() - start)}ms`, vertices, "정점");
+  const uniforms = createBakedAoUniforms(strength, settings.shade);
+  const materials = applyBakedAo(root, meshes, data, uniforms, settings.debug);
+  return { uniforms, materials };
+}
+
+/** 모델이 AO 맵을 이미 주는지 (avatar.json 재질 중 ao가 있는 것이 하나라도 있으면). 있으면 정점 AO를 굽지 않음 */
+export const hasModelAo = (profile: Pick<AvatarProfile, "materials">) => Object.values(profile.materials ?? {}).some((spec) => !!spec?.ao);
+
+/**
+ * 지금 자세(노드마다 지역 위치·회전·배율)를 기억해 두고, 함수를 그 자세에서 잠깐 실행한 뒤 실행 직전 자세·모프로 되돌리는 감싸기를 만듦
+ * 실행 중에 AO를 켤 때 팔 내림·애니메이션·흔들림이 걸린 자세 대신 불러올 때의 기본 T자 자세로 굽기 위함 (동기 실행이라 그 자세가 화면에 그려지지 않음)
+ * three-vrm 흔들림 뼈처럼 matrixAutoUpdate가 꺼진 노드는 updateMatrixWorld가 지역 행렬을 다시 만들지 않아 직접 갱신
+ */
+export function restPoseRunner(root: THREE.Object3D) {
+  const rest: Array<[THREE.Object3D, THREE.Vector3, THREE.Quaternion, THREE.Vector3]> = [];
+  root.traverse((node) => { rest.push([node, node.position.clone(), node.quaternion.clone(), node.scale.clone()]); });
+  return <T>(fn: () => T): T => {
+    const now = rest.map(([node]) => [node.position.clone(), node.quaternion.clone(), node.scale.clone()] as const);
+    const morphs: Array<[number[], number[]]> = [];
+    root.traverse((node) => { const influences = (node as THREE.Mesh).morphTargetInfluences; if (influences) morphs.push([influences, influences.slice()]); });
+    for (const [node, position, quaternion, scale] of rest) { node.position.copy(position); node.quaternion.copy(quaternion); node.scale.copy(scale); if (!node.matrixAutoUpdate) node.updateMatrix(); }
+    root.updateMatrixWorld(true);
+    try { return fn(); } finally {
+      rest.forEach(([node], i) => { node.position.copy(now[i][0]); node.quaternion.copy(now[i][1]); node.scale.copy(now[i][2]); if (!node.matrixAutoUpdate) node.updateMatrix(); });
+      for (const [influences, saved] of morphs) for (let i = 0; i < saved.length; i++) influences[i] = saved[i];
+      root.updateMatrixWorld(true);
+    }
+  };
+}
+
+/**
+ * 구운 AO를 설정에 따라 실행 중에 켜고 끄는 상태: 켜면 캐시 파일(없으면 굽는 자세로 굽기)을 붙이고, 끄면 재질에서 AO만 빼 다시 컴파일
+ * 한 번 붙인 AO는 남겨 두어 다시 켤 때 굽지 않음. 준비하는 동안 다시 바뀌면 끝난 뒤 지금 설정에 맞춤
+ * 준비가 실패하면 매 프레임 다시 굽지 않고, 설정을 껐다 켤 때 한 번 더 시도
+ * @param prepare 굽거나 캐시를 읽어 AO를 붙이는 함수 (prepareBakedAo)
+ */
+export function createAoSwitch(prepare: () => Promise<{ uniforms: ReturnType<typeof createBakedAoUniforms>; materials: Set<THREE.Material> } | null>) {
+  let ready: { uniforms: ReturnType<typeof createBakedAoUniforms>; materials: Set<THREE.Material> } | null = null, on = false, pending: Promise<void> | null = null, want = false, failed = false;
+  /** 켠 재질의 AO define을 켜거나 끔 */
+  const show = (enabled: boolean) => {
+    if (!ready || on === enabled) return;
+    for (const material of ready.materials) if (enabled) enableBakedAo(material as THREE.ShaderMaterial, ready.uniforms); else disableBakedAo(material as THREE.ShaderMaterial);
+    on = enabled;
+  };
+  return {
+    /** 지금 AO uniform (켜졌을 때만) */
+    get uniforms() { return on ? ready?.uniforms ?? null : null; },
+    /** 설정 반영 (매 프레임 불러도 됨). 처음 켤 때만 준비(비동기) */
+    sync(enabled: boolean) {
+      want = enabled;
+      if (!enabled) failed = false;
+      if (ready) { show(enabled); return pending; }
+      if (!enabled || pending || failed) return pending;
+      pending = prepare().then((result) => { ready = result; on = !!result; failed = !result; if (result && !want) show(false); }, () => { failed = true; }).finally(() => { pending = null; });
+      return pending;
+    },
+  };
 }
 
 /**
@@ -550,6 +666,13 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
 
   // ---------- 재질: 툰 재질로 바꾸고 숨길 것은 숨김 ----------
   const textures = new Map<string, THREE.Texture>();
+  const textureLoads: Array<Promise<void>> = [];   // 텍스처 다 받기 (AO 굽기의 알파 테스트가 바탕 맵을 읽음, 실패도 끝난 것으로)
+  /** 텍스처 불러오기 시작 (다 받거나 실패하면 끝나는 약속을 textureLoads에 모음) */
+  const loadTexture = (url: string) => {
+    let done = () => {};
+    textureLoads.push(new Promise((resolve) => { done = resolve; }));
+    return textureLoader.load(url, () => done(), undefined, () => done());
+  };
   /**
    * 폴더 기준 텍스처 (같은 파일은 한 번만)
    * @param linear true면 색이 아닌 수치 맵(AO 등)이라 색 공간 변환 없이 읽음
@@ -557,7 +680,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const texture = (file?: string, linear = false) => {
     if (!file) return undefined;
     let found = textures.get(file);
-    if (!found) { found = textureLoader.load(base + file); found.colorSpace = linear ? THREE.NoColorSpace : THREE.SRGBColorSpace; found.wrapS = found.wrapT = THREE.RepeatWrapping;   /* Unity·UE처럼 반복 (효과 메시 UV가 0~1 밖을 씀) */ textures.set(file, found); life.add(() => found!.dispose()); }
+    if (!found) { found = loadTexture(base + file); found.colorSpace = linear ? THREE.NoColorSpace : THREE.SRGBColorSpace; found.wrapS = found.wrapT = THREE.RepeatWrapping;   /* Unity·UE처럼 반복 (효과 메시 UV가 0~1 밖을 씀) */ textures.set(file, found); life.add(() => found!.dispose()); }
     return found;
   };
   const hidden = new Set(profile.hide || []);
@@ -640,6 +763,16 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
 
   // ---------- 그리는 순서: order가 있는 재질은 같은 뼈·모프를 쓰는 복제 메시로 떼어 그 순서로 그림 ----------
   splitByOrder(root, (name) => profile.materials?.[name]?.order ?? 0, life);
+
+  // ---------- 구운 AO: 기본 T자 자세(팔 내림·애니메이션 전)에서 굽거나 캐시 파일을 씀. 끄면 아무것도 바꾸지 않음 ----------
+  // 지금(팔 내림 전) 자세를 기억해 두어 실행 중에 AO를 켜도 같은 자세·같은 캐시 키로 구움. 설정은 매 프레임 읽어 새로고침 없이 켜고 끔
+  const inRestPose = restPoseRunner(root);
+  const aoSettings = aoSettingsOf(profile.ao, tuning?.()), modelAo = hasModelAo(profile);   // 모델 AO 맵이 있으면 켜도 굽지 않음
+  const ao = createAoSwitch(() => prepareBakedAo(renderer, root, profile, new URL("../avatar-cache/ao", new URL(base, location.href)).href, json.model, aoSettings,
+    aoStrengthOf(profile.ao, tuning?.()), Promise.all(textureLoads), inRestPose)
+    .catch((error) => { log.warnOnce("ao-bake", "AO를 굽지 못했습니다:", error); return null; }));
+  await ao.sync(aoSettings.enabled && !modelAo);   // 처음부터 켜져 있으면 첫 화면 전에 붙임
+  if (life.stopped) return null;
 
   // ---------- 뼈 ----------
   const byName = new Map<string, THREE.Object3D>();
@@ -958,6 +1091,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       if (dt > 0) springs.step(dt);   // 흔들림 마디는 자기 월드 행렬을 직접 계산
       if (vrmRuntime) { vrmRuntime.update(dt); root.updateMatrixWorld(true); }   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈가 바꾼 노드 반영 (VRM은 복제 뼈가 없어 노드가 적음)
       if (profile.faceSdf) updateFaceSdf();
+      ao.sync(aoSettingsOf(profile.ao, tuning?.()).enabled && !modelAo);   // 설정에서 켜고 끄면 바로 반영 (처음 켤 때만 굽거나 캐시를 읽음)
+      if (ao.uniforms) ao.uniforms.aoStrength.value = aoStrengthOf(profile.ao, tuning?.());
       if (taa) taa.render(scene, camera, time); else renderer.render(scene, camera);
     },
     gesture(name, ms) {
