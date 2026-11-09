@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
 import { PARAMS } from "./model-profile.ts";
-import { addBindingWeight, addTargetWeight, isVrmModel, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
+import { addBindingWeight, addTargetWeight, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import { createTaa } from "./taa.ts";
 import type { Lifetime } from "./lifetime.ts";
@@ -471,6 +471,19 @@ export function tunedChannels(channels: Iterable<string>, raw: ReadonlyMap<strin
   return out;
 }
 
+/** 지원하는 모델 형식 (avatar.json model 확장자). 지금은 VRM(0.x·1.0)과 FBX만 */
+export const SUPPORTED_MODEL_FORMATS = [".vrm", ".fbx"] as const;
+/**
+ * 모델 파일 형식 확인: 지원하지 않는 확장자면 다른 로더의 엉뚱한 오류 대신 이 오류를 냄
+ * @param file avatar.json model 값 @returns "vrm" 또는 "fbx"
+ */
+export function modelFormat(file: string | undefined) {
+  const match = /\.([a-z0-9]+)$/i.exec(String(file ?? "").trim());
+  const ext = match ? "." + match[1].toLowerCase() : "";
+  if (!(SUPPORTED_MODEL_FORMATS as readonly string[]).includes(ext)) throw new Error(`지원하는 모델 형식은 ${SUPPORTED_MODEL_FORMATS.join("·")}입니다 (avatar.json model: ${file ?? "없음"})`);
+  return ext.slice(1) as "vrm" | "fbx";
+}
+
 /**
  * 3D rig 생성: avatar.json과 모델을 불러와 캔버스에 그릴 준비
  * @param base 모델 폴더 주소 (끝에 /)
@@ -489,7 +502,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const textureLoader = new THREE.TextureLoader();
   const loader = new FBXLoader();
   // VRM: three-vrm으로 읽고 VRM 값으로 프로필을 합성(avatar.json은 덮어쓰기)·MToon을 툰 재질로 바꿈
-  const vrm = isVrmModel(json.model) ? await loadVrm(base + json.model, json, life) : null;
+  const vrm = modelFormat(json.model) === "vrm" ? await loadVrm(base + json.model, json, life) : null;
   const profile = vrm ? vrm.profile : json;
   const vrmRuntime: VrmRuntime | null = vrm ? vrm.runtime : null;
   const model = vrm ? vrm.model : await loader.loadAsync(base + profile.model);
