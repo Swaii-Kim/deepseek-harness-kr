@@ -68,8 +68,6 @@ export interface BehaviorInstance {
 export interface BehaviorDef<Ctx> {
   /** 프로필 목록에 쓰는 ID (예: "deepseek-chan.pot") */
   id: string;
-  /** 이 행동의 대사: 콘셉트 → 문장들 ([표정] 꼬리표 그대로) */
-  lines?: Record<string, string[]>;
   /** 성적 표현이 든 행동 (모델이 허용하지 않으면 목록에 있어도 끔, 예: VRM 메타가 금지) */
   adult?: boolean;
   create(ctx: Ctx): BehaviorInstance;
@@ -90,22 +88,18 @@ export interface Behaviors {
   blend(motion: Motion, frame: BehaviorFrame): BlendResult;
   /** 켜진 행동 중 하나라도 지금 그 상태 표시를 달고 있는지 */
   tagged(tag: string, now: number): boolean;
-  /** 켜진 행동들의 대사 (기본 대사와 겹치는 콘셉트는 뺌) */
-  readonly lines: Record<string, string[]>;
 }
 
 /**
  * 프로필 목록대로 행동을 만들고 이벤트 바인딩 확인
  * - 모르는 ID는 경고 후 무시, 같은 ID가 두 번 있으면 한 번만, 성적 표현을 허용하지 않는 모델이면 adult 행동은 경고 후 끔
  * - 이벤트 하나를 둘 이상이 맡으면 설정 오류: 경고 후 그 이벤트는 기본 반응 (목록 순서로 이기는 쪽을 정하지 않음)
- * - 대사 콘셉트가 기본 대사나 다른 행동과 겹치면 경고 후 기본 대사(또는 먼저 나온 쪽) 유지
  * @param defs 내장 행동 정의
  * @param ids 프로필의 행동 목록
  * @param ctx 행동이 쓸 기능 (create에 그대로 넘김)
- * @param baseLines 기본 대사 (콘셉트 겹침 확인용)
  */
 export function createBehaviors<Ctx>(defs: readonly BehaviorDef<Ctx>[], ids: readonly string[], ctx: Ctx,
-  { baseLines = {}, allowAdult = true, warn = () => {} }: { baseLines?: Record<string, unknown>; allowAdult?: boolean; warn?: (message: string) => void } = {}): Behaviors {
+  { allowAdult = true, warn = () => {} }: { allowAdult?: boolean; warn?: (message: string) => void } = {}): Behaviors {
   const byId = new Map(defs.map((def) => [def.id, def]));
   const enabled: { def: BehaviorDef<Ctx>; instance: BehaviorInstance }[] = [];
   for (const id of new Set(ids)) {
@@ -123,11 +117,6 @@ export function createBehaviors<Ctx>(defs: readonly BehaviorDef<Ctx>[], ids: rea
   for (const [key, list] of owners) {
     if (list.length === 1) handlers.set(key, list[0]);
     else warn(`이벤트를 둘 이상의 행동이 맡음 (기본 반응으로 처리): ${key}`);
-  }
-  const lines: Record<string, string[]> = {};
-  for (const { def } of enabled) for (const [concept, list] of Object.entries(def.lines || {})) {
-    if (concept in baseLines || concept in lines) { warn(`대사 콘셉트가 겹침 (${def.id}): ${concept}`); continue; }
-    lines[concept] = list;
   }
   type SlotFn = (frame: BehaviorFrame, motion: Motion) => void;
   const slots = (slot: FrameSlot) => enabled.map(({ instance }) => instance.frame?.[slot]).filter((fn): fn is SlotFn => !!fn);
@@ -152,7 +141,6 @@ export function createBehaviors<Ctx>(defs: readonly BehaviorDef<Ctx>[], ids: rea
       return best;
     },
     tagged: (tag, now) => enabled.some(({ instance }) => !!instance.tags && instance.tags(now).includes(tag)),
-    lines,
   };
 }
 

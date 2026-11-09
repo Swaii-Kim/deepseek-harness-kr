@@ -1593,8 +1593,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         chestDrag: { lift: dragLift, shift: dragShift },
         flee: (onBack) => flee(onBack),
       };
-      const behaviors = createBehaviors(BUILTIN_BEHAVIORS, rig.behaviors, behaviorContext, { baseLines: LINES, allowAdult: rig.adultAllowed, warn: (message) => log.warnOnce(`behavior:${message}`, "캐릭터 행동:", message) });
-      Object.assign(LINES, behaviors.lines);
+      const behaviors = createBehaviors(BUILTIN_BEHAVIORS, rig.behaviors, behaviorContext, { allowAdult: rig.adultAllowed, warn: (message) => log.warnOnce(`behavior:${message}`, "캐릭터 행동:", message) });
 
       /**
        * 부위 그림(drawRegion)과 가슴 타원·높이로 터치 부위 결정

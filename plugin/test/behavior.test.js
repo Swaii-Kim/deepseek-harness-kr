@@ -21,7 +21,6 @@ test('프로필 목록의 행동만 켜고, 맡은 이벤트는 그 행동 하�
 test('빈 목록이면 모든 이벤트가 기본 반응이다', () => {
   const behaviors = createBehaviors(BUILTIN_BEHAVIORS, [], {})
   for (const key of Object.values(EVENTS)) assert.equal(behaviors.has(key), false)
-  assert.deepEqual(behaviors.lines, {})
 })
 
 test('같은 이벤트를 둘이 맡으면 목록 순서와 상관없이 경고 후 기본 반응으로 둔다', () => {
@@ -40,13 +39,6 @@ test('모르는 ID는 경고 후 무시하고, 같은 ID가 두 번 있으면 �
   assert.deepEqual(behaviors.ids, ['a'])
   assert.equal(created, 1)
   assert.deepEqual(warnings, ['알 수 없는 행동: x'])
-})
-
-test('행동 대사는 합치되, 기본 대사와 겹치는 콘셉트는 경고 후 기본 대사를 둔다', () => {
-  const warnings = []
-  const behaviors = createBehaviors([def('a', [], { lines: { mine: ['내 대사'], head: ['겹침'] } })], ['a'], {}, { baseLines: { head: ['기본'] }, warn: (m) => warnings.push(m) })
-  assert.deepEqual(behaviors.lines, { mine: ['내 대사'] })
-  assert.equal(warnings.length, 1)
 })
 
 test('상태 표시는 켜진 행동이 지금 달고 있을 때만 참이다', () => {
@@ -72,7 +64,7 @@ test('타임라인은 시점을 차례로 예약하고, 취소하면 남은 시�
   assert.deepEqual(cleared, [1, 2])
 })
 
-test('Live2D 기본 프로필의 행동은 모두 내장 레지스트리에 있고, 이벤트·대사가 겹치지 않는다', () => {
+test('Live2D 기본 프로필의 행동은 모두 내장 레지스트리에 있고, 이벤트가 겹치지 않는다', () => {
   const warnings = []
   const ctx = { chestDrag: { lift: { x: 0, v: 0 }, shift: { x: 0, v: 0 } } }
   const behaviors = createBehaviors(BUILTIN_BEHAVIORS, BEHAVIORS, ctx, { warn: (m) => warnings.push(m) })
