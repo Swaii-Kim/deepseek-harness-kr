@@ -112,7 +112,10 @@ const sendDisplay = (changed = false, point, request) => {
     displays: screen.getAllDisplays().map(displayView) })
 }
 /** 펫 창 숨기기: 클릭 받기 끄기·호스트에 hidden 알림(보이던 경우), 따라오기 멈춤, 페이지 그리기 중지, 코드가 바뀌었으면 새로 불러오기 */
-const hide = () => { if (win && !win.isDestroyed() && win.isVisible()) { win.hide(); setAccept(false); toHost({ type: 'hidden' }) } track(false); toPage({ type: 'power', on: false }); reloadIfStale() }
+const hide = () => { clearTimeout(attachTimer); if (win && !win.isDestroyed() && win.isVisible()) { win.hide(); setAccept(false); toHost({ type: 'hidden' }) } track(false); toPage({ type: 'power', on: false }); reloadIfStale() }
+// 붙은 뒤 창 안 캐릭터가 이어받을 때까지 기다리는 시간 (그 안에 호스트가 hide를 보내면 그때 숨음)
+const ATTACH_WAIT = 1000
+let attachTimer = null
 // 클릭 받기: 평소엔 뒤 화면으로 통과시키고, 커서가 캐릭터 몸 영역(box, 창 안 좌표) 안이거나 누르고 끄는 중(force)일 때만 받음.
 // 커서 위치는 여기서 직접 읽음 (Windows에서 클릭 통과 중 마우스 이동 전달(forward)이 창을 옮긴 뒤 끊겨 다시 못 집는 일이 있어서)
 let box = null, force = false, accepting = false
@@ -183,7 +186,7 @@ async function pageConfig() {
 const fromHost = (message) => {
   if (message.type === 'avatar') return setAvatar(message)
   if (message.type === 'hide') { wanted = false; return hide() }
-  if (message.type === 'open') { wanted = true; seq = message.seq }
+  if (message.type === 'open') { wanted = true; seq = message.seq; clearTimeout(attachTimer) }
   toPage(message)   // open · cmd
 }
 
@@ -280,9 +283,10 @@ app.whenReady().then(() => {
       }
       // 페이지가 보낸 현재 상태 (메뉴 체크 표시용). 호스트로 넘기지 않는다.
       case 'state': if (message.value && typeof message.value === 'object') menuState = { size: Number(message.value.size) || menuState.size, outfit: message.value.outfit && typeof message.value.outfit === 'object' ? message.value.outfit : menuState.outfit }; return
-      // 창 안 캐릭터가 나타나는 프레임에 숨기라고 알려 옴 (1초는 창 안 쪽이 응답하지 않을 때를 위한 대비)
-      // 곧바로 숨긴다: 창 안 캐릭터가 그리는 한 프레임까지 기다리면 두 캐릭터가 잠깐 겹쳐 보인다
-      case 'attach': wanted = false; toHost(message); hide(); return
+      // 제자리에 붙음: 창 안 캐릭터가 이 알림을 받아(최대 150ms 조회 간격) 다시 그린 프레임에 hide를 보내 올 때까지 그대로 보여 준다.
+      // 바로 숨기면 그 사이 어디에도 캐릭터가 없어 깜빡인다(실측 60~180ms). 붙은 자리는 창 안 캐릭터 자리와 같아 겹쳐도 티가 거의 안 남
+      // 창 안 쪽이 답하지 않으면(화면을 닫는 중 등) ATTACH_WAIT 뒤 스스로 숨는다
+      case 'attach': wanted = false; toHost(message); clearTimeout(attachTimer); attachTimer = setTimeout(hide, ATTACH_WAIT); return
       case 'ready': pageReady = true; for (const queued of pending.splice(0)) win.webContents.send('dsc', queued); toHost(message); return
       default: toHost(message)
     }

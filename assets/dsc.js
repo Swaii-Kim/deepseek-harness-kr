@@ -351,7 +351,7 @@
       deps.onUse();
       if ((path === "warm" || path === "open") && deps.avatar) body = { ...body, avatar: deps.avatar() };
       return fetch2(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.ok ? response.json() : postRefused(path, response)).then((reply) => {
-        if (reply?.state) link.petState = reply.state;
+        if (reply?.state) link.petState = path === "hide" && reply.state === "shown" ? "hidden" : reply.state;
         return reply;
       }).catch((error) => {
         const reason = String(error?.message ?? error);
@@ -502,7 +502,11 @@
     };
     link.toggle = () => {
       if (deps.hidden()) return;
-      if (link.open || link.follow?.shown) {
+      if (link.open) {
+        link.leave();
+        return;
+      }
+      if (link.follow?.shown) {
         link.opening = 0;
         link.post("hide");
         return;

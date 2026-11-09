@@ -83,7 +83,9 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
     deps.onUse();
     if ((path === "warm" || path === "open") && deps.avatar) body = { ...(body as object), avatar: deps.avatar() };   // 펫 창도 창 안과 같은 렌더러(Live2D·3D)로
     return fetch(url! + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-      .then((response) => (response.ok ? response.json() : postRefused(path, response))).then((reply) => { if (reply?.state) link.petState = reply.state; return reply; })
+      // 숨기라고 보낸 직후 응답은 아직 shown일 수 있다 (펫 프로세스가 숨기 전). 그대로 믿으면, 창 안으로 돌아온 뒤에는 조회를 쉬므로
+      // 다음 단축키가 '다른 화면이 연 펫 창'으로 잘못 보고 숨은 펫 창을 이어받아 캐릭터가 사라진다
+      .then((response) => (response.ok ? response.json() : postRefused(path, response))).then((reply) => { if (reply?.state) link.petState = path === "hide" && reply.state === "shown" ? "hidden" : reply.state; return reply; })
       .catch((error) => { const reason = String(error?.message ?? error); log.warnOnce(`post:${path}:${reason}`, `펫 요청 오류 (${path}):`, reason); return null; });
   };
 
@@ -216,14 +218,19 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
     }, 60);
   };
 
-  /** 단축키 처리: 펫 창으로 내보내기 / 돌아오기. 돌아오기는 펫 창을 숨겨 poll('hidden') → leave()가 창 안 제자리로 되돌림 */
+  /**
+   * 단축키 처리: 펫 창으로 내보내기 / 돌아오기
+   * 돌아오기는 창 안 캐릭터가 먼저 제자리에 나타나고(leave), 그 프레임에 펫 창을 숨긴다.
+   * 펫 창을 먼저 숨기고 hidden 알림(150ms 조회)을 기다리면 그 사이 캐릭터가 어디에도 없어 깜빡인다
+   */
   link.toggle = () => {
     // 캔버스를 숨긴 상태에서는 펫 창으로 내보내지 않는다 (명시적 no-op).
     // 숨김은 '잠시 그리기만 멈춤'이고 복구 칩·설정·단축키로 되돌리는 경로가 이미 있다.
     // 여기서 펫 창을 열면 숨긴 캐릭터가 바깥에 나타나 의도와 어긋나고, 보이지 않는 상태의
     // 옛 포즈(shown)로 창을 배치하게 된다. 복구 후 다시 누르면 정상 동작한다.
     if (deps.hidden()) return;
-    if (link.open || link.follow?.shown) { link.opening = 0; link.post("hide"); return; }   // 펫 창이 떠 있음 → 창 안으로
+    if (link.open) { link.leave(); return; }   // 펫 창이 대신 보여 주는 중 → 창 안에서 먼저 그리고 펫 창을 숨김 (leave가 다음 프레임에 hide)
+    if (link.follow?.shown) { link.opening = 0; link.post("hide"); return; }   // 끄는 도중 따라오던 펫 창 → 숨기면 창 안에서 이어 감
     if (!url) return;
     if (link.petState === "shown") { link.enter(); return; }   // 다른 화면에서 열어 둔 펫 창이 이어받게
     const pose = deps.openPose();
